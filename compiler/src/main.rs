@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use std::process;
 
 use atlas::lexer::Lexer;
-use atlas::parser::Parser;
+use atlas::legacy_backend;
+use atlas::parser::{lower_intrinsics, Parser};
 use atlas::resolver::Project;
 use atlas::typechecker::TypeChecker;
 use atlas::llvm_codegen::Codegen;
@@ -130,7 +131,7 @@ fn build_single(
 
     // Parse
     let parser = Parser::new(&tokens);
-    let (ast, parse_errors) = parser.parse_file();
+    let (mut ast, parse_errors) = parser.parse_file();
 
     if !parse_errors.is_empty() {
         for err in parse_errors {
@@ -140,27 +141,22 @@ fn build_single(
         process::exit(1);
     }
 
+    lower_intrinsics(&mut ast);
+
     if dump_ast {
         println!("{:#?}", ast);
         return;
     }
 
-    // Typecheck
-    let typechecker = TypeChecker::new();
-    let mut ast = ast;
-    let typed_ast = match typechecker.check(&mut ast) {
-        Ok(t) => t,
-        Err(type_errors) => {
-            for err in type_errors {
-                let report = Report::new(err).with_source_code(NamedSource::new(&file_name, source.clone()));
-                eprintln!("{:?}", report);
-            }
+    let ir = match legacy_backend::compile_to_ir(&file, false) {
+        Ok(ir) => ir,
+        Err(err) => {
+            eprintln!("error: {}", err);
             process::exit(1);
         }
     };
 
-    // Codegen + link
-    emit_binary(typed_ast, &ast, &file_name, &source, dump_ir, emit_ir, output.unwrap_or_else(|| file.with_extension("")));
+    emit_ir_output(ir, dump_ir, emit_ir, output.unwrap_or_else(|| file.with_extension("")));
 }
 
 // ─── Multi-file project compilation ──────────────────────────────────────────
@@ -259,6 +255,55 @@ fn emit_binary(
         }
     };
 
+    if dump_ir {
+        println!("{}", ir);
+        return;
+    }
+
+    let ll_out = if emit_ir {
+        binary_out.with_extension("ll")
+    } else {
+        binary_out.with_extension("tmp.ll")
+    };
+
+    if let Err(err) = fs::write(&ll_out, &ir) {
+        eprintln!("error writing LLVM IR to '{}': {}", ll_out.display(), err);
+        process::exit(1);
+    }
+
+    let clang_status = process::Command::new("clang")
+        .arg(&ll_out)
+        .arg("-o")
+        .arg(&binary_out)
+        .arg("-lm")
+        .status();
+
+    if !emit_ir {
+        let _ = fs::remove_file(&ll_out);
+    }
+
+    match clang_status {
+        Ok(status) => {
+            if !status.success() {
+                eprintln!("clang compilation failed with exit code: {:?}", status.code());
+                process::exit(1);
+            }
+        }
+        Err(err) => {
+            eprintln!("failed to execute clang: {}", err);
+            process::exit(1);
+        }
+    }
+
+    println!("Compilation successful: {}", binary_out.display());
+}
+
+fn emit_ir_output(
+    ir: String,
+    dump_ir: bool,
+    emit_ir: bool,
+    binary_out: PathBuf,
+) {
     if dump_ir {
         println!("{}", ir);
         return;

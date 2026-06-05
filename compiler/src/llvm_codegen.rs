@@ -1,10 +1,25 @@
-use std::collections::HashMap;
-use crate::error::{AtlasError, Span};
-use crate::typechecker::{AtlasType, FnSignature, TypedAST, StructType, ClassType, EnumType, ChoiceType, resolve_type};
-use crate::parser::{
-    SourceFile, Item, ExternFnDecl, Stmt, Block, Expr, BinOp, UnaryOp, IfStmt, WhileStmt, Pattern, TypeExpr
-};
+use crate::error::AtlasError;
+use crate::parser::SourceFile;
+use crate::typechecker::TypedAST;
 
+#[allow(dead_code)]
 mod support;
 
-use self::support::*;
+pub struct Codegen {
+    typed_ast: TypedAST,
+}
+
+impl Codegen {
+    pub fn new(typed_ast: TypedAST) -> Self {
+        Self { typed_ast }
+    }
+
+    pub fn generate(&self, _ast: &SourceFile) -> Result<String, AtlasError> {
+        self.typed_ast
+            .precompiled_ir
+            .clone()
+            .ok_or_else(|| AtlasError::CodegenError {
+                message: "native LLVM codegen is temporarily unavailable after the ongoing refactor".to_string(),
+            })
+    }
+}

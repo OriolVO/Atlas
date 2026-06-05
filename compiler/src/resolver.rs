@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use crate::error::{AtlasError, Span};
-use crate::parser::{SourceFile, Item, TypeExpr, Expr, Stmt, Pattern};
+use crate::parser::{lower_intrinsics, SourceFile, Item, TypeExpr, Expr, Stmt, Pattern};
 use crate::lexer::Lexer;
 use crate::parser::Parser;
 
@@ -66,10 +66,11 @@ impl Project {
             }
 
             let parser = Parser::new(&tokens);
-            let (ast, parse_errors) = parser.parse_file();
+            let (mut ast, parse_errors) = parser.parse_file();
             if !parse_errors.is_empty() {
                 return Err(parse_errors.into_iter().map(|e| (path.to_string_lossy().into_owned(), source.clone(), e)).collect());
             }
+            lower_intrinsics(&mut ast);
 
             let mut imports = Vec::new();
             for item in &ast.items {
@@ -410,8 +411,22 @@ impl<'a> NameResolver<'a> {
                     self.resolve_expr(arg);
                 }
             }
+            Expr::GenericCall { callee, type_args, args, .. } => {
+                if callee.contains("::") {
+                    if let Some(qualified) = self.resolve_qualified_name(callee) {
+                        *callee = qualified;
+                    }
+                } else if let Some(qualified) = self.resolve_qualified_name(callee) {
+                    *callee = qualified;
+                }
+                for type_arg in type_args {
+                    self.resolve_type(&mut type_arg.0, type_arg.1);
+                }
+                for arg in args {
+                    self.resolve_expr(arg);
+                }
+            }
             Expr::StaticCall { class_name, method_name, args, span } => {
-                eprintln!("Visiting StaticCall: {}::{}, imports={:?}", class_name, method_name, self.imports);
                 // Is `class_name` a known imported module (or the current one)?
                 if self.imports.contains(class_name.as_str()) || class_name == self.current_module {
                     if let Some(mi) = self.global_modules.get(class_name.as_str()) {
@@ -419,7 +434,6 @@ impl<'a> NameResolver<'a> {
                         let is_extern = mi.extern_fns.contains(method_name.as_str());
                         let is_class  = mi.classes.contains(method_name.as_str());
                         let is_struct = mi.structs.contains(method_name.as_str());
-                        println!("Resolving StaticCall {}::{}, is_fn={}, is_class={}, mi.functions={:?}", class_name, method_name, is_fn, is_class, mi.functions);
 
                         if is_fn || is_extern || is_class || is_struct {
                             // Visibility check (own-module items are always visible)
@@ -482,6 +496,16 @@ impl<'a> NameResolver<'a> {
 
                 let resolved_class = self.resolve_qualified_name(class_name).unwrap_or_else(|| class_name.clone());
                 *class_name = resolved_class;
+            }
+            Expr::GenericStaticCall { class_name, type_args, args, .. } => {
+                let resolved_class = self.resolve_qualified_name(class_name).unwrap_or_else(|| class_name.clone());
+                *class_name = resolved_class;
+                for type_arg in type_args {
+                    self.resolve_type(&mut type_arg.0, type_arg.1);
+                }
+                for arg in args {
+                    self.resolve_expr(arg);
+                }
             }
             Expr::IntLit { .. } | Expr::FloatLit { .. } | Expr::BoolLit { .. } | Expr::CharLit { .. } | Expr::StringLit { .. } | Expr::Null { .. } => {}
             Expr::Binary { lhs, rhs, .. } => {
@@ -561,22 +585,10 @@ impl<'a> NameResolver<'a> {
                     self.resolve_expr(elem);
                 }
             }
-            Expr::Cast { target_ty, expr, span: _ } => {
-                self.resolve_type(&mut target_ty.0, target_ty.1);
-                self.resolve_expr(expr);
-            }
-            Expr::SizeOf { ty, span: _ } => {
-                self.resolve_type(&mut ty.0, ty.1);
-            }
-            Expr::Destroy { type_arg, expr, span } => {
-                self.resolve_type(type_arg, *span);
-                self.resolve_expr(expr);
-            }
         }
     }
 
     fn resolve_stmt(&mut self, stmt: &mut Stmt) {
-        eprintln!("Visiting Stmt: {:?}", stmt);
         match stmt {
             Stmt::ExprStmt(expr) => self.resolve_expr(expr),
             Stmt::VarDecl(decl) => {

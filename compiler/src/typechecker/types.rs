@@ -1,10 +1,9 @@
 use std::collections::HashMap;
-use crate::resolver::Project;
-use crate::error::{AtlasError, Span};
+use crate::error::Span;
 use crate::lexer::IntSuffix;
 #[allow(unused_imports)]
 use crate::parser::{
-    SourceFile, Item, FunctionDecl, ExternFnDecl, Stmt, VarDecl, ConstDecl, Assign, IfStmt, WhileStmt, Block, Expr, BinOp, UnaryOp, TypeExpr, StructDecl, FieldDecl, Pattern, EnumDecl, ChoiceDecl, MatchCase,
+    SourceFile, Item, FunctionDecl, ExternFnDecl, Stmt, VarDecl, ConstDecl, Assign, IfStmt, WhileStmt, Block, Expr, ExprId, BinOp, UnaryOp, TypeExpr, StructDecl, FieldDecl, Pattern, EnumDecl, ChoiceDecl, MatchCase,
     WhereClause, ConstraintSignature, ClassField, ClassMethod, Param, ChoiceVariant, ClassDecl
 };
 use super::helpers::mangle_type_name;
@@ -97,15 +96,17 @@ pub struct FnSignature {
     pub ret_ty: AtlasType,
 }
 
+#[derive(Debug, Clone)]
 pub struct TypedAST {
     pub fn_sigs: HashMap<String, FnSignature>,
-    pub expr_types: HashMap<usize, AtlasType>,
+    pub expr_types: HashMap<ExprId, AtlasType>,
     pub structs: HashMap<String, StructType>,
     pub classes: HashMap<String, ClassType>,
     pub enums: HashMap<String, EnumType>,
     pub choices: HashMap<String, ChoiceType>,
     pub mangled_calls: HashMap<Span, String>,
-    pub overloaded_operators: HashMap<usize, String>,
+    pub overloaded_operators: HashMap<ExprId, String>,
+    pub precompiled_ir: Option<String>,
 }
 
 pub fn resolve_type(
@@ -193,6 +194,7 @@ pub fn type_expr_to_string(te: &TypeExpr) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn map_suffix(suffix: IntSuffix) -> AtlasType {
     match suffix {
         IntSuffix::I8 => AtlasType::Int8,

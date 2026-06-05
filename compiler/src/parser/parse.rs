@@ -871,68 +871,7 @@ impl<'src> Parser<'src> {
                 span,
             },
             Token::Identifier(name) => {
-                if name == "cast" && self.peek() == &Token::Lt {
-                    self.advance(); // consume "<"
-                    let target_ty = self.parse_type_expr()?;
-                    self.expect(&Token::Gt)?;
-                    self.expect(&Token::LParen)?;
-                    let expr = self.parse_expr(0)?;
-                    let end_span = self.expect(&Token::RParen)?;
-                    Expr::Cast {
-                        target_ty,
-                        expr: Box::new(expr),
-                        span: Span::new(span.start, end_span.end),
-                    }
-                } else if name == "memory" && self.peek() == &Token::ColonColon 
-                    && matches!(self.peek_nth(1), Token::Identifier(ref n) if n == "sizeof") 
-                    && self.peek_nth(2) == &Token::Lt 
-                {
-                    self.advance(); // consume "::"
-                    self.advance(); // consume "sizeof"
-                    self.advance(); // consume "<"
-                    let ty = self.parse_type_expr()?;
-                    self.expect(&Token::Gt)?;
-                    self.expect(&Token::LParen)?;
-                    let end_span = self.expect(&Token::RParen)?;
-                    Expr::SizeOf {
-                        ty,
-                        span: Span::new(span.start, end_span.end),
-                    }
-                } else if name == "memory" && self.peek() == &Token::ColonColon 
-                    && matches!(self.peek_nth(1), Token::Identifier(ref n) if n == "destroy") 
-                    && self.peek_nth(2) == &Token::Lt 
-                {
-                    self.advance(); // consume "::"
-                    self.advance(); // consume "destroy"
-                    self.advance(); // consume "<"
-                    let ty = self.parse_type_expr()?;
-                    self.expect(&Token::Gt)?;
-                    self.expect(&Token::LParen)?;
-                    let expr = self.parse_expr(0)?;
-                    let end_span = self.expect(&Token::RParen)?;
-                    Expr::Destroy {
-                        type_arg: Box::new(ty.0),
-                        expr: Box::new(expr),
-                        span: Span::new(span.start, end_span.end),
-                    }
-                } else if name == "memory" && self.peek() == &Token::ColonColon 
-                    && matches!(self.peek_nth(1), Token::Identifier(ref n) if n == "destroy") 
-                    && self.peek_nth(2) == &Token::Lt 
-                {
-                    self.advance(); // consume "::"
-                    self.advance(); // consume "destroy"
-                    self.advance(); // consume "<"
-                    let ty = self.parse_type_expr()?;
-                    self.expect(&Token::Gt)?;
-                    self.expect(&Token::LParen)?;
-                    let expr = self.parse_expr(0)?;
-                    let end_span = self.expect(&Token::RParen)?;
-                    Expr::Destroy {
-                        type_arg: Box::new(ty.0),
-                        expr: Box::new(expr),
-                        span: Span::new(span.start, end_span.end),
-                    }
-                } else if self.peek() == &Token::ColonColon {
+                if self.peek() == &Token::ColonColon {
                     let mut path = vec![name];
                     let mut end_span = span;
                     while self.peek() == &Token::ColonColon {
@@ -941,29 +880,31 @@ impl<'src> Parser<'src> {
                         path.push(next_id);
                         end_span = next_span;
                     }
+                    let type_args = if self.peek() == &Token::Lt {
+                        self.try_parse_generic_call_type_args()
+                    } else {
+                        None
+                    };
                     if path.len() >= 2 {
                         let member = path.pop().unwrap();
                         let class_name = path.join("::");
                         if self.peek() == &Token::LParen {
-                            self.advance();
-                            let mut args = Vec::new();
-                            if self.peek() != &Token::RParen {
-                                loop {
-                                    let arg = self.parse_expr(0)?;
-                                    args.push(arg);
-                                    if self.peek() == &Token::Comma {
-                                        self.advance();
-                                    } else {
-                                        break;
-                                    }
+                            let (args, r_span) = self.parse_call_args()?;
+                            if let Some(type_args) = type_args {
+                                Expr::GenericStaticCall {
+                                    class_name,
+                                    method_name: member,
+                                    type_args,
+                                    args,
+                                    span: Span::new(span.start, r_span.end),
                                 }
-                            }
-                            let r_span = self.expect(&Token::RParen)?;
-                            Expr::StaticCall {
-                                class_name,
-                                method_name: member,
-                                args,
-                                span: Span::new(span.start, r_span.end),
+                            } else {
+                                Expr::StaticCall {
+                                    class_name,
+                                    method_name: member,
+                                    args,
+                                    span: Span::new(span.start, r_span.end),
+                                }
                             }
                         } else {
                             Expr::StaticMember {
@@ -975,21 +916,23 @@ impl<'src> Parser<'src> {
                     } else {
                         Expr::Var { name: path[0].clone(), span }
                     }
-                } else if self.peek() == &Token::LParen {
-                    self.advance();
-                    let mut args = Vec::new();
-                    if self.peek() != &Token::RParen {
-                        loop {
-                            let arg = self.parse_expr(0)?;
-                            args.push(arg);
-                            if self.peek() == &Token::Comma {
-                                self.advance();
-                            } else {
-                                break;
-                            }
+                } else if self.peek() == &Token::Lt {
+                    if let Some(type_args) = self.try_parse_generic_call_type_args() {
+                        let (args, end_span) = self.parse_call_args()?;
+                        Expr::GenericCall {
+                            callee: name,
+                            type_args,
+                            args,
+                            span: Span::new(span.start, end_span.end),
+                        }
+                    } else {
+                        Expr::Var {
+                            name,
+                            span,
                         }
                     }
-                    let end_span = self.expect(&Token::RParen)?;
+                } else if self.peek() == &Token::LParen {
+                    let (args, end_span) = self.parse_call_args()?;
                     Expr::Call {
                         callee: name,
                         args,
@@ -1257,6 +1200,51 @@ impl<'src> Parser<'src> {
             });
             None
         }
+    }
+
+    fn parse_generic_call_type_args(&mut self) -> Option<Vec<Spanned<TypeExpr>>> {
+        self.expect(&Token::Lt)?;
+        let mut type_args = Vec::new();
+        loop {
+            type_args.push(self.parse_type_expr()?);
+            if self.peek() == &Token::Comma {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        self.expect(&Token::Gt)?;
+        Some(type_args)
+    }
+
+    fn try_parse_generic_call_type_args(&mut self) -> Option<Vec<Spanned<TypeExpr>>> {
+        let saved_cursor = self.cursor;
+        let saved_errors = self.errors.len();
+        let parsed = self.parse_generic_call_type_args();
+        if parsed.is_some() && self.peek() == &Token::LParen {
+            return parsed;
+        }
+        self.cursor = saved_cursor;
+        self.errors.truncate(saved_errors);
+        None
+    }
+
+    fn parse_call_args(&mut self) -> Option<(Vec<Expr>, Span)> {
+        self.expect(&Token::LParen)?;
+        let mut args = Vec::new();
+        if self.peek() != &Token::RParen {
+            loop {
+                let arg = self.parse_expr(0)?;
+                args.push(arg);
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+        }
+        let end_span = self.expect(&Token::RParen)?;
+        Some((args, end_span))
     }
 
     fn synchronize(&mut self) {

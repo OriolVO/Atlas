@@ -59,6 +59,7 @@ Ok(SourceFile(
         ),
       ],
       methods: [],
+      structs: [],
       span: Span(
         start: 0,
         end: 52,

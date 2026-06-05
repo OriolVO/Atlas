@@ -1,5 +1,5 @@
-use crate::error::{AtlasError, Span};
-use crate::lexer::{IntSuffix, Token, Spanned};
+use crate::error::Span;
+use crate::lexer::{IntSuffix, Spanned};
 use serde::{Deserialize, Serialize};
 
 // ==========================================
@@ -9,6 +9,15 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SourceFile {
     pub items: Vec<Item>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ExprId(pub u64);
+
+impl ExprId {
+    pub fn from_span(span: Span) -> Self {
+        Self(((span.start as u64) << 32) | (span.end as u64))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -208,6 +217,12 @@ pub enum Expr {
         args: Vec<Expr>,
         span: Span,
     },
+    GenericCall {
+        callee: String,
+        type_args: Vec<Spanned<TypeExpr>>,
+        args: Vec<Expr>,
+        span: Span,
+    },
     StructInit {
         struct_name: String,
         fields: Vec<(Spanned<String>, Expr)>,
@@ -227,6 +242,13 @@ pub enum Expr {
     StaticCall {
         class_name: String,
         method_name: String,
+        args: Vec<Expr>,
+        span: Span,
+    },
+    GenericStaticCall {
+        class_name: String,
+        method_name: String,
+        type_args: Vec<Spanned<TypeExpr>>,
         args: Vec<Expr>,
         span: Span,
     },
@@ -341,6 +363,10 @@ pub enum TypeExpr {
 
 
 impl Expr {
+    pub fn id(&self) -> ExprId {
+        ExprId::from_span(self.span())
+    }
+
     pub fn span(&self) -> Span {
         match self {
             Expr::IntLit { span, .. } => *span,
@@ -353,10 +379,12 @@ impl Expr {
             Expr::Unary { span, .. } => *span,
             Expr::Group { span, .. } => *span,
             Expr::Call { span, .. } => *span,
+            Expr::GenericCall { span, .. } => *span,
             Expr::StructInit { span, .. } => *span,
             Expr::MemberAccess { span, .. } => *span,
             Expr::MethodCall { span, .. } => *span,
             Expr::StaticCall { span, .. } => *span,
+            Expr::GenericStaticCall { span, .. } => *span,
             Expr::SizeOf { span, .. } => *span,
             Expr::Cast { span, .. } => *span,
             Expr::Destroy { span, .. } => *span,

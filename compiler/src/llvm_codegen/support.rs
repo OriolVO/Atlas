@@ -1,8 +1,10 @@
+#![allow(dead_code, unused_imports)]
+
 use std::collections::HashMap;
 use crate::error::{AtlasError, Span};
 use crate::typechecker::{AtlasType, FnSignature, TypedAST, StructType, ClassType, EnumType, ChoiceType, resolve_type};
 use crate::parser::{
-    SourceFile, Item, ExternFnDecl, Stmt, Block, Expr, BinOp, UnaryOp, IfStmt, WhileStmt, Pattern, TypeExpr
+    SourceFile, Item, ExternFnDecl, Stmt, Block, Expr, ExprId, BinOp, UnaryOp, IfStmt, WhileStmt, Pattern, TypeExpr
 };
 
 #[allow(dead_code)]
@@ -110,7 +112,7 @@ pub struct Codegen {
     globals: String,
     scopes: Vec<Scope>,
     fn_sigs: HashMap<String, FnSignature>,
-    expr_types: HashMap<usize, AtlasType>,
+    expr_types: HashMap<ExprId, AtlasType>,
     structs: HashMap<String, StructType>,
     classes: HashMap<String, ClassType>,
     has_terminator: bool,
@@ -118,6 +120,5 @@ pub struct Codegen {
     enums: HashMap<String, EnumType>,
     choices: HashMap<String, ChoiceType>,
     mangled_calls: HashMap<Span, String>,
-    overloaded_operators: HashMap<usize, String>,
+    overloaded_operators: HashMap<ExprId, String>,
 }
-

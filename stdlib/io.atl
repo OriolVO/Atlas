@@ -74,18 +74,16 @@ export fn println_str(s: @char) {
 // Generic print that relies on compiler intercept
 export fn print<T>(val: T)
 where T (
-    fn format(self): string::String;
+    fn format(self): String;
 )
 {
-    var str = val.format();
-    print_str(str.c_str());
+    // Temporarily a no-op while generic return member typing is unstable.
 }
 
 export fn println<T>(val: T)
 where T (
-    fn format(self): string::String;
+    fn format(self): String;
 )
 {
-    var str = val.format();
-    println_str(str.c_str());
+    // Temporarily a no-op while generic return member typing is unstable.
 }

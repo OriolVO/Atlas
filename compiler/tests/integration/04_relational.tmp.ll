@@ -114,3 +114,4 @@ entry:
     %cmp = icmp eq i1 %val, %other
     ret i1 %cmp
 }
+

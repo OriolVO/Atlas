@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 
 use crate::error::Span;
@@ -190,15 +192,6 @@ pub(crate) fn substitute_type_expr(te: &TypeExpr, substitutions: &HashMap<String
 
 pub(crate) fn substitute_expr(expr: &Expr, subs: &HashMap<String, TypeExpr>) -> Expr {
     match expr {
-        Expr::SizeOf { ty, span } => Expr::SizeOf {
-            ty: (substitute_type_expr(&ty.0, subs), ty.1),
-            span: *span,
-        },
-        Expr::Cast { target_ty, expr, span } => Expr::Cast {
-            target_ty: (substitute_type_expr(&target_ty.0, subs), target_ty.1),
-            expr: Box::new(substitute_expr(expr, subs)),
-            span: *span,
-        },
         Expr::Binary { op, lhs, rhs, span } => Expr::Binary {
             op: *op,
             lhs: Box::new(substitute_expr(lhs, subs)),
