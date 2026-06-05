@@ -148,15 +148,29 @@ fn build_single(
         return;
     }
 
-    let ir = match legacy_backend::compile_to_ir(&file, false) {
-        Ok(ir) => ir,
-        Err(err) => {
-            eprintln!("error: {}", err);
-            process::exit(1);
-        }
-    };
+    let typechecker = TypeChecker::new();
+    match typechecker.check(&mut ast) {
+        Ok(typed_ast) => emit_binary(
+            typed_ast,
+            &ast,
+            &file_name,
+            &source,
+            dump_ir,
+            emit_ir,
+            output.unwrap_or_else(|| file.with_extension("")),
+        ),
+        Err(_) => {
+            let ir = match legacy_backend::compile_to_ir(&file, false) {
+                Ok(ir) => ir,
+                Err(err) => {
+                    eprintln!("error: {}", err);
+                    process::exit(1);
+                }
+            };
 
-    emit_ir_output(ir, dump_ir, emit_ir, output.unwrap_or_else(|| file.with_extension("")));
+            emit_ir_output(ir, dump_ir, emit_ir, output.unwrap_or_else(|| file.with_extension("")));
+        }
+    }
 }
 
 // ─── Multi-file project compilation ──────────────────────────────────────────

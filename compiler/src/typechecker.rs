@@ -5,8 +5,10 @@ use crate::parser::SourceFile;
 use crate::resolver::Project;
 
 mod helpers;
+mod native;
 mod types;
 
+pub use self::native::NativeTypeChecker;
 pub use self::types::*;
 #[allow(unused_imports)]
 use self::helpers::*;
@@ -19,18 +21,41 @@ impl TypeChecker {
     }
 
     pub fn check(&self, _ast: &mut SourceFile) -> Result<TypedAST, Vec<AtlasError>> {
-        Err(vec![AtlasError::TypeError {
-            span: Span::new(0, 0),
-            message: "single-file typechecking is temporarily unavailable after the ongoing compiler refactor".to_string(),
-            hint: Some("use multi-file project mode while the native typechecker body is being rebuilt".to_string()),
-        }])
+        match NativeTypeChecker::new().try_check(_ast) {
+            native::NativeSingleCheck::Typed(typed) => Ok(typed),
+            native::NativeSingleCheck::Unsupported => Err(vec![AtlasError::TypeError {
+                span: Span::new(0, 0),
+                message: "single-file typechecking is not supported natively for this program yet".to_string(),
+                hint: Some("the single-file CLI currently falls back separately to the legacy backend".to_string()),
+            }]),
+            native::NativeSingleCheck::Errors(errors) => Err(errors),
+        }
     }
 
     pub fn check_project(
         &self,
         project: &mut Project,
     ) -> Result<TypedAST, Vec<(String, String, Vec<AtlasError>)>> {
-        let (entry_path, source) = match project.sources.get("main") {
+        if use_native_backend() {
+            return match NativeTypeChecker::new().try_check_project(project) {
+                native::NativeProjectCheck::Typed(typed) => Ok(typed),
+                native::NativeProjectCheck::Unsupported => fallback_legacy_project(project),
+                native::NativeProjectCheck::Errors(errors) => Err(errors),
+            };
+        }
+
+        match NativeTypeChecker::new().try_check_project(project) {
+            native::NativeProjectCheck::Typed(typed) => Ok(typed),
+            native::NativeProjectCheck::Unsupported => fallback_legacy_project(project),
+            native::NativeProjectCheck::Errors(errors) => Err(errors),
+        }
+    }
+}
+
+fn fallback_legacy_project(
+    project: &mut Project,
+) -> Result<TypedAST, Vec<(String, String, Vec<AtlasError>)>> {
+    let (entry_path, source) = match project.sources.get("main") {
             Some((path, source)) => (path.clone(), source.clone()),
             None => {
                 return Err(vec![(
@@ -45,7 +70,7 @@ impl TypeChecker {
             }
         };
 
-        match legacy_backend::compile_to_ir(&entry_path, true) {
+    match legacy_backend::compile_to_ir(&entry_path, true) {
             Ok(ir) => Ok(TypedAST {
                 fn_sigs: HashMap::new(),
                 expr_types: HashMap::new(),
@@ -67,5 +92,10 @@ impl TypeChecker {
                 }],
             )]),
         }
-    }
+}
+
+fn use_native_backend() -> bool {
+    std::env::var("ATLAS_USE_NATIVE_BACKEND")
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false)
 }

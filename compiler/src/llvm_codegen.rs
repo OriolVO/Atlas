@@ -2,8 +2,11 @@ use crate::error::AtlasError;
 use crate::parser::SourceFile;
 use crate::typechecker::TypedAST;
 
+mod native;
 #[allow(dead_code)]
 mod support;
+
+pub use self::native::NativeCodegen;
 
 pub struct Codegen {
     typed_ast: TypedAST,
@@ -14,12 +17,11 @@ impl Codegen {
         Self { typed_ast }
     }
 
-    pub fn generate(&self, _ast: &SourceFile) -> Result<String, AtlasError> {
-        self.typed_ast
-            .precompiled_ir
-            .clone()
-            .ok_or_else(|| AtlasError::CodegenError {
-                message: "native LLVM codegen is temporarily unavailable after the ongoing refactor".to_string(),
-            })
+    pub fn generate(&self, ast: &SourceFile) -> Result<String, AtlasError> {
+        if let Some(ir) = self.typed_ast.precompiled_ir.clone() {
+            return Ok(ir);
+        }
+
+        NativeCodegen::new(self.typed_ast.clone()).generate(ast)
     }
 }
