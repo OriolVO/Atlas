@@ -1,0 +1,8 @@
+---
+source: compiler/tests/parser_snapshot.rs
+expression: res
+---
+Ok(Return(None, Span(
+  start: 0,
+  end: 7,
+)))

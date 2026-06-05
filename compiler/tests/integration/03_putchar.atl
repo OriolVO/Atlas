@@ -1,0 +1,9 @@
+// Exit Code: 0
+// Output: A
+extern "C" fn putchar(c: int32): int32;
+
+fn main(): int {
+    putchar(65i32);
+    putchar(10i32);
+    return 0;
+}

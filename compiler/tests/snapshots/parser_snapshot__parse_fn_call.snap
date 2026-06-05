@@ -1,0 +1,29 @@
+---
+source: compiler/tests/parser_snapshot.rs
+expression: res
+---
+Ok(Call(
+  callee: "foo",
+  args: [
+    IntLit(
+      value: 1,
+      suffix: None,
+      span: Span(
+        start: 4,
+        end: 5,
+      ),
+    ),
+    IntLit(
+      value: 2,
+      suffix: None,
+      span: Span(
+        start: 7,
+        end: 8,
+      ),
+    ),
+  ],
+  span: Span(
+    start: 0,
+    end: 9,
+  ),
+))

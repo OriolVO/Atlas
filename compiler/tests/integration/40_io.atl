@@ -1,0 +1,36 @@
+import io;
+import string;
+
+extern "C" fn exit(code: int32);
+
+fn main(): int {
+    var f = io::File();
+    
+    var file_name = string::String::from("test_output.txt");
+    var write_mode = string::String::from("w");
+    
+    if !f.open(file_name.c_str(), write_mode.c_str()) {
+        exit(cast<int32>(1));
+    }
+    
+    var content = string::String::from("Hello File IO!");
+    if !f.write_string(content.c_str()) {
+        exit(cast<int32>(2));
+    }
+    
+    f.close();
+    
+    var read_mode = string::String::from("r");
+    if !f.open(file_name.c_str(), read_mode.c_str()) {
+        exit(cast<int32>(3));
+    }
+    
+    var c1 = f.read_char();
+    if c1 != cast<int>('H') { exit(cast<int32>(4)); }
+    
+    f.close();
+    
+    // RAII handles memory automatically
+    
+    return 0;
+}

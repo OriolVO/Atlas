@@ -1,0 +1,13 @@
+// Exit Code: 30
+
+fn main(): int {
+    var arr: int[5];
+    arr[0] = 5;
+    arr[1] = 10;
+    arr[2] = 15;
+    arr[3] = 20;
+    arr[4] = 25;
+
+    var sum = arr[0] + arr[1] + arr[2];
+    return sum;
+}

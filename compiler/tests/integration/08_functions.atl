@@ -1,0 +1,12 @@
+// Exit Code: 29
+fn square(x: int): int {
+    return x * x;
+}
+
+fn sum_of_squares(a: int, b: int): int {
+    return square(a) + square(b);
+}
+
+fn main(): int {
+    return sum_of_squares(5, 2);
+}

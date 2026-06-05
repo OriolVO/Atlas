@@ -1,0 +1,6 @@
+fn generic_box<T>(val: @T) {}
+fn main(): int {
+    var x = 10;
+    generic_box(@x);
+    return 0;
+}

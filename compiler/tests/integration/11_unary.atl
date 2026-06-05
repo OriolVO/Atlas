@@ -1,0 +1,9 @@
+// Exit Code: 5
+fn main(): int {
+    var x = -5;
+    var b = not false;
+    if b {
+        return -x;
+    }
+    return 0;
+}

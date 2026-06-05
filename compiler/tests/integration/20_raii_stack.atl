@@ -1,0 +1,30 @@
+// Exit Code: 42
+struct State {
+    order: int;
+}
+
+class Logger {
+    public id: int;
+    public state: @State;
+
+    fn init(self: @Logger, id: int, st: @State) {
+        (*self).id = id;
+        (*self).state = st;
+    }
+
+    fn destroy(self: @Logger) {
+        (*(*self).state).order = (*(*self).state).order * 10 + (*self).id;
+    }
+}
+
+fn test_stack(st: @State) {
+    var a = Logger(1, st);
+    var b = Logger(2, st);
+}
+
+fn main(): int {
+    var st = State { order: 0 };
+    test_stack(@st);
+    
+    return st.order + 21;
+}

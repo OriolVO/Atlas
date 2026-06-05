@@ -1,0 +1,14 @@
+---
+source: compiler/tests/parser_snapshot.rs
+expression: res
+---
+Ok(Return(Some(Var(
+  name: "x",
+  span: Span(
+    start: 7,
+    end: 8,
+  ),
+)), Span(
+  start: 0,
+  end: 9,
+)))

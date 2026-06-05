@@ -1,0 +1,67 @@
+import memory;
+
+export class String {
+    public data: @char;
+    public len: int;
+
+    fn init(self: @String) {
+        (*self).data = memory::malloc(1);
+        (*self).data[0] = '\0';
+        (*self).len = 0;
+    }
+
+    fn destroy(self: @String) {
+        memory::free((*self).data);
+    }
+
+    fn length(self: @String): int {
+        return (*self).len;
+    }
+
+    public fn c_str(self: @String): @char {
+        return (*self).data;
+    }
+
+    fn from(chars: []char): String {
+        var s = String();
+        memory::free(s.data);
+
+        var n = chars.len;
+        s.len = n;
+        s.data = memory::malloc(n + 1);
+
+        var i = 0;
+        while i < n {
+            s.data[i] = chars[i];
+            i = i + 1;
+        }
+        s.data[n] = '\0';
+
+        return s;
+    }
+
+    public fn hash(self: @String): int {
+        var h = 0;
+        var i = 0;
+        while i < (*self).len {
+            // Simple string hashing: hash = hash * 31 + char
+            h = h * 31 + cast<int>((*self).data[i]);
+            i = i + 1;
+        }
+        return h;
+    }
+
+    public fn equals(self: @String, other: @String): bool {
+        if (*self).len != (*other).len {
+            return false;
+        }
+        var i = 0;
+        while i < (*self).len {
+            if (*self).data[i] != (*other).data[i] {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+}

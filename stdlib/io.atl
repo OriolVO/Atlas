@@ -1,0 +1,91 @@
+import string;
+
+export extern "C" fn putchar(c: int32): int32;
+export extern "C" fn puts(s: @char): int32;
+export extern "C" fn fopen(filename: @char, mode: @char): @char;
+export extern "C" fn fclose(stream: @char): int32;
+export extern "C" fn fputs(s: @char, stream: @char): int32;
+export extern "C" fn fgetc(stream: @char): int32;
+
+export class File {
+    public handle: @char?;
+    public is_open: bool;
+
+    public fn init(self: @File) {
+        (*self).handle = null;
+        (*self).is_open = false;
+    }
+
+    public fn destroy(self: @File) {
+        if (*self).is_open {
+            self.close();
+        }
+    }
+
+    public fn open(self: @File, filename: @char, mode: @char): bool {
+        (*self).handle = fopen(filename, mode);
+        if (*self).handle != null {
+            (*self).is_open = true;
+            return true;
+        }
+        return false;
+    }
+
+    public fn close(self: @File) {
+        if (*self).is_open {
+            fclose(cast<@char>((*self).handle));
+            (*self).is_open = false;
+            (*self).handle = null;
+        }
+    }
+
+    public fn write_string(self: @File, s: @char): bool {
+        if (*self).is_open {
+            return fputs(s, cast<@char>((*self).handle)) >= 0i32;
+        }
+        return false;
+    }
+
+    public fn read_char(self: @File): int {
+        if (*self).is_open {
+            return cast<int>(fgetc(cast<@char>((*self).handle)));
+        }
+        return -1; // EOF
+    }
+}
+
+// Global print functions
+export fn print_char(c: char) {
+    putchar(cast<int32>(c));
+}
+
+export fn print_str(s: @char) {
+    var i = 0;
+    while s[i] != '\0' {
+        putchar(cast<int32>(s[i]));
+        i = i + 1;
+    }
+}
+
+export fn println_str(s: @char) {
+    puts(s);
+}
+
+// Generic print that relies on compiler intercept
+export fn print<T>(val: T)
+where T (
+    fn format(self): string::String;
+)
+{
+    var str = val.format();
+    print_str(str.c_str());
+}
+
+export fn println<T>(val: T)
+where T (
+    fn format(self): string::String;
+)
+{
+    var str = val.format();
+    println_str(str.c_str());
+}

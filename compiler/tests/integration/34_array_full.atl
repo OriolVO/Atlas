@@ -1,0 +1,31 @@
+import array;
+import string;
+
+fn main(): int {
+    var arr: array::Array<string::String> = array::Array();
+    arr.push(string::String::from("Hello"));
+    arr.push(string::String::from("World"));
+    
+    var s = arr.pop();
+    
+    if arr.length() != 1 {
+        return 1;
+    }
+    
+    arr.insert(0, string::String::from("First"));
+    if arr.length() != 2 {
+        return 2;
+    }
+    
+    var first = arr.remove(0);
+    if arr.length() != 1 {
+        return 3;
+    }
+    
+    arr.clear();
+    if arr.length() != 0 {
+        return 4;
+    }
+    
+    return 0;
+}

@@ -1,0 +1,183 @@
+// stdlib/array.atl
+// Generic dynamic array
+
+import memory;
+import io;
+
+extern "C" fn exit(code: int32);
+
+export class Array<T> {
+    public data: @T?;
+    public len: int;
+    public cap: int;
+
+    public fn init(self: @Array<T>) {
+        (*self).len = 0;
+        (*self).cap = 0;
+        (*self).data = null;
+    }
+
+    public fn length(self: @Array<T>): int {
+        return (*self).len;
+    }
+
+    public fn capacity(self: @Array<T>): int {
+        return (*self).cap;
+    }
+
+    public fn push(self: @Array<T>, item: T) {
+        if (*self).len == (*self).cap {
+            var new_cap = 4;
+            if (*self).cap > 0 {
+                new_cap = (*self).cap * 2;
+            }
+            var new_data = cast<@T>(memory::malloc(new_cap * memory::sizeof<T>()));
+            if (*self).data != null {
+                memory::memcpy(
+                    cast<@char>(new_data), 
+                    cast<@char>((*self).data), 
+                    (*self).len * memory::sizeof<T>()
+                );
+                memory::free(cast<@char>((*self).data));
+            }
+            (*self).cap = new_cap;
+            (*self).data = new_data;
+        }
+        
+        memory::memcpy(
+            cast<@char>(@(*self).data[(*self).len]), 
+            cast<@char>(@item), 
+            memory::sizeof<T>()
+        );
+        (*self).len = (*self).len + 1;
+    }
+
+    public fn pop(self: @Array<T>): T {
+        if (*self).len == 0 {
+            exit(cast<int32>(1));
+        }
+        (*self).len = (*self).len - 1;
+        // The caller takes ownership of the returned item, so we don't call memory::destroy on it.
+        return (*self).data[(*self).len];
+    }
+
+    public fn operator[](self: @Array<T>, index: int): T {
+        if index < 0 || index >= (*self).len {
+            exit(cast<int32>(1));
+        }
+        // Returns by value, so it triggers a copy prevention error for classes if assigned,
+        // which is correct (users should pass by reference or clone).
+        return (*self).data[index];
+    }
+
+    public fn operator[]=(self: @Array<T>, index: int, item: T) {
+        if index < 0 || index >= (*self).len {
+            exit(cast<int32>(1));
+        }
+        // We overwrite the existing item, so we MUST destroy the old item first.
+        memory::destroy<T>((*self).data[index]);
+        memory::memcpy(
+            cast<@char>(@(*self).data[index]), 
+            cast<@char>(@item), 
+            memory::sizeof<T>()
+        );
+    }
+
+    public fn insert(self: @Array<T>, index: int, item: T) {
+        if index < 0 || index > (*self).len {
+            exit(cast<int32>(1));
+        }
+        
+        if (*self).len == (*self).cap {
+            var new_cap = 4;
+            if (*self).cap > 0 {
+                new_cap = (*self).cap * 2;
+            }
+            var new_data = cast<@T>(memory::malloc(new_cap * memory::sizeof<T>()));
+            if (*self).data != null {
+                // Copy elements before the index
+                if index > 0 {
+                    memory::memcpy(
+                        cast<@char>(new_data), 
+                        cast<@char>((*self).data), 
+                        index * memory::sizeof<T>()
+                    );
+                }
+                // Copy elements after the index, shifted by 1
+                if index < (*self).len {
+                    memory::memcpy(
+                        cast<@char>(@new_data[index + 1]), 
+                        cast<@char>(@(*self).data[index]), 
+                        ((*self).len - index) * memory::sizeof<T>()
+                    );
+                }
+                memory::free(cast<@char>((*self).data));
+            }
+            (*self).cap = new_cap;
+            (*self).data = new_data;
+        } else {
+            var i = (*self).len;
+            while i > index {
+                memory::memcpy(
+                    cast<@char>(@(*self).data[i]), 
+                    cast<@char>(@(*self).data[i - 1]), 
+                    memory::sizeof<T>()
+                );
+                i = i - 1;
+            }
+        }
+        
+        memory::memcpy(
+            cast<@char>(@(*self).data[index]), 
+            cast<@char>(@item), 
+            memory::sizeof<T>()
+        );
+        (*self).len = (*self).len + 1;
+    }
+
+    public fn remove(self: @Array<T>, index: int): T {
+        if index < 0 || index >= (*self).len {
+            exit(cast<int32>(1));
+        }
+        
+        var temp = cast<@T>(memory::malloc(memory::sizeof<T>()));
+        
+        // Bubble the removed item to the end of the array
+        var i = index;
+        while i < (*self).len - 1 {
+            memory::memcpy(cast<@char>(temp), cast<@char>(@(*self).data[i]), memory::sizeof<T>());
+            memory::memcpy(cast<@char>(@(*self).data[i]), cast<@char>(@(*self).data[i + 1]), memory::sizeof<T>());
+            memory::memcpy(cast<@char>(@(*self).data[i + 1]), cast<@char>(temp), memory::sizeof<T>());
+            i = i + 1;
+        }
+        
+        memory::free(cast<@char>(temp));
+        (*self).len = (*self).len - 1;
+        
+        // Now return the bubbled element directly from the underlying buffer
+        return (*self).data[(*self).len];
+    }
+
+    public fn clear(self: @Array<T>) {
+        var i = 0;
+        while i < (*self).len {
+            memory::destroy<T>((*self).data[i]);
+            i = i + 1;
+        }
+        (*self).len = 0;
+    }
+
+    public fn destroy(self: @Array<T>) {
+        if (*self).data != null {
+            var i = 0;
+            while i < (*self).len {
+                memory::destroy<T>((*self).data[i]);
+                i = i + 1;
+            }
+            memory::free(cast<@char>((*self).data));
+            (*self).data = null;
+        }
+        (*self).cap = 0;
+        (*self).len = 0;
+    }
+}

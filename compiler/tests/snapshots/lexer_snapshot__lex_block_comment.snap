@@ -1,0 +1,14 @@
+---
+source: compiler/tests/lexer_snapshot.rs
+expression: tokens
+---
+[
+  (IntLiteral((42, None)), Span(
+    start: 11,
+    end: 13,
+  )),
+  (Eof, Span(
+    start: 13,
+    end: 13,
+  )),
+]

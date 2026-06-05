@@ -1,0 +1,7 @@
+import math;
+
+fn main(): int {
+    var x: int = math::add(3, 4);
+    var y: int = math::mul(x, 2);
+    return 0;
+}

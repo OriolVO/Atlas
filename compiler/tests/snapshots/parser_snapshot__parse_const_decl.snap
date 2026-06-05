@@ -1,0 +1,23 @@
+---
+source: compiler/tests/parser_snapshot.rs
+expression: res
+---
+Ok(ConstDecl(ConstDecl(
+  name: ("MAX", Span(
+    start: 6,
+    end: 9,
+  )),
+  ty_hint: None,
+  init: IntLit(
+    value: 100,
+    suffix: None,
+    span: Span(
+      start: 12,
+      end: 15,
+    ),
+  ),
+  span: Span(
+    start: 0,
+    end: 16,
+  ),
+)))

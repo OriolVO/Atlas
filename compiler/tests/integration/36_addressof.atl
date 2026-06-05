@@ -1,0 +1,8 @@
+import io;
+import memory;
+fn main(): int {
+    var arr: @int = cast<@int>(memory::malloc(8));
+    arr[0] = 42;
+    var ptr: @int = @arr[0];
+    return *ptr - 42;
+}

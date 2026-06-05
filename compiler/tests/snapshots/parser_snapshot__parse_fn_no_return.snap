@@ -1,0 +1,25 @@
+---
+source: compiler/tests/parser_snapshot.rs
+expression: res
+---
+Ok(SourceFile(
+  items: [
+    FunctionDecl(FunctionDecl(
+      name: ("greet", Span(
+        start: 3,
+        end: 8,
+      )),
+      generic_params: [],
+      params: [],
+      ret_ty: None,
+      where_clauses: [],
+      body: Block(
+        stmts: [],
+        span: Span(
+          start: 11,
+          end: 14,
+        ),
+      ),
+    ), false),
+  ],
+))

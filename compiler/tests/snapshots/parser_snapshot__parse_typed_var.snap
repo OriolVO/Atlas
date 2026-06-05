@@ -1,0 +1,26 @@
+---
+source: compiler/tests/parser_snapshot.rs
+expression: res
+---
+Ok(VarDecl(VarDecl(
+  name: ("x", Span(
+    start: 4,
+    end: 5,
+  )),
+  ty_hint: Some((Named("int32"), Span(
+    start: 7,
+    end: 12,
+  ))),
+  init: Some(IntLit(
+    value: 10,
+    suffix: None,
+    span: Span(
+      start: 15,
+      end: 17,
+    ),
+  )),
+  span: Span(
+    start: 0,
+    end: 18,
+  ),
+)))

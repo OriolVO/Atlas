@@ -1,0 +1,22 @@
+[package]
+name    = "atlas"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "atlas"
+path = "src/lib.rs"
+
+[[bin]]
+name = "atlas"
+path = "src/main.rs"
+
+[dependencies]
+logos   = { workspace = true }
+clap    = { workspace = true }
+miette  = { workspace = true }
+thiserror = { workspace = true }
+serde   = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }

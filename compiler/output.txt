@@ -1,0 +1,118 @@
+warning: unreachable pattern
+   --> compiler/src/resolver.rs:549:13
+    |
+549 |             _ => {}
+    |             ^ no value can reach this
+    |
+note: multiple earlier patterns match some of the same values
+   --> compiler/src/resolver.rs:549:13
+    |
+377 |             Expr::Var { name, span: _ } => {
+    |             --------------------------- matches some of the same values
+...
+384 |             Expr::Call { callee, args, span: _ } => {
+    |             ------------------------------------ matches some of the same values
+...
+398 |             Expr::StaticCall { class_name, method_name, args, span } => {
+    |             -------------------------------------------------------- matches some of the same values
+...
+454 |             Expr::StaticMember { class_name, member_name, span } => {
+    |             ---------------------------------------------------- matches some of the same values
+...
+549 |             _ => {}
+    |             ^ ...and 14 other patterns collectively make this unreachable
+    = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
+
+warning: unreachable pattern
+    --> compiler/src/typechecker.rs:3193:9
+     |
+3121 |         Expr::SizeOf { ty, span } => Expr::SizeOf {
+     |         ------------------------- matches all the relevant values
+...
+3193 |         Expr::SizeOf { ty, span } => Expr::SizeOf {
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^ no value can reach this
+
+warning: unreachable pattern
+    --> compiler/src/typechecker.rs:3197:9
+     |
+3125 |         Expr::Cast { target_ty, expr, span } => Expr::Cast {
+     |         ------------------------------------ matches all the relevant values
+...
+3197 |         Expr::Cast { target_ty, expr, span } => Expr::Cast {
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no value can reach this
+
+warning: unused variable: `destroy_method`
+    --> compiler/src/llvm_codegen.rs:1419:37
+     |
+1419 |                         if let Some(destroy_method) = cls.methods.get("destroy") {
+     |                                     ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_destroy_method`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `monomorphized_types` is never read
+   --> compiler/src/typechecker.rs:226:5
+    |
+207 | pub struct TypeChecker {
+    |            ----------- field in this struct
+...
+226 |     monomorphized_types: std::collections::HashSet<String>,
+    |     ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `type_decls` is never read
+   --> compiler/src/llvm_codegen.rs:120:5
+    |
+103 | pub struct Codegen {
+    |            ------- field in this struct
+...
+120 |     type_decls: String,
+    |     ^^^^^^^^^^
+
+warning: `atlas` (lib) generated 6 warnings (run `cargo fix --lib -p atlas` to apply 1 suggestion)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running `/home/oriolvo/Atlas/target/debug/atlas build tests/integration/28_generics.atl`
+atlas::type_error
+
+  × type error: class 'memory' has no static method named 'new_box'
+    ╭─[tests/integration/28_generics.atl:36:13]
+ 35 │     // Test generic class on heap
+ 36 │     var b = memory::new_box(32);
+    ·             ─────────┬─────────
+    ·                      ╰── here
+ 37 │     
+    ╰────
+
+atlas::type_error
+
+  × type error: expected struct, class, pointer, or slice type, found 'Int'
+    ╭─[tests/integration/28_generics.atl:42:23]
+ 41 │ 
+ 42 │     var inner_val = (*b.data);
+    ·                       ───┬──
+    ·                          ╰── here
+ 43 │     b.destroy();
+    ╰────
+
+atlas::type_error
+
+  × type error: cannot dereference non-pointer type 'Int'
+    ╭─[tests/integration/28_generics.atl:42:22]
+ 41 │ 
+ 42 │     var inner_val = (*b.data);
+    ·                      ───┬───
+    ·                         ╰── here
+ 43 │     b.destroy();
+    ╰────
+
+atlas::type_error
+
+  × type error: cannot call method 'destroy' on non-class type 'Int'
+    ╭─[tests/integration/28_generics.atl:43:5]
+ 42 │     var inner_val = (*b.data);
+ 43 │     b.destroy();
+    ·     ┬
+    ·     ╰── here
+ 44 │     return a + inner_val;
+    ╰────
+

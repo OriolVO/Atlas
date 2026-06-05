@@ -1,0 +1,11 @@
+// Exit Code: 2
+fn main(): int {
+    var x = 0;
+    if x > 0 {
+        return 1;
+    } else if x == 0 {
+        return 2;
+    } else {
+        return 3;
+    }
+}

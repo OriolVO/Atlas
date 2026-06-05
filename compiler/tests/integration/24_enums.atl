@@ -1,0 +1,22 @@
+// Exit Code: 42
+
+enum Direction {
+    North,
+    South,
+    East,
+    West
+}
+
+fn dir_to_code(d: Direction): int {
+    match d {
+        Direction::North => { return 10; }
+        Direction::South => { return 20; }
+        Direction::East => { return 30; }
+        Direction::West => { return 42; }
+    };
+}
+
+fn main(): int {
+    var d: Direction = Direction::West;
+    return dir_to_code(d);
+}

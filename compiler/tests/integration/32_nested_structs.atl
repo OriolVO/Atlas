@@ -1,0 +1,57 @@
+extern "C" fn malloc(size: uint): @char;
+extern "C" fn free(ptr: @char): void;
+
+class Parser {
+    struct State {
+        index: uint;
+        depth: uint;
+    }
+
+    private state: @State;
+
+    public fn init(self) {
+        (*self).state = cast<@State>(malloc(cast<uint>(16)));
+        (*(*self).state).index = cast<uint>(0);
+        (*(*self).state).depth = cast<uint>(0);
+    }
+
+    public fn advance(self) {
+        (*(*self).state).index = (*(*self).state).index + cast<uint>(1);
+    }
+
+    public fn get_index(self): uint {
+        return (*(*self).state).index;
+    }
+}
+
+fn local_struct_test(): int {
+    struct LocalPoint {
+        x: int;
+        y: int;
+    }
+
+    var pt = LocalPoint {
+        x: 10,
+        y: 20,
+    };
+
+    return pt.x + pt.y;
+}
+
+export fn main(): int {
+    var p = Parser();
+    p.advance();
+    p.advance();
+    
+    var index = p.get_index();
+    
+    var local_sum = local_struct_test();
+
+    if index == cast<uint>(2) {
+        if local_sum == 30 {
+            return 0;
+        }
+    }
+    
+    return 1;
+}

@@ -1,0 +1,32 @@
+export extern "C" fn malloc(size: int): @char;
+export extern "C" fn free(ptr: @char);
+export extern "C" fn memcpy(dest: @char, src: @char, n: int): @char;
+
+export class Box<T> {
+    public data: @T;
+
+    public fn destroy(self: @Box<T>) {
+        memory::destroy<T>(*((*self).data));
+        free(cast<@char>((*self).data));
+    }
+
+    public fn get_val(self: @Box<T>): T {
+        return *((*self).data);
+    }
+}
+
+export fn new_box<T>(val: @T): Box<T> {
+    var b = Box();
+    var raw = malloc(memory::sizeof<T>());
+    b.data = cast<@T>(raw);
+    memcpy(cast<@char>(b.data), cast<@char>(val), memory::sizeof<T>());
+    
+    // Zero out the source memory to prevent double free when the caller's variable is destroyed
+    var i = 0;
+    while i < memory::sizeof<T>() {
+        (cast<@char>(val))[i] = '\0';
+        i = i + 1;
+    }
+    
+    return b;
+}

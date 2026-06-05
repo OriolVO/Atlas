@@ -1,0 +1,8 @@
+import memory;
+import string;
+
+fn main(): int {
+    var s = string::String::from("Hello");
+    var b = memory::new_box(@s);
+    return 0;
+}

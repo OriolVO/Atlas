@@ -1,0 +1,38 @@
+---
+source: compiler/tests/lexer_snapshot.rs
+expression: tokens
+---
+[
+  (Var, Span(
+    start: 0,
+    end: 3,
+  )),
+  (Identifier("x"), Span(
+    start: 4,
+    end: 5,
+  )),
+  (Colon, Span(
+    start: 5,
+    end: 6,
+  )),
+  (Int32, Span(
+    start: 7,
+    end: 12,
+  )),
+  (Assign, Span(
+    start: 13,
+    end: 14,
+  )),
+  (IntLiteral((10, None)), Span(
+    start: 15,
+    end: 17,
+  )),
+  (Semicolon, Span(
+    start: 17,
+    end: 18,
+  )),
+  (Eof, Span(
+    start: 18,
+    end: 18,
+  )),
+]

@@ -1,0 +1,26 @@
+// Exit Code: 0
+// Output: ABAB
+
+import array;
+import io;
+
+fn main(): int {
+    var arr: array::Array<char> = array::Array();
+    
+    arr.push('A');
+    arr.push('B');
+    
+    // Test get
+    io::putchar(cast<int32>(arr[0]));
+    io::putchar(cast<int32>(arr[1]));
+    
+    // Test pop
+    var b = arr.pop();
+    var a = arr.pop();
+    
+    io::putchar(cast<int32>(a));
+    io::putchar(cast<int32>(b));
+    
+    // Array should be destroyed automatically here via RAII
+    return 0;
+}

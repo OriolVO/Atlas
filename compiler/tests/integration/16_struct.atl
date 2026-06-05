@@ -1,0 +1,21 @@
+// Exit Code: 100
+struct Point {
+    x: int;
+    y: int;
+}
+
+struct Rect {
+    top_left: Point;
+    bottom_right: Point;
+}
+
+fn main(): int {
+    var p1 = Point { x: 10, y: 20 };
+    var p2 = Point { x: 30, y: 40 };
+    var r = Rect { top_left: p1, bottom_right: p2 };
+    
+    // Modify field of nested struct
+    r.bottom_right.y = 40;
+
+    return r.top_left.x + r.top_left.y + r.bottom_right.x + r.bottom_right.y;
+}

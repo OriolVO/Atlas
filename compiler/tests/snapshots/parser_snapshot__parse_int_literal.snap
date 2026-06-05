@@ -1,0 +1,12 @@
+---
+source: compiler/tests/parser_snapshot.rs
+expression: res
+---
+Ok(IntLit(
+  value: 42,
+  suffix: None,
+  span: Span(
+    start: 0,
+    end: 2,
+  ),
+))

@@ -1,0 +1,66 @@
+---
+source: compiler/tests/lexer_snapshot.rs
+expression: tokens
+---
+[
+  (Fn, Span(
+    start: 0,
+    end: 2,
+  )),
+  (Identifier("add"), Span(
+    start: 3,
+    end: 6,
+  )),
+  (LParen, Span(
+    start: 6,
+    end: 7,
+  )),
+  (Identifier("a"), Span(
+    start: 7,
+    end: 8,
+  )),
+  (Colon, Span(
+    start: 8,
+    end: 9,
+  )),
+  (Int, Span(
+    start: 10,
+    end: 13,
+  )),
+  (Comma, Span(
+    start: 13,
+    end: 14,
+  )),
+  (Identifier("b"), Span(
+    start: 15,
+    end: 16,
+  )),
+  (Colon, Span(
+    start: 16,
+    end: 17,
+  )),
+  (Int, Span(
+    start: 18,
+    end: 21,
+  )),
+  (RParen, Span(
+    start: 21,
+    end: 22,
+  )),
+  (Colon, Span(
+    start: 22,
+    end: 23,
+  )),
+  (Int, Span(
+    start: 24,
+    end: 27,
+  )),
+  (LBrace, Span(
+    start: 28,
+    end: 29,
+  )),
+  (Eof, Span(
+    start: 29,
+    end: 29,
+  )),
+]

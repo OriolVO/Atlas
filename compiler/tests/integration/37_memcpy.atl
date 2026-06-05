@@ -1,0 +1,12 @@
+// Exit Code: 42
+// Expected Output:
+import memory;
+
+fn main(): int {
+    var a = cast<@int>(memory::malloc(8));
+    var b = cast<@int>(memory::malloc(8));
+    a[0] = 42;
+    memory::memcpy(cast<@char>(b), cast<@char>(a), 4);
+    var res = b[0];
+    return res;
+}

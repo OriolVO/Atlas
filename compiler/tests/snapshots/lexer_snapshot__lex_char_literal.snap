@@ -1,0 +1,14 @@
+---
+source: compiler/tests/lexer_snapshot.rs
+expression: tokens
+---
+[
+  (CharLiteral('a'), Span(
+    start: 0,
+    end: 3,
+  )),
+  (Eof, Span(
+    start: 3,
+    end: 3,
+  )),
+]

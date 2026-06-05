@@ -1,0 +1,28 @@
+import io;
+import string;
+
+extern "C" fn exit(code: int32);
+
+fn main(): int {
+    // 1. Primitive formatting & equality tests
+    var i_fmt = 42.format();
+    var b_fmt = true.format();
+    var c_fmt = 'A'.format();
+    
+    // We don't have string equality out of the box unless we use .equals()
+    // Wait, the user can just use IO to print them!
+    io::println(42);
+    io::println(false);
+    io::println('Z');
+    
+    if !42.equals(42) { exit(cast<int32>(1)); }
+    if true.equals(false) { exit(cast<int32>(2)); }
+    if !'X'.equals('X') { exit(cast<int32>(3)); }
+    
+    var h1 = 100.hash();
+    if h1 != 100 { exit(cast<int32>(4)); }
+    
+
+    
+    return 0;
+}

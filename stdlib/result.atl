@@ -1,0 +1,4 @@
+export choice Result<T, E> {
+    Ok(T),
+    Error(E)
+}

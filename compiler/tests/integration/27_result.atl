@@ -1,0 +1,31 @@
+// Exit Code: 52
+
+fn compute(val: int): Result<int, int> {
+    if val < 0 {
+        return Result::Error(10);
+    }
+    return Result::Ok(val);
+}
+
+fn try_propagate(val: int): Result<int, int> {
+    var x = compute(val)?;
+    return Result::Ok(x + 2);
+}
+
+fn main(): int {
+    var r1: Result<int, int> = try_propagate(40);
+    var r2: Result<int, int> = try_propagate(-1);
+
+    var res = 0;
+    match r1 {
+        Result::Ok(v) => { res = res + v; }
+        Result::Error(e) => { res = res + e; }
+    };
+
+    match r2 {
+        Result::Ok(v) => { res = res + v; }
+        Result::Error(e) => { res = res + e; }
+    };
+
+    return res;
+}

@@ -1,0 +1,75 @@
+---
+source: compiler/tests/parser_snapshot.rs
+expression: res
+---
+Ok(While(WhileStmt(
+  condition: Binary(
+    op: Lt,
+    lhs: Var(
+      name: "x",
+      span: Span(
+        start: 6,
+        end: 7,
+      ),
+    ),
+    rhs: IntLit(
+      value: 10,
+      suffix: None,
+      span: Span(
+        start: 10,
+        end: 12,
+      ),
+    ),
+    span: Span(
+      start: 6,
+      end: 12,
+    ),
+  ),
+  body: Block(
+    stmts: [
+      Assign(Assign(
+        target: Var(
+          name: "x",
+          span: Span(
+            start: 15,
+            end: 16,
+          ),
+        ),
+        value: Binary(
+          op: Add,
+          lhs: Var(
+            name: "x",
+            span: Span(
+              start: 19,
+              end: 20,
+            ),
+          ),
+          rhs: IntLit(
+            value: 1,
+            suffix: None,
+            span: Span(
+              start: 23,
+              end: 24,
+            ),
+          ),
+          span: Span(
+            start: 19,
+            end: 24,
+          ),
+        ),
+        span: Span(
+          start: 15,
+          end: 25,
+        ),
+      )),
+    ],
+    span: Span(
+      start: 13,
+      end: 27,
+    ),
+  ),
+  span: Span(
+    start: 0,
+    end: 27,
+  ),
+)))

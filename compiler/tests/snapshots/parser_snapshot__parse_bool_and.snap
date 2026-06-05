@@ -1,0 +1,25 @@
+---
+source: compiler/tests/parser_snapshot.rs
+expression: res
+---
+Ok(Binary(
+  op: And,
+  lhs: Var(
+    name: "a",
+    span: Span(
+      start: 0,
+      end: 1,
+    ),
+  ),
+  rhs: Var(
+    name: "b",
+    span: Span(
+      start: 6,
+      end: 7,
+    ),
+  ),
+  span: Span(
+    start: 0,
+    end: 7,
+  ),
+))

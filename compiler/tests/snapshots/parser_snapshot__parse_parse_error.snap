@@ -1,0 +1,14 @@
+---
+source: compiler/tests/parser_snapshot.rs
+expression: res
+---
+Err([
+  ParseError(
+    span: Span(
+      start: 4,
+      end: 5,
+    ),
+    message: "expected identifier, found \'Assign\'",
+    hint: None,
+  ),
+])

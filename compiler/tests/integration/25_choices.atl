@@ -1,0 +1,18 @@
+// Exit Code: 42
+
+choice OptionInt {
+    Some(int),
+    None
+}
+
+fn get_val(o: OptionInt): int {
+    match o {
+        OptionInt::Some(v) => { return v; }
+        OptionInt::None => { return 0; }
+    };
+}
+
+fn main(): int {
+    var o: OptionInt = OptionInt::Some(42);
+    return get_val(o);
+}

@@ -1,0 +1,13 @@
+// Exit Code: 42
+
+fn get_val_or_default(p: @int?): int {
+    if p != null {
+        return *p;
+    }
+    return 42;
+}
+
+fn main(): int {
+    var p: @int? = null;
+    return get_val_or_default(p);
+}

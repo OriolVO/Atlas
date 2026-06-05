@@ -1,0 +1,5 @@
+// Exit Code: 100
+fn main(): int {
+    const LIMIT = 100;
+    return LIMIT;
+}

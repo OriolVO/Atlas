@@ -1,0 +1,16 @@
+// Exit Code: 42
+struct Node {
+    val: int;
+}
+
+fn main(): int {
+    var x = 10;
+    var px = @x;
+    *px = 42;
+    
+    var n = Node { val: 100 };
+    var pn = @n;
+    (*pn).val = x;
+
+    return n.val;
+}

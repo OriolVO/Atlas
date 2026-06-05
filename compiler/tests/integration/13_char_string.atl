@@ -1,0 +1,11 @@
+// Exit Code: 0
+// Output: Hello World
+import string;
+
+extern "C" fn puts(s: @char): int;
+
+fn main(): int {
+    var s = string::String::from("Hello World");
+    puts(s.c_str());
+    return 0;
+}

@@ -1,0 +1,21 @@
+// Exit Code: 45
+
+fn sum_slice(s: []int): int {
+    var sum = 0;
+    var i = 0;
+    while i < s.len {
+        sum = sum + s[i];
+        i = i + 1;
+    }
+    return sum;
+}
+
+fn main(): int {
+    var arr: int[4];
+    arr[0] = 3;
+    arr[1] = 9;
+    arr[2] = 12;
+    arr[3] = 21;
+
+    return sum_slice(arr);
+}

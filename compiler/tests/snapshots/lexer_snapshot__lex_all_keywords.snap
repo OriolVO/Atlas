@@ -1,0 +1,106 @@
+---
+source: compiler/tests/lexer_snapshot.rs
+expression: tokens
+---
+[
+  (Var, Span(
+    start: 0,
+    end: 3,
+  )),
+  (Const, Span(
+    start: 4,
+    end: 9,
+  )),
+  (Fn, Span(
+    start: 10,
+    end: 12,
+  )),
+  (Struct, Span(
+    start: 13,
+    end: 19,
+  )),
+  (Class, Span(
+    start: 20,
+    end: 25,
+  )),
+  (Enum, Span(
+    start: 26,
+    end: 30,
+  )),
+  (Choice, Span(
+    start: 31,
+    end: 37,
+  )),
+  (Match, Span(
+    start: 38,
+    end: 43,
+  )),
+  (If, Span(
+    start: 44,
+    end: 46,
+  )),
+  (Else, Span(
+    start: 47,
+    end: 51,
+  )),
+  (While, Span(
+    start: 52,
+    end: 57,
+  )),
+  (Return, Span(
+    start: 58,
+    end: 64,
+  )),
+  (Import, Span(
+    start: 65,
+    end: 71,
+  )),
+  (Export, Span(
+    start: 72,
+    end: 78,
+  )),
+  (Public, Span(
+    start: 79,
+    end: 85,
+  )),
+  (Private, Span(
+    start: 86,
+    end: 93,
+  )),
+  (Where, Span(
+    start: 94,
+    end: 99,
+  )),
+  (As, Span(
+    start: 100,
+    end: 102,
+  )),
+  (And, Span(
+    start: 103,
+    end: 106,
+  )),
+  (Or, Span(
+    start: 107,
+    end: 109,
+  )),
+  (Not, Span(
+    start: 110,
+    end: 113,
+  )),
+  (Extern, Span(
+    start: 114,
+    end: 120,
+  )),
+  (SelfToken, Span(
+    start: 121,
+    end: 125,
+  )),
+  (Null, Span(
+    start: 126,
+    end: 130,
+  )),
+  (Eof, Span(
+    start: 130,
+    end: 130,
+  )),
+]

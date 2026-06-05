@@ -1,0 +1,68 @@
+---
+source: compiler/tests/parser_snapshot.rs
+assertion_line: 173
+expression: res
+---
+Ok(SourceFile(
+  items: [
+    ClassDecl(ClassDecl(
+      name: ("Array", Span(
+        start: 6,
+        end: 11,
+      )),
+      generic_params: [
+        ("T", Span(
+          start: 12,
+          end: 13,
+        )),
+      ],
+      where_clauses: [],
+      fields: [
+        ClassField(
+          visibility: Public,
+          is_const: false,
+          name: ("data", Span(
+            start: 24,
+            end: 28,
+          )),
+          ty: (Pointer(
+            target: Named("T"),
+            nullable: false,
+            span: Span(
+              start: 30,
+              end: 32,
+            ),
+          ), Span(
+            start: 30,
+            end: 32,
+          )),
+          span: Span(
+            start: 24,
+            end: 28,
+          ),
+        ),
+        ClassField(
+          visibility: Public,
+          is_const: false,
+          name: ("len", Span(
+            start: 41,
+            end: 44,
+          )),
+          ty: (Named("int"), Span(
+            start: 46,
+            end: 49,
+          )),
+          span: Span(
+            start: 41,
+            end: 44,
+          ),
+        ),
+      ],
+      methods: [],
+      span: Span(
+        start: 0,
+        end: 52,
+      ),
+    ), false),
+  ],
+))

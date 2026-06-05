@@ -1,0 +1,33 @@
+// Exit Code: 42
+import memory;
+
+struct State {
+    destroyed_count: int;
+}
+
+class Tracker {
+    public state: @State;
+
+    fn init(self: @Tracker, st: @State) {
+        (*self).state = st;
+    }
+
+    fn destroy(self: @Tracker) {
+        (*(*self).state).destroyed_count = (*(*self).state).destroyed_count + 1;
+    }
+}
+
+fn test_heap(st: @State) {
+    var raw = memory::malloc(memory::sizeof<Tracker>());
+    var t = cast<@Tracker>(raw);
+    (*t).state = st;
+    memory::destroy<Tracker>(*t);
+    memory::free(raw);
+}
+
+fn main(): int {
+    var st = State { destroyed_count: 0 };
+    test_heap(@st);
+    
+    return st.destroyed_count + 41;
+}

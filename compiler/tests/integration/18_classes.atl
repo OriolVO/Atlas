@@ -1,0 +1,27 @@
+// Exit Code: 42
+class Counter {
+    public val: int;
+
+    fn init(self: @Counter, start: int) {
+        (*self).val = start;
+    }
+
+    fn increment(self: @Counter) {
+        (*self).val = (*self).val + 1;
+    }
+
+    fn get_val(self: @Counter): int {
+        return (*self).val;
+    }
+
+    fn double_val(val: int): int {
+        return val * 2;
+    }
+}
+
+fn main(): int {
+    var c = Counter(20);
+    c.increment();
+    var v = c.get_val();
+    return Counter::double_val(v);
+}

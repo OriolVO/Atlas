@@ -1,0 +1,8 @@
+class Foo {
+    public fn operator+(self: @Foo, other: @Foo): int {
+        return 1;
+    }
+    public fn operator[](self: @Foo, i: int): int {
+        return i;
+    }
+}

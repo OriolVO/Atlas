@@ -1,0 +1,43 @@
+// Exit Code: 42
+// Expected Output: 42
+import memory;
+extern "C" fn putchar(c: int32): int32;
+
+fn print_char(c: int32) {
+    putchar(c);
+}
+
+// 1. Generic function
+fn identity<T>(x: T): T {
+    return x;
+}
+
+// 3. Structural constraint on T
+fn call_print<T>(printer: @T, val: int) where T ( fn print_val(self, v: int); ) {
+    printer.print_val(val);
+}
+
+class ConsolePrinter {
+    public fn print_val(self: @ConsolePrinter, val: int) {
+        // Output 42
+        print_char(52i32); // '4'
+        print_char(50i32); // '2'
+        print_char(10i32); // '\n'
+    }
+}
+
+fn main(): int {
+    // Test generic function
+    var a = identity(10);
+    
+    // Test generic class on heap
+    var thirty_two = 32;
+    var b = memory::new_box(@thirty_two);
+    
+    // Test structural constraint
+    var p = ConsolePrinter();
+    call_print(@p, 42);
+
+    var inner_val = (*b.data);
+    return a + inner_val;
+}

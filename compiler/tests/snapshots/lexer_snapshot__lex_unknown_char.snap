@@ -1,0 +1,13 @@
+---
+source: compiler/tests/lexer_snapshot.rs
+expression: errors
+---
+[
+  LexError(
+    span: Span(
+      start: 0,
+      end: 1,
+    ),
+    message: "unexpected character \'$\'",
+  ),
+]

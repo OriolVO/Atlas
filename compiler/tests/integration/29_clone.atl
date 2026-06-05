@@ -1,0 +1,53 @@
+// Exit Code: 42
+// Expected Output: 42
+extern "C" fn putchar(c: int32): int32;
+
+class Simple {
+    public value: int;
+    
+    fn init(self: @Simple, v: int) {
+        (*self).value = v;
+    }
+}
+
+class CustomClone {
+    public value: int;
+    
+    fn init(self: @CustomClone, v: int) {
+        (*self).value = v;
+    }
+    
+    fn clone(self: @CustomClone): CustomClone {
+        var copy = CustomClone((*self).value + 10);
+        return copy;
+    }
+}
+
+fn print_char(c: int32) {
+    putchar(c);
+}
+
+fn main(): int {
+    // Test default shallow clone
+    var s1 = Simple(10);
+    var s2 = s1.clone();
+    s2.value = 20; // Modify copy
+    
+    // s1.value should still be 10
+    var res1 = s1.value;
+    
+    // Test custom clone
+    var c1 = CustomClone(22);
+    var c2 = c1.clone(); // c2.value is 32 (22 + 10)
+    
+    var res2 = c2.value;
+    
+    if res1 + res2 == 42 {
+        print_char(52i32); // 4
+        print_char(50i32); // 2
+        print_char(10i32); // \n
+        return 42;
+    }
+    
+    return 0;
+}

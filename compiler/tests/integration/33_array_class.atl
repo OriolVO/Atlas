@@ -1,0 +1,7 @@
+import array;
+import string;
+fn main(): int {
+    var arr: array::Array<string::String> = array::Array();
+    arr.push(string::String::from("Hello"));
+    return 0;
+}

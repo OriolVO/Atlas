@@ -1,0 +1,47 @@
+import hashmap;
+import string;
+
+// "exit" is defined in array.atl, we don't redefine it.
+// We'll declare a local C wrapper just to be safe, or just use it if it's global
+
+fn main(): int {
+    var map: hashmap::HashMap<string::String, int> = hashmap::HashMap();
+    
+    map[string::String::from("hello")] = 42;
+    map[string::String::from("world")] = 100;
+    map[string::String::from("atlas")] = 999;
+    
+    if map.length() != 3 {
+        return 1;
+    }
+    
+    var k1 = string::String::from("hello");
+    var ptr1 = map.get(@k1);
+    if ptr1 != null {
+        if *ptr1 != 42 { return 3; }
+    } else {
+        return 2;
+    }
+    
+    var k2 = string::String::from("world");
+    var ptr2 = map.get(@k2);
+    if ptr2 != null {
+        if *ptr2 != 100 { return 4; }
+    } else {
+        return 4;
+    }
+    
+    var k3 = string::String::from("atlas");
+    if !map.contains(@k3) { return 5; }
+    
+    var removed = map.remove(@k2);
+    if !removed { return 6; }
+    
+    if map.length() != 2 { return 7; }
+    if map.contains(@k2) { return 8; }
+    
+    // RAII will destroy map, k1, k2, k3 automatically!
+    // No explicit destroys needed.
+    
+    return 0;
+}

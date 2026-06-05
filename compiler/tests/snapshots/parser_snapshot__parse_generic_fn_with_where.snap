@@ -1,0 +1,80 @@
+---
+source: compiler/tests/parser_snapshot.rs
+expression: res
+---
+Ok(SourceFile(
+  items: [
+    FunctionDecl(FunctionDecl(
+      name: ("print", Span(
+        start: 3,
+        end: 8,
+      )),
+      generic_params: [
+        ("T", Span(
+          start: 9,
+          end: 10,
+        )),
+      ],
+      params: [
+        Param(
+          name: ("value", Span(
+            start: 12,
+            end: 17,
+          )),
+          ty: (Named("T"), Span(
+            start: 19,
+            end: 20,
+          )),
+        ),
+      ],
+      ret_ty: None,
+      where_clauses: [
+        WhereClause(
+          target: ("T", Span(
+            start: 28,
+            end: 29,
+          )),
+          constraints: [
+            ConstraintSignature(
+              name: ("format", Span(
+                start: 35,
+                end: 41,
+              )),
+              params: [
+                Param(
+                  name: ("self", Span(
+                    start: 42,
+                    end: 46,
+                  )),
+                  ty: (Named("self"), Span(
+                    start: 42,
+                    end: 46,
+                  )),
+                ),
+              ],
+              ret_ty: Some((Named("String"), Span(
+                start: 49,
+                end: 55,
+              ))),
+              span: Span(
+                start: 32,
+                end: 56,
+              ),
+            ),
+          ],
+          span: Span(
+            start: 22,
+            end: 58,
+          ),
+        ),
+      ],
+      body: Block(
+        stmts: [],
+        span: Span(
+          start: 59,
+          end: 62,
+        ),
+      ),
+    ), false),
+  ],
+))

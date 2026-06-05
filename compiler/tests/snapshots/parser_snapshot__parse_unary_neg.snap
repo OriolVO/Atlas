@@ -1,0 +1,19 @@
+---
+source: compiler/tests/parser_snapshot.rs
+expression: res
+---
+Ok(Unary(
+  op: Neg,
+  operand: IntLit(
+    value: 5,
+    suffix: None,
+    span: Span(
+      start: 1,
+      end: 2,
+    ),
+  ),
+  span: Span(
+    start: 0,
+    end: 2,
+  ),
+))
