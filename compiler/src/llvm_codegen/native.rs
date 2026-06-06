@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::error::AtlasError;
 use crate::parser::{BinOp, Block, Expr, Item, SourceFile, Stmt, UnaryOp};
-use crate::typechecker::{AtlasType, TypedAST};
+use crate::typechecker::{AtlasType, StructType, TypedAST};
 
 pub struct NativeCodegen {
     typed_ast: TypedAST,
@@ -28,15 +28,22 @@ impl NativeCodegen {
     }
 
     pub fn generate(mut self, ast: &SourceFile) -> Result<String, AtlasError> {
-        self.output.push_str("; Atlas compiler v0.1.0 — native backend slice\n");
+        self.output
+            .push_str("; Atlas compiler v0.1.0 — native backend slice\n");
         self.output.push_str("source_filename = \"input.atl\"\n");
         self.output.push_str("target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"\n");
         self.output.push_str("target triple = \"x86_64-unknown-linux-gnu\"\n\n");
+
+        self.emit_struct_types();
 
         for item in &ast.items {
             if let Item::ExternFnDecl(decl, _) = item {
                 self.emit_extern(decl)?;
             }
+        }
+
+        if !self.typed_ast.structs.is_empty() {
+            self.output.push('\n');
         }
 
         for item in &ast.items {
@@ -48,15 +55,36 @@ impl NativeCodegen {
         Ok(self.output)
     }
 
+    fn emit_struct_types(&mut self) {
+        let mut structs: Vec<_> = self.typed_ast.structs.values().cloned().collect();
+        structs.sort_by(|a, b| a.name.cmp(&b.name));
+        for struct_ty in structs {
+            let fields: Vec<String> = struct_ty
+                .fields
+                .iter()
+                .map(|(_, ty)| map_type(ty))
+                .collect::<Result<_, _>>()
+                .unwrap_or_default();
+            self.output.push_str(&format!(
+                "%struct.{} = type {{ {} }}\n",
+                struct_ty.name,
+                fields.join(", ")
+            ));
+        }
+        if !self.typed_ast.structs.is_empty() {
+            self.output.push('\n');
+        }
+    }
+
     fn emit_extern(&mut self, decl: &crate::parser::ExternFnDecl) -> Result<(), AtlasError> {
         let ret_ty = decl
             .ret_ty
             .as_ref()
-            .map(|ret| map_type_expr(&ret.0))
+            .map(|ret| map_type_expr(&ret.0, &self.typed_ast.structs))
             .unwrap_or_else(|| Ok("void".to_string()))?;
         let mut params = Vec::new();
         for param in &decl.params {
-            params.push(map_type_expr(&param.ty.0)?);
+            params.push(map_type_expr(&param.ty.0, &self.typed_ast.structs)?);
         }
         self.output.push_str(&format!(
             "declare {} @{}({})\n",
@@ -76,13 +104,17 @@ impl NativeCodegen {
         } else {
             decl.ret_ty
                 .as_ref()
-                .map(|ret| map_type_expr(&ret.0))
+                .map(|ret| map_type_expr(&ret.0, &self.typed_ast.structs))
                 .unwrap_or_else(|| Ok("void".to_string()))?
         };
 
         let mut params = Vec::new();
         for param in &decl.params {
-            params.push(format!("{} %{}", map_type_expr(&param.ty.0)?, param.name.0));
+            params.push(format!(
+                "{} %{}",
+                map_type_expr(&param.ty.0, &self.typed_ast.structs)?,
+                param.name.0
+            ));
         }
 
         self.output.push_str(&format!(
@@ -94,7 +126,8 @@ impl NativeCodegen {
 
         self.scopes.push(HashMap::new());
         for param in &decl.params {
-            let llvm_ty = map_type_expr(&param.ty.0)?;
+            let ty = resolve_simple_type(&param.ty.0, &self.typed_ast.structs)?;
+            let llvm_ty = map_type(&ty)?;
             let ptr = self.next_temp();
             self.output
                 .push_str(&format!("    {} = alloca {}\n", ptr, llvm_ty));
@@ -103,7 +136,7 @@ impl NativeCodegen {
                 llvm_ty, param.name.0, llvm_ty, ptr
             ));
             self.current_scope_mut()
-                .insert(param.name.0.clone(), (ptr, resolve_simple_type(&param.ty.0)?));
+                .insert(param.name.0.clone(), (ptr, ty));
         }
 
         self.emit_block(&decl.body)?;
@@ -143,18 +176,22 @@ impl NativeCodegen {
     fn emit_stmt(&mut self, stmt: &Stmt) -> Result<(), AtlasError> {
         match stmt {
             Stmt::VarDecl(decl) => {
-                let init = decl.init.as_ref().ok_or_else(|| AtlasError::CodegenError {
-                    message: "native codegen requires initialized local variables".to_string(),
-                })?;
+                let init = decl
+                    .init
+                    .as_ref()
+                    .ok_or_else(|| AtlasError::CodegenError {
+                        message: "native codegen requires initialized local variables".to_string(),
+                    })?;
                 let (value, ty) = self.emit_expr(init)?;
                 let llvm_ty = map_type(&ty)?;
                 let ptr = self.next_temp();
                 self.output
                     .push_str(&format!("    {} = alloca {}\n", ptr, llvm_ty));
-                self.output
-                    .push_str(&format!("    store {} {}, {}* {}\n", llvm_ty, value, llvm_ty, ptr));
-                self.current_scope_mut()
-                    .insert(decl.name.0.clone(), (ptr, ty));
+                self.output.push_str(&format!(
+                    "    store {} {}, {}* {}\n",
+                    llvm_ty, value, llvm_ty, ptr
+                ));
+                self.current_scope_mut().insert(decl.name.0.clone(), (ptr, ty));
             }
             Stmt::ConstDecl(decl) => {
                 let (value, ty) = self.emit_expr(&decl.init)?;
@@ -162,29 +199,25 @@ impl NativeCodegen {
                 let ptr = self.next_temp();
                 self.output
                     .push_str(&format!("    {} = alloca {}\n", ptr, llvm_ty));
-                self.output
-                    .push_str(&format!("    store {} {}, {}* {}\n", llvm_ty, value, llvm_ty, ptr));
-                self.current_scope_mut()
-                    .insert(decl.name.0.clone(), (ptr, ty));
+                self.output.push_str(&format!(
+                    "    store {} {}, {}* {}\n",
+                    llvm_ty, value, llvm_ty, ptr
+                ));
+                self.current_scope_mut().insert(decl.name.0.clone(), (ptr, ty));
             }
             Stmt::Assign(assign) => {
-                let Expr::Var { name, .. } = &assign.target else {
-                    return Err(AtlasError::CodegenError {
-                        message: "native codegen only supports variable assignment targets".to_string(),
-                    });
-                };
-                let (ptr, ty) = self.lookup_var(name).ok_or_else(|| AtlasError::CodegenError {
-                    message: format!("unknown local '{}'", name),
-                })?;
+                let (ptr, ty) = self.emit_lvalue_address(&assign.target)?;
                 let (value, value_ty) = self.emit_expr(&assign.value)?;
                 if ty != value_ty {
                     return Err(AtlasError::CodegenError {
-                        message: format!("assignment type mismatch for '{}'", name),
+                        message: "assignment type mismatch".to_string(),
                     });
                 }
                 let llvm_ty = map_type(&ty)?;
-                self.output
-                    .push_str(&format!("    store {} {}, {}* {}\n", llvm_ty, value, llvm_ty, ptr));
+                self.output.push_str(&format!(
+                    "    store {} {}, {}* {}\n",
+                    llvm_ty, value, llvm_ty, ptr
+                ));
             }
             Stmt::ExprStmt(expr) => {
                 let _ = self.emit_expr(expr)?;
@@ -196,8 +229,10 @@ impl NativeCodegen {
                     let mut actual_value = value;
                     if self.current_fn_is_main && llvm_ty == "i64" {
                         let casted = self.next_temp();
-                        self.output
-                            .push_str(&format!("    {} = trunc i64 {} to i32\n", casted, actual_value));
+                        self.output.push_str(&format!(
+                            "    {} = trunc i64 {} to i32\n",
+                            casted, actual_value
+                        ));
                         llvm_ty = "i32".to_string();
                         actual_value = casted;
                     }
@@ -309,12 +344,13 @@ impl NativeCodegen {
                 },
             )),
             Expr::FloatLit { value, .. } => Ok((value.to_string(), AtlasType::Float)),
-            Expr::BoolLit { value, .. } => Ok(((if *value { "1" } else { "0" }).to_string(), AtlasType::Bool)),
+            Expr::BoolLit { value, .. } => Ok((
+                (if *value { "1" } else { "0" }).to_string(),
+                AtlasType::Bool,
+            )),
             Expr::CharLit { value, .. } => Ok(((*value as u32).to_string(), AtlasType::Char)),
-            Expr::Var { name, .. } => {
-                let (ptr, ty) = self.lookup_var(name).ok_or_else(|| AtlasError::CodegenError {
-                    message: format!("unknown variable '{}'", name),
-                })?;
+            Expr::Var { .. } | Expr::MemberAccess { .. } => {
+                let (ptr, ty) = self.emit_lvalue_address(expr)?;
                 let reg = self.next_temp();
                 let llvm_ty = map_type(&ty)?;
                 self.output
@@ -322,32 +358,46 @@ impl NativeCodegen {
                 Ok((reg, ty))
             }
             Expr::Group { inner, .. } => self.emit_expr(inner),
-            Expr::Unary { op, operand, .. } => {
-                let (value, ty) = self.emit_expr(operand)?;
-                match op {
-                    UnaryOp::Neg => {
-                        let llvm_ty = map_type(&ty)?;
-                        let reg = self.next_temp();
-                        if is_float(&ty) {
-                            self.output
-                                .push_str(&format!("    {} = fsub {} 0.0, {}\n", reg, llvm_ty, value));
-                        } else {
-                            self.output
-                                .push_str(&format!("    {} = sub {} 0, {}\n", reg, llvm_ty, value));
-                        }
-                        Ok((reg, ty))
-                    }
-                    UnaryOp::Not => {
-                        let reg = self.next_temp();
+            Expr::Unary { op, operand, .. } => match op {
+                UnaryOp::Neg => {
+                    let (value, ty) = self.emit_expr(operand)?;
+                    let llvm_ty = map_type(&ty)?;
+                    let reg = self.next_temp();
+                    if is_float(&ty) {
                         self.output
-                            .push_str(&format!("    {} = xor i1 {}, true\n", reg, value));
-                        Ok((reg, AtlasType::Bool))
+                            .push_str(&format!("    {} = fsub {} 0.0, {}\n", reg, llvm_ty, value));
+                    } else {
+                        self.output
+                            .push_str(&format!("    {} = sub {} 0, {}\n", reg, llvm_ty, value));
                     }
-                    _ => Err(AtlasError::CodegenError {
-                        message: "native codegen does not support this unary operator".to_string(),
-                    }),
+                    Ok((reg, ty))
                 }
-            }
+                UnaryOp::Not => {
+                    let (value, _) = self.emit_expr(operand)?;
+                    let reg = self.next_temp();
+                    self.output
+                        .push_str(&format!("    {} = xor i1 {}, true\n", reg, value));
+                    Ok((reg, AtlasType::Bool))
+                }
+                UnaryOp::AddressOf => {
+                    let (ptr, ty) = self.emit_lvalue_address(operand)?;
+                    Ok((
+                        ptr,
+                        AtlasType::Pointer {
+                            target: Box::new(ty),
+                            nullable: false,
+                        },
+                    ))
+                }
+                UnaryOp::Dereference => {
+                    let (ptr, ty) = self.emit_lvalue_address(expr)?;
+                    let reg = self.next_temp();
+                    let llvm_ty = map_type(&ty)?;
+                    self.output
+                        .push_str(&format!("    {} = load {}, {}* {}\n", reg, llvm_ty, llvm_ty, ptr));
+                    Ok((reg, ty))
+                }
+            },
             Expr::Binary { op, lhs, rhs, .. } => {
                 let (lhs_val, lhs_ty) = self.emit_expr(lhs)?;
                 let (rhs_val, rhs_ty) = self.emit_expr(rhs)?;
@@ -356,12 +406,24 @@ impl NativeCodegen {
                         message: "binary operand type mismatch".to_string(),
                     });
                 }
-                emit_binary(&mut self.output, &mut self.temp_counter, op, lhs_val, rhs_val, lhs_ty)
+                emit_binary(
+                    &mut self.output,
+                    &mut self.temp_counter,
+                    op,
+                    lhs_val,
+                    rhs_val,
+                    lhs_ty,
+                )
             }
             Expr::Call { callee, args, .. } => {
-                let sig = self.typed_ast.fn_sigs.get(callee).cloned().ok_or_else(|| AtlasError::CodegenError {
-                    message: format!("unknown function '{}'", callee),
-                })?;
+                let sig = self
+                    .typed_ast
+                    .fn_sigs
+                    .get(callee)
+                    .cloned()
+                    .ok_or_else(|| AtlasError::CodegenError {
+                        message: format!("unknown function '{}'", callee),
+                    })?;
                 let mut rendered_args = Vec::new();
                 for (arg, (_, expected_ty)) in args.iter().zip(sig.params.iter()) {
                     let (value, actual_ty) = self.emit_expr(arg)?;
@@ -392,10 +454,122 @@ impl NativeCodegen {
                     Ok((reg, sig.ret_ty.clone()))
                 }
             }
+            Expr::StructInit {
+                struct_name,
+                fields,
+                ..
+            } => {
+                let struct_ty = self
+                    .typed_ast
+                    .structs
+                    .get(struct_name)
+                    .cloned()
+                    .ok_or_else(|| AtlasError::CodegenError {
+                        message: format!("unknown struct '{}'", struct_name),
+                    })?;
+                let llvm_struct_ty = map_type(&AtlasType::Struct(struct_name.clone()))?;
+                let mut value = "undef".to_string();
+                for (index, (field_name, field_ty)) in struct_ty.fields.iter().enumerate() {
+                    let (_, expr) = fields
+                        .iter()
+                        .find(|((candidate, _), _)| candidate == field_name)
+                        .ok_or_else(|| AtlasError::CodegenError {
+                            message: format!(
+                                "missing field '{}' in struct initializer for '{}'",
+                                field_name, struct_name
+                            ),
+                        })?;
+                    let (field_value, actual_ty) = self.emit_expr(expr)?;
+                    if &actual_ty != field_ty {
+                        return Err(AtlasError::CodegenError {
+                            message: format!(
+                                "field '{}' type mismatch in struct initializer",
+                                field_name
+                            ),
+                        });
+                    }
+                    let next_value = self.next_temp();
+                    self.output.push_str(&format!(
+                        "    {} = insertvalue {} {}, {} {}, {}\n",
+                        next_value,
+                        llvm_struct_ty,
+                        value,
+                        map_type(field_ty)?,
+                        field_value,
+                        index
+                    ));
+                    value = next_value;
+                }
+                Ok((value, AtlasType::Struct(struct_name.clone())))
+            }
             _ => Err(AtlasError::CodegenError {
                 message: "expression not yet supported by native codegen".to_string(),
             }),
         }
+    }
+
+    fn emit_lvalue_address(&mut self, expr: &Expr) -> Result<(String, AtlasType), AtlasError> {
+        match expr {
+            Expr::Group { inner, .. } => self.emit_lvalue_address(inner),
+            Expr::Var { name, .. } => self.lookup_var(name).ok_or_else(|| AtlasError::CodegenError {
+                message: format!("unknown variable '{}'", name),
+            }),
+            Expr::MemberAccess { object, member, .. } => {
+                let (base_ptr, base_ty) = self.emit_lvalue_address(object)?;
+                let AtlasType::Struct(struct_name) = base_ty else {
+                    return Err(AtlasError::CodegenError {
+                        message: "member access requires a struct lvalue".to_string(),
+                    });
+                };
+                let (field_index, field_ty) = self.struct_field(&struct_name, member)?;
+                let field_ptr = self.next_temp();
+                let struct_ty = map_type(&AtlasType::Struct(struct_name))?;
+                self.output.push_str(&format!(
+                    "    {} = getelementptr inbounds {}, {}* {}, i32 0, i32 {}\n",
+                    field_ptr, struct_ty, struct_ty, base_ptr, field_index
+                ));
+                Ok((field_ptr, field_ty))
+            }
+            Expr::Unary {
+                op: UnaryOp::Dereference,
+                operand,
+                ..
+            } => {
+                let (ptr_value, ptr_ty) = self.emit_expr(operand)?;
+                let AtlasType::Pointer { target, .. } = ptr_ty else {
+                    return Err(AtlasError::CodegenError {
+                        message: "cannot dereference a non-pointer value".to_string(),
+                    });
+                };
+                Ok((ptr_value, *target))
+            }
+            _ => Err(AtlasError::CodegenError {
+                message: "expression is not assignable".to_string(),
+            }),
+        }
+    }
+
+    fn struct_field(
+        &self,
+        struct_name: &str,
+        member: &str,
+    ) -> Result<(usize, AtlasType), AtlasError> {
+        let struct_ty = self
+            .typed_ast
+            .structs
+            .get(struct_name)
+            .ok_or_else(|| AtlasError::CodegenError {
+                message: format!("unknown struct '{}'", struct_name),
+            })?;
+        struct_ty
+            .fields
+            .iter()
+            .enumerate()
+            .find(|(_, (field_name, _))| field_name == member)
+            .map(|(index, (_, ty))| (index, ty.clone()))
+            .ok_or_else(|| AtlasError::CodegenError {
+                message: format!("struct '{}' has no field '{}'", struct_name, member),
+            })
     }
 
     fn lookup_var(&self, name: &str) -> Option<(String, AtlasType)> {
@@ -445,10 +619,38 @@ fn emit_binary(
     let llvm_ty = map_type(&ty)?;
     let is_float_ty = is_float(&ty);
     match op {
-        Add => output.push_str(&format!("    {} = {} {} {}, {}\n", reg, if is_float_ty { "fadd" } else { "add" }, llvm_ty, lhs, rhs)),
-        Sub => output.push_str(&format!("    {} = {} {} {}, {}\n", reg, if is_float_ty { "fsub" } else { "sub" }, llvm_ty, lhs, rhs)),
-        Mul => output.push_str(&format!("    {} = {} {} {}, {}\n", reg, if is_float_ty { "fmul" } else { "mul" }, llvm_ty, lhs, rhs)),
-        Div => output.push_str(&format!("    {} = {} {} {}, {}\n", reg, if is_float_ty { "fdiv" } else { "sdiv" }, llvm_ty, lhs, rhs)),
+        Add => output.push_str(&format!(
+            "    {} = {} {} {}, {}\n",
+            reg,
+            if is_float_ty { "fadd" } else { "add" },
+            llvm_ty,
+            lhs,
+            rhs
+        )),
+        Sub => output.push_str(&format!(
+            "    {} = {} {} {}, {}\n",
+            reg,
+            if is_float_ty { "fsub" } else { "sub" },
+            llvm_ty,
+            lhs,
+            rhs
+        )),
+        Mul => output.push_str(&format!(
+            "    {} = {} {} {}, {}\n",
+            reg,
+            if is_float_ty { "fmul" } else { "mul" },
+            llvm_ty,
+            lhs,
+            rhs
+        )),
+        Div => output.push_str(&format!(
+            "    {} = {} {} {}, {}\n",
+            reg,
+            if is_float_ty { "fdiv" } else { "sdiv" },
+            llvm_ty,
+            lhs,
+            rhs
+        )),
         Mod => output.push_str(&format!("    {} = srem {} {}, {}\n", reg, llvm_ty, lhs, rhs)),
         Eq | NotEq | Lt | Gt | LtEq | GtEq => {
             let pred = match (op, is_float_ty) {
@@ -466,7 +668,10 @@ fn emit_binary(
                 (GtEq, true) => "fcmp oge",
                 _ => unreachable!(),
             };
-            output.push_str(&format!("    {} = {} {} {}, {}\n", reg, pred, llvm_ty, lhs, rhs));
+            output.push_str(&format!(
+                "    {} = {} {} {}, {}\n",
+                reg, pred, llvm_ty, lhs, rhs
+            ));
             return Ok((reg, AtlasType::Bool));
         }
         And => output.push_str(&format!("    {} = and i1 {}, {}\n", reg, lhs, rhs)),
@@ -477,25 +682,35 @@ fn emit_binary(
 
 fn map_type(ty: &AtlasType) -> Result<String, AtlasError> {
     match ty {
-        AtlasType::Int | AtlasType::Uint => Ok("i64".to_string()),
+        AtlasType::Int | AtlasType::Int64 | AtlasType::Uint | AtlasType::Uint64 => {
+            Ok("i64".to_string())
+        }
         AtlasType::Int32 | AtlasType::Uint32 => Ok("i32".to_string()),
         AtlasType::Int16 | AtlasType::Uint16 => Ok("i16".to_string()),
         AtlasType::Int8 | AtlasType::Uint8 | AtlasType::Char => Ok("i8".to_string()),
-        AtlasType::Float => Ok("double".to_string()),
+        AtlasType::Float | AtlasType::Float64 => Ok("double".to_string()),
         AtlasType::Float32 => Ok("float".to_string()),
         AtlasType::Bool => Ok("i1".to_string()),
         AtlasType::Void => Ok("void".to_string()),
+        AtlasType::Struct(name) => Ok(format!("%struct.{}", name)),
+        AtlasType::Pointer { target, .. } => Ok(format!("{}*", map_type(target)?)),
         _ => Err(AtlasError::CodegenError {
             message: format!("native codegen does not support type '{:?}'", ty),
         }),
     }
 }
 
-fn map_type_expr(ty: &crate::parser::TypeExpr) -> Result<String, AtlasError> {
-    map_type(&resolve_simple_type(ty)?)
+fn map_type_expr(
+    ty: &crate::parser::TypeExpr,
+    structs: &HashMap<String, StructType>,
+) -> Result<String, AtlasError> {
+    map_type(&resolve_simple_type(ty, structs)?)
 }
 
-fn resolve_simple_type(ty: &crate::parser::TypeExpr) -> Result<AtlasType, AtlasError> {
+fn resolve_simple_type(
+    ty: &crate::parser::TypeExpr,
+    structs: &HashMap<String, StructType>,
+) -> Result<AtlasType, AtlasError> {
     match ty {
         crate::parser::TypeExpr::Named(name) => match name.as_str() {
             "int" | "int64" => Ok(AtlasType::Int),
@@ -511,16 +726,28 @@ fn resolve_simple_type(ty: &crate::parser::TypeExpr) -> Result<AtlasType, AtlasE
             "bool" => Ok(AtlasType::Bool),
             "char" => Ok(AtlasType::Char),
             "void" => Ok(AtlasType::Void),
-            other => Err(AtlasError::CodegenError {
-                message: format!("native codegen does not support type '{}'", other),
-            }),
+            other => {
+                if structs.contains_key(other) {
+                    Ok(AtlasType::Struct(other.to_string()))
+                } else {
+                    Err(AtlasError::CodegenError {
+                        message: format!("native codegen does not support type '{}'", other),
+                    })
+                }
+            }
         },
+        crate::parser::TypeExpr::Pointer {
+            target, nullable, ..
+        } => Ok(AtlasType::Pointer {
+            target: Box::new(resolve_simple_type(target, structs)?),
+            nullable: *nullable,
+        }),
         _ => Err(AtlasError::CodegenError {
-            message: "native codegen only supports primitive named types".to_string(),
+            message: "native codegen only supports primitive, struct, and pointer types".to_string(),
         }),
     }
 }
 
 fn is_float(ty: &AtlasType) -> bool {
-    matches!(ty, AtlasType::Float | AtlasType::Float32)
+    matches!(ty, AtlasType::Float | AtlasType::Float32 | AtlasType::Float64)
 }

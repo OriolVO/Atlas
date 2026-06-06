@@ -3,11 +3,11 @@ source_filename = "input.atl"
 target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-unknown-linux-gnu"
 
-%class.hashmap.HashMap_string.String_int = type { %class.array.Array_hashmap.HashMapEntry_string.String_int, i64, i64 }
 %class.string.String = type { i8*, i64 }
-%class.array.Array_hashmap.HashMapEntry_string.String_int = type { %class.hashmap.HashMapEntry_string.String_int*, i64, i64 }
+%class.hashmap.HashMap_string.String_int = type { %class.array.Array_hashmap.HashMapEntry_string.String_int, i64, i64 }
 %class.io.File = type { i8*, i1 }
 %class.hashmap.HashMapEntry_string.String_int = type { %class.string.String, i64, i1 }
+%class.array.Array_hashmap.HashMapEntry_string.String_int = type { %class.hashmap.HashMapEntry_string.String_int*, i64, i64 }
 
 @.str.0 = private unnamed_addr constant [6 x i8] c"hello\00", align 1
 @.str.1 = private unnamed_addr constant [6 x i8] c"world\00", align 1

@@ -5,8 +5,8 @@ target triple = "x86_64-unknown-linux-gnu"
 
 %struct.main.GlobalState = type { i64 }
 
-%class.main.Resource = type { %struct.main.GlobalState* }
 %class.main.PureClass = type { i64 }
+%class.main.Resource = type { %struct.main.GlobalState* }
 
 declare i32 @putchar(i32)
 define void @"main.Resource.init"(%class.main.Resource* %self, %struct.main.GlobalState* %state) {

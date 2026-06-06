@@ -2,12 +2,10 @@ use std::collections::HashMap;
 
 use crate::error::{AtlasError, Span};
 use crate::lexer::IntSuffix;
-use crate::parser::{
-    BinOp, Expr, Item, SourceFile, Stmt, TypeExpr, UnaryOp,
-};
+use crate::parser::{BinOp, Expr, Item, SourceFile, Stmt, TypeExpr, UnaryOp};
 use crate::resolver::Project;
 
-use super::{AtlasType, FnSignature, TypedAST};
+use super::{AtlasType, FnSignature, StructType, TypedAST};
 
 pub struct NativeTypeChecker;
 
@@ -71,6 +69,7 @@ enum NativeCheckError {
 
 struct Checker {
     fn_sigs: HashMap<String, FnSignature>,
+    structs: HashMap<String, StructType>,
     errors: Vec<AtlasError>,
 }
 
@@ -78,11 +77,34 @@ impl Checker {
     fn new() -> Self {
         Self {
             fn_sigs: HashMap::new(),
+            structs: HashMap::new(),
             errors: Vec::new(),
         }
     }
 
+    fn collect_structs(&mut self, ast: &SourceFile) -> Result<(), NativeCheckError> {
+        for item in &ast.items {
+            if let Item::StructDecl(decl, _) = item {
+                let mut fields = Vec::new();
+                for field in &decl.fields {
+                    let ty = resolve_native_type(&field.ty.0, &self.structs).ok_or(NativeCheckError::Unsupported)?;
+                    fields.push((field.name.0.clone(), ty));
+                }
+                self.structs.insert(
+                    decl.name.0.clone(),
+                    StructType {
+                        name: decl.name.0.clone(),
+                        fields,
+                    },
+                );
+            }
+        }
+        Ok(())
+    }
+
     fn build_signatures(&mut self, ast: &SourceFile) -> Result<(), NativeCheckError> {
+        self.collect_structs(ast)?;
+
         for item in &ast.items {
             match item {
                 Item::FunctionDecl(decl, _) => {
@@ -91,13 +113,16 @@ impl Checker {
                     }
                     let mut params = Vec::new();
                     for param in &decl.params {
-                        let ty = resolve_native_type(&param.ty.0).ok_or(NativeCheckError::Unsupported)?;
+                        let ty = resolve_native_type(&param.ty.0, &self.structs)
+                            .ok_or(NativeCheckError::Unsupported)?;
                         params.push((param.name.0.clone(), ty));
                     }
                     let ret_ty = decl
                         .ret_ty
                         .as_ref()
-                        .map(|ret| resolve_native_type(&ret.0).ok_or(NativeCheckError::Unsupported))
+                        .map(|ret| {
+                            resolve_native_type(&ret.0, &self.structs).ok_or(NativeCheckError::Unsupported)
+                        })
                         .transpose()?
                         .unwrap_or(AtlasType::Void);
                     self.fn_sigs.insert(decl.name.0.clone(), FnSignature { params, ret_ty });
@@ -105,18 +130,21 @@ impl Checker {
                 Item::ExternFnDecl(decl, _) => {
                     let mut params = Vec::new();
                     for param in &decl.params {
-                        let ty = resolve_native_type(&param.ty.0).ok_or(NativeCheckError::Unsupported)?;
+                        let ty = resolve_native_type(&param.ty.0, &self.structs)
+                            .ok_or(NativeCheckError::Unsupported)?;
                         params.push((param.name.0.clone(), ty));
                     }
                     let ret_ty = decl
                         .ret_ty
                         .as_ref()
-                        .map(|ret| resolve_native_type(&ret.0).ok_or(NativeCheckError::Unsupported))
+                        .map(|ret| {
+                            resolve_native_type(&ret.0, &self.structs).ok_or(NativeCheckError::Unsupported)
+                        })
                         .transpose()?
                         .unwrap_or(AtlasType::Void);
                     self.fn_sigs.insert(decl.name.0.clone(), FnSignature { params, ret_ty });
                 }
-                Item::Import(_) => {}
+                Item::Import(_) | Item::StructDecl(_, _) => {}
                 _ => return Err(NativeCheckError::Unsupported),
             }
         }
@@ -136,7 +164,7 @@ impl Checker {
             Ok(TypedAST {
                 fn_sigs: self.fn_sigs,
                 expr_types: HashMap::new(),
-                structs: HashMap::new(),
+                structs: self.structs,
                 classes: HashMap::new(),
                 enums: HashMap::new(),
                 choices: HashMap::new(),
@@ -150,7 +178,11 @@ impl Checker {
     }
 
     fn check_function(&mut self, decl: &crate::parser::FunctionDecl) -> Result<(), NativeCheckError> {
-        let sig = self.fn_sigs.get(&decl.name.0).cloned().ok_or(NativeCheckError::Unsupported)?;
+        let sig = self
+            .fn_sigs
+            .get(&decl.name.0)
+            .cloned()
+            .ok_or(NativeCheckError::Unsupported)?;
         let mut locals: HashMap<String, AtlasType> = sig.params.into_iter().collect();
         self.check_block(&decl.body, &mut locals, &sig.ret_ty)
     }
@@ -180,11 +212,15 @@ impl Checker {
                 };
                 let init_ty = self.check_expr(init, locals)?;
                 let var_ty = if let Some(hint) = &decl.ty_hint {
-                    let hint_ty = resolve_native_type(&hint.0).ok_or(NativeCheckError::Unsupported)?;
+                    let hint_ty = resolve_native_type(&hint.0, &self.structs)
+                        .ok_or(NativeCheckError::Unsupported)?;
                     if hint_ty != init_ty {
                         self.errors.push(AtlasError::TypeError {
                             span: decl.span,
-                            message: format!("mismatched initializer type: expected '{:?}', found '{:?}'", hint_ty, init_ty),
+                            message: format!(
+                                "mismatched initializer type: expected '{:?}', found '{:?}'",
+                                hint_ty, init_ty
+                            ),
                             hint: None,
                         });
                     }
@@ -197,11 +233,15 @@ impl Checker {
             Stmt::ConstDecl(decl) => {
                 let init_ty = self.check_expr(&decl.init, locals)?;
                 if let Some(hint) = &decl.ty_hint {
-                    let hint_ty = resolve_native_type(&hint.0).ok_or(NativeCheckError::Unsupported)?;
+                    let hint_ty = resolve_native_type(&hint.0, &self.structs)
+                        .ok_or(NativeCheckError::Unsupported)?;
                     if hint_ty != init_ty {
                         self.errors.push(AtlasError::TypeError {
                             span: decl.span,
-                            message: format!("mismatched initializer type: expected '{:?}', found '{:?}'", hint_ty, init_ty),
+                            message: format!(
+                                "mismatched initializer type: expected '{:?}', found '{:?}'",
+                                hint_ty, init_ty
+                            ),
                             hint: None,
                         });
                     }
@@ -209,17 +249,7 @@ impl Checker {
                 locals.insert(decl.name.0.clone(), init_ty);
             }
             Stmt::Assign(assign) => {
-                let Expr::Var { name, .. } = &assign.target else {
-                    return Err(NativeCheckError::Unsupported);
-                };
-                let Some(target_ty) = locals.get(name).cloned() else {
-                    self.errors.push(AtlasError::TypeError {
-                        span: assign.span,
-                        message: format!("unknown variable '{}'", name),
-                        hint: None,
-                    });
-                    return Ok(());
-                };
+                let target_ty = self.check_lvalue(&assign.target, locals)?;
                 let value_ty = self.check_expr(&assign.value, locals)?;
                 if target_ty != value_ty {
                     self.errors.push(AtlasError::TypeError {
@@ -241,7 +271,10 @@ impl Checker {
                 if &actual != expected_ret {
                     self.errors.push(AtlasError::TypeError {
                         span: *span,
-                        message: format!("return type mismatch: expected '{:?}', found '{:?}'", expected_ret, actual),
+                        message: format!(
+                            "return type mismatch: expected '{:?}', found '{:?}'",
+                            expected_ret, actual
+                        ),
                         hint: None,
                     });
                 }
@@ -295,6 +328,76 @@ impl Checker {
         Ok(())
     }
 
+    fn check_lvalue(
+        &mut self,
+        expr: &Expr,
+        locals: &HashMap<String, AtlasType>,
+    ) -> Result<AtlasType, NativeCheckError> {
+        match expr {
+            Expr::Var { name, span } => {
+                if let Some(ty) = locals.get(name) {
+                    Ok(ty.clone())
+                } else {
+                    self.errors.push(AtlasError::TypeError {
+                        span: *span,
+                        message: format!("unknown variable '{}'", name),
+                        hint: None,
+                    });
+                    Ok(AtlasType::Void)
+                }
+            }
+            Expr::MemberAccess { object, member, span } => {
+                let object_ty = self.check_expr(object, locals)?;
+                self.resolve_member_type(&object_ty, member, *span)
+            }
+            Expr::Unary {
+                op: UnaryOp::Dereference,
+                operand,
+                span,
+            } => {
+                let ty = self.check_expr(operand, locals)?;
+                match ty {
+                    AtlasType::Pointer { target, .. } => Ok(*target),
+                    other => {
+                        self.errors.push(AtlasError::TypeError {
+                            span: *span,
+                            message: format!("cannot dereference '{:?}'", other),
+                            hint: None,
+                        });
+                        Ok(AtlasType::Void)
+                    }
+                }
+            }
+            _ => Err(NativeCheckError::Unsupported),
+        }
+    }
+
+    fn resolve_member_type(
+        &mut self,
+        object_ty: &AtlasType,
+        member: &str,
+        span: Span,
+    ) -> Result<AtlasType, NativeCheckError> {
+        match object_ty {
+            AtlasType::Struct(name) => {
+                let Some(struct_ty) = self.structs.get(name) else {
+                    return Err(NativeCheckError::Unsupported);
+                };
+                if let Some((_, field_ty)) = struct_ty.fields.iter().find(|(field, _)| field == member) {
+                    Ok(field_ty.clone())
+                } else {
+                    self.errors.push(AtlasError::TypeError {
+                        span,
+                        message: format!("struct '{}' has no field '{}'", name, member),
+                        hint: None,
+                    });
+                    Ok(AtlasType::Void)
+                }
+            }
+            _ => Err(NativeCheckError::Unsupported),
+        }
+    }
+
     fn check_expr(
         &mut self,
         expr: &Expr,
@@ -334,6 +437,21 @@ impl Checker {
                 match op {
                     UnaryOp::Neg if is_numeric(&ty) => Ok(ty),
                     UnaryOp::Not if ty == AtlasType::Bool => Ok(AtlasType::Bool),
+                    UnaryOp::AddressOf => Ok(AtlasType::Pointer {
+                        target: Box::new(self.check_lvalue(operand, locals)?),
+                        nullable: false,
+                    }),
+                    UnaryOp::Dereference => match ty {
+                        AtlasType::Pointer { target, .. } => Ok(*target),
+                        other => {
+                            self.errors.push(AtlasError::TypeError {
+                                span: *span,
+                                message: format!("cannot dereference '{:?}'", other),
+                                hint: None,
+                            });
+                            Ok(AtlasType::Void)
+                        }
+                    },
                     _ => {
                         self.errors.push(AtlasError::TypeError {
                             span: *span,
@@ -366,14 +484,75 @@ impl Checker {
                     if &actual != expected_ty {
                         self.errors.push(AtlasError::TypeError {
                             span: arg.span(),
-                            message: format!("argument type mismatch: expected '{:?}', found '{:?}'", expected_ty, actual),
+                            message: format!(
+                                "argument type mismatch: expected '{:?}', found '{:?}'",
+                                expected_ty, actual
+                            ),
                             hint: None,
                         });
                     }
                 }
                 Ok(sig.ret_ty)
             }
-            Expr::SizeOf { .. } | Expr::Cast { .. } | Expr::Destroy { .. } => Err(NativeCheckError::Unsupported),
+            Expr::StructInit {
+                struct_name,
+                fields,
+                span,
+            } => {
+                let Some(struct_ty) = self.structs.get(struct_name).cloned() else {
+                    return Err(NativeCheckError::Unsupported);
+                };
+                if struct_ty.fields.len() != fields.len() {
+                    self.errors.push(AtlasError::TypeError {
+                        span: *span,
+                        message: format!(
+                            "struct '{}' initializer has wrong field count",
+                            struct_name
+                        ),
+                        hint: None,
+                    });
+                }
+                for ((field_name, field_span), expr) in fields {
+                    let Some((_, expected_ty)) = struct_ty
+                        .fields
+                        .iter()
+                        .find(|(defined_name, _)| defined_name == field_name)
+                    else {
+                        self.errors.push(AtlasError::TypeError {
+                            span: *field_span,
+                            message: format!(
+                                "struct '{}' has no field '{}'",
+                                struct_name, field_name
+                            ),
+                            hint: None,
+                        });
+                        continue;
+                    };
+                    let actual_ty = self.check_expr(expr, locals)?;
+                    if &actual_ty != expected_ty {
+                        self.errors.push(AtlasError::TypeError {
+                            span: expr.span(),
+                            message: format!(
+                                "field '{}' type mismatch: expected '{:?}', found '{:?}'",
+                                field_name, expected_ty, actual_ty
+                            ),
+                            hint: None,
+                        });
+                    }
+                }
+                Ok(AtlasType::Struct(struct_name.clone()))
+            }
+            Expr::MemberAccess {
+                object,
+                member,
+                span,
+            } => {
+                let object_ty = self.check_expr(object, locals)?;
+                self.resolve_member_type(&object_ty, member, *span)
+            }
+            Expr::SizeOf { .. } | Expr::Cast { .. } | Expr::Destroy { .. } => {
+                Err(NativeCheckError::Unsupported)
+            }
             _ => Err(NativeCheckError::Unsupported),
         }
     }
@@ -383,7 +562,10 @@ fn check_file(ast: &SourceFile) -> Result<TypedAST, NativeCheckError> {
     Checker::new().check_file(ast)
 }
 
-fn resolve_native_type(ty: &TypeExpr) -> Option<AtlasType> {
+fn resolve_native_type(
+    ty: &TypeExpr,
+    structs: &HashMap<String, StructType>,
+) -> Option<AtlasType> {
     match ty {
         TypeExpr::Named(name) => match name.as_str() {
             "int" | "int64" => Some(AtlasType::Int),
@@ -399,8 +581,18 @@ fn resolve_native_type(ty: &TypeExpr) -> Option<AtlasType> {
             "bool" => Some(AtlasType::Bool),
             "char" => Some(AtlasType::Char),
             "void" => Some(AtlasType::Void),
-            _ => None,
+            other => {
+                if structs.contains_key(other) {
+                    Some(AtlasType::Struct(other.to_string()))
+                } else {
+                    None
+                }
+            }
         },
+        TypeExpr::Pointer { target, nullable, .. } => Some(AtlasType::Pointer {
+            target: Box::new(resolve_native_type(target, structs)?),
+            nullable: *nullable,
+        }),
         _ => None,
     }
 }
@@ -436,19 +628,25 @@ fn check_binary(
             } else {
                 errors.push(AtlasError::TypeError {
                     span,
-                    message: format!("invalid arithmetic operands '{:?}' and '{:?}'", lhs_ty, rhs_ty),
+                    message: format!(
+                        "invalid arithmetic operands '{:?}' and '{:?}'",
+                        lhs_ty, rhs_ty
+                    ),
                     hint: None,
                 });
                 Ok(lhs_ty)
             }
         }
         Eq | NotEq | Lt | Gt | LtEq | GtEq => {
-            if lhs_ty == rhs_ty && (is_numeric(&lhs_ty) || lhs_ty == AtlasType::Bool || lhs_ty == AtlasType::Char) {
+            if lhs_ty == rhs_ty {
                 Ok(AtlasType::Bool)
             } else {
                 errors.push(AtlasError::TypeError {
                     span,
-                    message: format!("invalid comparison operands '{:?}' and '{:?}'", lhs_ty, rhs_ty),
+                    message: format!(
+                        "invalid comparison operands '{:?}' and '{:?}'",
+                        lhs_ty, rhs_ty
+                    ),
                     hint: None,
                 });
                 Ok(AtlasType::Bool)
@@ -460,7 +658,10 @@ fn check_binary(
             } else {
                 errors.push(AtlasError::TypeError {
                     span,
-                    message: "logical operators require bool operands".to_string(),
+                    message: format!(
+                        "logical operands must be bool, found '{:?}' and '{:?}'",
+                        lhs_ty, rhs_ty
+                    ),
                     hint: None,
                 });
                 Ok(AtlasType::Bool)
