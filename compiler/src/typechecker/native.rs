@@ -1,11 +1,14 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::error::{AtlasError, Span};
 use crate::lexer::IntSuffix;
 use crate::parser::{BinOp, Expr, Item, SourceFile, Stmt, TypeExpr, UnaryOp};
 use crate::resolver::Project;
 
-use super::{AtlasType, FnSignature, StructType, TypedAST};
+use super::{
+    helpers::mangle_type_name, AtlasType, ChoiceType, ChoiceVariantType, ClassFieldType,
+    ClassMethodType, ClassType, EnumType, FnSignature, StructType, TypedAST,
+};
 
 pub struct NativeTypeChecker;
 
@@ -35,7 +38,7 @@ impl NativeTypeChecker {
     }
 
     pub fn try_check_project(&self, project: &mut Project) -> NativeProjectCheck {
-        let Some(main_ast) = project.modules.get_mut("main") else {
+        let Some(main_ast) = project.modules.get("main") else {
             return NativeProjectCheck::Errors(vec![(
                 "<native>".to_string(),
                 String::new(),
@@ -47,8 +50,44 @@ impl NativeTypeChecker {
             )]);
         };
 
-        match check_file(main_ast) {
-            Ok(typed) => NativeProjectCheck::Typed(typed),
+        let mut checker = Checker::new();
+        for mod_name in &project.topological_order {
+            if let Some(ast) = project.modules.get(mod_name) {
+                checker.collect_structs_from_ast(ast);
+                checker.collect_classes_from_ast(ast);
+                checker.collect_enums_from_ast(ast);
+                checker.collect_choices_from_ast(ast);
+            }
+        }
+        for mod_name in &project.topological_order {
+            if let Some(ast) = project.modules.get(mod_name) {
+                checker.build_signatures_from_ast(ast, true);
+            }
+        }
+
+        let main_class_names = collect_defined_class_names(main_ast);
+        let mut reachable_classes = collect_referenced_classes_from_file(main_ast, &checker.classes);
+        if let Err(err) = checker.check_reachable_project_classes(project, &mut reachable_classes) {
+            return match err {
+                NativeCheckError::Unsupported => NativeProjectCheck::Unsupported,
+                NativeCheckError::Errors(errors) => {
+                    let (path, source) = project
+                        .sources
+                        .get("main")
+                        .map(|(path, source)| (path.to_string_lossy().into_owned(), source.clone()))
+                        .unwrap_or_else(|| ("<main>".to_string(), String::new()));
+                    NativeProjectCheck::Errors(vec![(path, source, errors)])
+                }
+            };
+        }
+
+        match checker.finish_check(main_ast) {
+            Ok(mut typed) => {
+                typed
+                    .classes
+                    .retain(|name, _| main_class_names.contains(name) || reachable_classes.contains(name));
+                NativeProjectCheck::Typed(typed)
+            }
             Err(NativeCheckError::Unsupported) => NativeProjectCheck::Unsupported,
             Err(NativeCheckError::Errors(errors)) => {
                 let (path, source) = project
@@ -70,6 +109,9 @@ enum NativeCheckError {
 struct Checker {
     fn_sigs: HashMap<String, FnSignature>,
     structs: HashMap<String, StructType>,
+    classes: HashMap<String, ClassType>,
+    enums: HashMap<String, EnumType>,
+    choices: HashMap<String, ChoiceType>,
     errors: Vec<AtlasError>,
 }
 
@@ -78,16 +120,21 @@ impl Checker {
         Self {
             fn_sigs: HashMap::new(),
             structs: HashMap::new(),
+            classes: HashMap::new(),
+            enums: HashMap::new(),
+            choices: HashMap::new(),
             errors: Vec::new(),
         }
     }
 
-    fn collect_structs(&mut self, ast: &SourceFile) -> Result<(), NativeCheckError> {
+    fn collect_structs_from_ast(&mut self, ast: &SourceFile) {
         for item in &ast.items {
             if let Item::StructDecl(decl, _) = item {
                 let mut fields = Vec::new();
                 for field in &decl.fields {
-                    let ty = resolve_native_type(&field.ty.0, &self.structs).ok_or(NativeCheckError::Unsupported)?;
+                    let Some(ty) = resolve_native_type(&field.ty.0, &self.structs, &self.classes, &self.enums, &self.choices) else {
+                        return;
+                    };
                     fields.push((field.name.0.clone(), ty));
                 }
                 self.structs.insert(
@@ -99,81 +146,306 @@ impl Checker {
                 );
             }
         }
-        Ok(())
     }
 
     fn build_signatures(&mut self, ast: &SourceFile) -> Result<(), NativeCheckError> {
-        self.collect_structs(ast)?;
+        self.collect_structs_from_ast(ast);
+        self.collect_classes_from_ast(ast);
+        self.collect_enums_from_ast(ast);
+        self.collect_choices_from_ast(ast);
+        self.build_signatures_from_ast(ast, false);
+        if self.errors.is_empty() {
+            Ok(())
+        } else {
+            Err(NativeCheckError::Errors(std::mem::take(&mut self.errors)))
+        }
+    }
 
+    fn collect_classes_from_ast(&mut self, ast: &SourceFile) {
+        for item in &ast.items {
+            if let Item::ClassDecl(decl, _) = item {
+                if !decl.generic_params.is_empty() || !decl.where_clauses.is_empty() {
+                    continue;
+                }
+                let mut fields = Vec::new();
+                for field in &decl.fields {
+                    let Some(ty) = resolve_native_type(&field.ty.0, &self.structs, &self.classes, &self.enums, &self.choices) else {
+                        return;
+                    };
+                    fields.push(ClassFieldType {
+                        name: field.name.0.clone(),
+                        ty,
+                        visibility: field.visibility,
+                        is_const: field.is_const,
+                    });
+                }
+                self.classes.insert(
+                    decl.name.0.clone(),
+                    ClassType {
+                        name: decl.name.0.clone(),
+                        fields,
+                        methods: HashMap::new(),
+                    },
+                );
+            }
+        }
+
+        let class_names: Vec<String> = self.classes.keys().cloned().collect();
+        for class_name in class_names {
+            let class_ty = self.classes.get_mut(&class_name).expect("class missing");
+            class_ty.methods.entry("init".to_string()).or_insert_with(|| default_class_method(&class_name, "init", AtlasType::Void));
+            class_ty.methods.entry("destroy".to_string()).or_insert_with(|| default_class_method(&class_name, "destroy", AtlasType::Void));
+            class_ty.methods.entry("clone".to_string()).or_insert_with(|| default_class_method(&class_name, "clone", AtlasType::Class(class_name.clone())));
+        }
+    }
+
+    fn collect_enums_from_ast(&mut self, ast: &SourceFile) {
+        for item in &ast.items {
+            if let Item::EnumDecl(decl, _) = item {
+                self.enums.insert(
+                    decl.name.0.clone(),
+                    EnumType {
+                        name: decl.name.0.clone(),
+                        variants: decl.variants.iter().map(|variant| variant.0.clone()).collect(),
+                    },
+                );
+            }
+        }
+    }
+
+    fn collect_choices_from_ast(&mut self, ast: &SourceFile) {
+        for item in &ast.items {
+            if let Item::ChoiceDecl(decl, _) = item {
+                if !decl.generic_params.is_empty() {
+                    continue;
+                }
+                let mut variants = Vec::new();
+                for variant in &decl.variants {
+                    let payload = variant.payload.as_ref().map(|payload| {
+                        resolve_native_type(
+                            &payload.0,
+                            &self.structs,
+                            &self.classes,
+                            &self.enums,
+                            &self.choices,
+                        )
+                    });
+                    let payload = match payload {
+                        Some(Some(ty)) => Some(ty),
+                        Some(None) => return,
+                        None => None,
+                    };
+                    variants.push(ChoiceVariantType {
+                        name: variant.name.0.clone(),
+                        payload,
+                    });
+                }
+                self.choices.insert(
+                    decl.name.0.clone(),
+                    ChoiceType {
+                        name: decl.name.0.clone(),
+                        variants,
+                    },
+                );
+            }
+        }
+    }
+
+    fn build_signatures_from_ast(&mut self, ast: &SourceFile, skip_unsupported: bool) {
         for item in &ast.items {
             match item {
                 Item::FunctionDecl(decl, _) => {
                     if !decl.generic_params.is_empty() || !decl.where_clauses.is_empty() {
-                        return Err(NativeCheckError::Unsupported);
+                        if !skip_unsupported {
+                            self.errors.push(AtlasError::TypeError {
+                                span: decl.body.span,
+                                message: "generic functions are not supported by the native backend yet".to_string(),
+                                hint: None,
+                            });
+                        }
+                        continue;
                     }
                     let mut params = Vec::new();
+                    let mut supported = true;
                     for param in &decl.params {
-                        let ty = resolve_native_type(&param.ty.0, &self.structs)
-                            .ok_or(NativeCheckError::Unsupported)?;
+                        let Some(ty) = resolve_native_type(&param.ty.0, &self.structs, &self.classes, &self.enums, &self.choices) else {
+                            supported = false;
+                            break;
+                        };
                         params.push((param.name.0.clone(), ty));
                     }
                     let ret_ty = decl
                         .ret_ty
                         .as_ref()
-                        .map(|ret| {
-                            resolve_native_type(&ret.0, &self.structs).ok_or(NativeCheckError::Unsupported)
-                        })
-                        .transpose()?
-                        .unwrap_or(AtlasType::Void);
-                    self.fn_sigs.insert(decl.name.0.clone(), FnSignature { params, ret_ty });
+                        .map(|ret| resolve_native_type(&ret.0, &self.structs, &self.classes, &self.enums, &self.choices))
+                        .unwrap_or(Some(AtlasType::Void));
+                    if supported {
+                        if let Some(ret_ty) = ret_ty {
+                            self.fn_sigs.insert(decl.name.0.clone(), FnSignature { params, ret_ty });
+                        } else if !skip_unsupported {
+                            self.errors.push(AtlasError::TypeError {
+                                span: decl.body.span,
+                                message: format!("unsupported return type in '{}'", decl.name.0),
+                                hint: None,
+                            });
+                        }
+                    } else if !skip_unsupported {
+                        self.errors.push(AtlasError::TypeError {
+                            span: decl.body.span,
+                            message: format!("unsupported parameter types in '{}'", decl.name.0),
+                            hint: None,
+                        });
+                    }
                 }
                 Item::ExternFnDecl(decl, _) => {
                     let mut params = Vec::new();
+                    let mut supported = true;
                     for param in &decl.params {
-                        let ty = resolve_native_type(&param.ty.0, &self.structs)
-                            .ok_or(NativeCheckError::Unsupported)?;
+                        let Some(ty) = resolve_native_type(&param.ty.0, &self.structs, &self.classes, &self.enums, &self.choices) else {
+                            supported = false;
+                            break;
+                        };
                         params.push((param.name.0.clone(), ty));
                     }
                     let ret_ty = decl
                         .ret_ty
                         .as_ref()
-                        .map(|ret| {
-                            resolve_native_type(&ret.0, &self.structs).ok_or(NativeCheckError::Unsupported)
-                        })
-                        .transpose()?
-                        .unwrap_or(AtlasType::Void);
-                    self.fn_sigs.insert(decl.name.0.clone(), FnSignature { params, ret_ty });
+                        .map(|ret| resolve_native_type(&ret.0, &self.structs, &self.classes, &self.enums, &self.choices))
+                        .unwrap_or(Some(AtlasType::Void));
+                    if supported {
+                        if let Some(ret_ty) = ret_ty {
+                            self.fn_sigs.insert(decl.name.0.clone(), FnSignature { params, ret_ty });
+                        }
+                    }
                 }
-                Item::Import(_) | Item::StructDecl(_, _) => {}
-                _ => return Err(NativeCheckError::Unsupported),
+                Item::ClassDecl(decl, _) => {
+                    let class_name = decl.name.0.clone();
+                    if !self.classes.contains_key(&class_name) {
+                        continue;
+                    }
+                    for method in &decl.methods {
+                        if !method.decl.generic_params.is_empty() || !method.decl.where_clauses.is_empty() {
+                            continue;
+                        }
+                        let mut params = Vec::new();
+                        let mut supported = true;
+                        for param in &method.decl.params {
+                            let Some(ty) = resolve_native_type(&param.ty.0, &self.structs, &self.classes, &self.enums, &self.choices) else {
+                                supported = false;
+                                break;
+                            };
+                            params.push((param.name.0.clone(), ty));
+                        }
+                        let ret_ty = method
+                            .decl
+                            .ret_ty
+                            .as_ref()
+                            .map(|ret| resolve_native_type(&ret.0, &self.structs, &self.classes, &self.enums, &self.choices))
+                            .unwrap_or(Some(AtlasType::Void));
+                        if supported {
+                            if let Some(ret_ty) = ret_ty {
+                                let sig = FnSignature { params: params.clone(), ret_ty: ret_ty.clone() };
+                                self.fn_sigs.insert(
+                                    format!("{}.{}", class_name, method.decl.name.0),
+                                    sig.clone(),
+                                );
+                                if let Some(class_ty) = self.classes.get_mut(&class_name) {
+                                    class_ty.methods.insert(
+                                        method.decl.name.0.clone(),
+                                        ClassMethodType {
+                                            name: method.decl.name.0.clone(),
+                                            sig,
+                                            visibility: method.visibility,
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                Item::Import(_) | Item::StructDecl(_, _) | Item::EnumDecl(_, _) | Item::ChoiceDecl(_, _) => {}
             }
         }
-        Ok(())
     }
 
     fn check_file(mut self, ast: &SourceFile) -> Result<TypedAST, NativeCheckError> {
         self.build_signatures(ast)?;
 
+        self.finish_check(ast)
+    }
+
+    fn check_reachable_project_classes(
+        &mut self,
+        project: &Project,
+        reachable_classes: &mut HashSet<String>,
+    ) -> Result<(), NativeCheckError> {
+        let class_decls = collect_project_class_decls(project);
+        let mut checked = HashSet::new();
+        let mut queue: Vec<String> = reachable_classes.iter().cloned().collect();
+
+        while let Some(class_name) = queue.pop() {
+            if !checked.insert(class_name.clone()) {
+                continue;
+            }
+
+            let Some(decl) = class_decls.get(&class_name).copied() else {
+                return Err(NativeCheckError::Unsupported);
+            };
+
+            for method in &decl.methods {
+                let qualified = format!("{}.{}", class_name, method.decl.name.0);
+                if !self.fn_sigs.contains_key(&qualified) {
+                    continue;
+                }
+                self.check_qualified_function(&qualified, &method.decl)?;
+                let nested = collect_referenced_classes_from_block(&method.decl.body, &self.classes);
+                for nested_class in nested {
+                    if reachable_classes.insert(nested_class.clone()) {
+                        queue.push(nested_class);
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn finish_check(&mut self, ast: &SourceFile) -> Result<TypedAST, NativeCheckError> {
         for item in &ast.items {
-            if let Item::FunctionDecl(decl, _) = item {
-                self.check_function(decl)?;
+            match item {
+                Item::FunctionDecl(decl, _) => {
+                    if !self.fn_sigs.contains_key(&decl.name.0) {
+                        return Err(NativeCheckError::Unsupported);
+                    }
+                    self.check_function(decl)?;
+                }
+                Item::ClassDecl(decl, _) => {
+                    for method in &decl.methods {
+                        let qualified = format!("{}.{}", decl.name.0, method.decl.name.0);
+                        if !self.fn_sigs.contains_key(&qualified) {
+                            continue;
+                        }
+                        self.check_qualified_function(&qualified, &method.decl)?;
+                    }
+                }
+                _ => {}
             }
         }
 
         if self.errors.is_empty() {
             Ok(TypedAST {
-                fn_sigs: self.fn_sigs,
+                fn_sigs: std::mem::take(&mut self.fn_sigs),
                 expr_types: HashMap::new(),
-                structs: self.structs,
-                classes: HashMap::new(),
-                enums: HashMap::new(),
-                choices: HashMap::new(),
+                structs: std::mem::take(&mut self.structs),
+                classes: std::mem::take(&mut self.classes),
+                enums: std::mem::take(&mut self.enums),
+                choices: std::mem::take(&mut self.choices),
                 mangled_calls: HashMap::new(),
                 overloaded_operators: HashMap::new(),
                 precompiled_ir: None,
             })
         } else {
-            Err(NativeCheckError::Errors(self.errors))
+            Err(NativeCheckError::Errors(std::mem::take(&mut self.errors)))
         }
     }
 
@@ -181,6 +453,20 @@ impl Checker {
         let sig = self
             .fn_sigs
             .get(&decl.name.0)
+            .cloned()
+            .ok_or(NativeCheckError::Unsupported)?;
+        let mut locals: HashMap<String, AtlasType> = sig.params.into_iter().collect();
+        self.check_block(&decl.body, &mut locals, &sig.ret_ty)
+    }
+
+    fn check_qualified_function(
+        &mut self,
+        qualified_name: &str,
+        decl: &crate::parser::FunctionDecl,
+    ) -> Result<(), NativeCheckError> {
+        let sig = self
+            .fn_sigs
+            .get(qualified_name)
             .cloned()
             .ok_or(NativeCheckError::Unsupported)?;
         let mut locals: HashMap<String, AtlasType> = sig.params.into_iter().collect();
@@ -207,35 +493,47 @@ impl Checker {
     ) -> Result<(), NativeCheckError> {
         match stmt {
             Stmt::VarDecl(decl) => {
-                let Some(init) = &decl.init else {
-                    return Err(NativeCheckError::Unsupported);
-                };
-                let init_ty = self.check_expr(init, locals)?;
-                let var_ty = if let Some(hint) = &decl.ty_hint {
-                    let hint_ty = resolve_native_type(&hint.0, &self.structs)
+                let var_ty = if let Some(init) = &decl.init {
+                    let init_ty = self.check_expr(init, locals)?;
+                    if let Some(hint) = &decl.ty_hint {
+                        let hint_ty = resolve_native_type(&hint.0, &self.structs, &self.classes, &self.enums, &self.choices)
+                            .ok_or(NativeCheckError::Unsupported)?;
+                        if !is_assignable_to(&hint_ty, &init_ty)
+                            && !can_construct_from_string_literal(&hint_ty, init, &self.classes)
+                        {
+                            self.errors.push(AtlasError::TypeError {
+                                span: decl.span,
+                                message: format!(
+                                    "mismatched initializer type: expected '{:?}', found '{:?}'",
+                                    hint_ty, init_ty
+                                ),
+                                hint: None,
+                            });
+                        }
+                        hint_ty
+                    } else {
+                        init_ty
+                    }
+                } else if let Some(hint) = &decl.ty_hint {
+                    let hint_ty = resolve_native_type(&hint.0, &self.structs, &self.classes, &self.enums, &self.choices)
                         .ok_or(NativeCheckError::Unsupported)?;
-                    if hint_ty != init_ty {
-                        self.errors.push(AtlasError::TypeError {
-                            span: decl.span,
-                            message: format!(
-                                "mismatched initializer type: expected '{:?}', found '{:?}'",
-                                hint_ty, init_ty
-                            ),
-                            hint: None,
-                        });
+                    if !matches!(hint_ty, AtlasType::Array { .. }) {
+                        return Err(NativeCheckError::Unsupported);
                     }
                     hint_ty
                 } else {
-                    init_ty
+                    return Err(NativeCheckError::Unsupported);
                 };
                 locals.insert(decl.name.0.clone(), var_ty);
             }
             Stmt::ConstDecl(decl) => {
                 let init_ty = self.check_expr(&decl.init, locals)?;
                 if let Some(hint) = &decl.ty_hint {
-                    let hint_ty = resolve_native_type(&hint.0, &self.structs)
+                    let hint_ty = resolve_native_type(&hint.0, &self.structs, &self.classes, &self.enums, &self.choices)
                         .ok_or(NativeCheckError::Unsupported)?;
-                    if hint_ty != init_ty {
+                    if !is_assignable_to(&hint_ty, &init_ty)
+                        && !can_construct_from_string_literal(&hint_ty, &decl.init, &self.classes)
+                    {
                         self.errors.push(AtlasError::TypeError {
                             span: decl.span,
                             message: format!(
@@ -251,7 +549,7 @@ impl Checker {
             Stmt::Assign(assign) => {
                 let target_ty = self.check_lvalue(&assign.target, locals)?;
                 let value_ty = self.check_expr(&assign.value, locals)?;
-                if target_ty != value_ty {
+                if !is_assignable_to(&target_ty, &value_ty) {
                     self.errors.push(AtlasError::TypeError {
                         span: assign.span,
                         message: format!("cannot assign '{:?}' to '{:?}'", value_ty, target_ty),
@@ -260,7 +558,11 @@ impl Checker {
                 }
             }
             Stmt::ExprStmt(expr) => {
-                self.check_expr(expr, locals)?;
+                if let Expr::Match { expr: matched, cases, span } = expr {
+                    self.check_match(matched, cases, locals, expected_ret, *span)?;
+                } else {
+                    self.check_expr(expr, locals)?;
+                }
             }
             Stmt::Return(expr, span) => {
                 let actual = if let Some(expr) = expr {
@@ -350,6 +652,30 @@ impl Checker {
                 let object_ty = self.check_expr(object, locals)?;
                 self.resolve_member_type(&object_ty, member, *span)
             }
+            Expr::ArrayIndex { array, index, span } => {
+                let array_ty = self.check_expr(array, locals)?;
+                let index_ty = self.check_expr(index, locals)?;
+                if !is_integer(&index_ty) {
+                    self.errors.push(AtlasError::TypeError {
+                        span: index.span(),
+                        message: format!("array index must be integer, found '{:?}'", index_ty),
+                        hint: None,
+                    });
+                }
+                match array_ty {
+                    AtlasType::Array { element, .. }
+                    | AtlasType::Slice(element)
+                    | AtlasType::Pointer { target: element, .. } => Ok(*element),
+                    other => {
+                        self.errors.push(AtlasError::TypeError {
+                            span: *span,
+                            message: format!("cannot index into '{:?}'", other),
+                            hint: None,
+                        });
+                        Ok(AtlasType::Void)
+                    }
+                }
+            }
             Expr::Unary {
                 op: UnaryOp::Dereference,
                 operand,
@@ -394,6 +720,21 @@ impl Checker {
                     Ok(AtlasType::Void)
                 }
             }
+            AtlasType::Class(name) => {
+                let Some(class_ty) = self.classes.get(name) else {
+                    return Err(NativeCheckError::Unsupported);
+                };
+                if let Some(field_ty) = class_ty.fields.iter().find(|field| field.name == member) {
+                    Ok(field_ty.ty.clone())
+                } else {
+                    self.errors.push(AtlasError::TypeError {
+                        span,
+                        message: format!("class '{}' has no field '{}'", name, member),
+                        hint: None,
+                    });
+                    Ok(AtlasType::Void)
+                }
+            }
             _ => Err(NativeCheckError::Unsupported),
         }
     }
@@ -417,6 +758,11 @@ impl Checker {
             Expr::FloatLit { .. } => Ok(AtlasType::Float),
             Expr::BoolLit { .. } => Ok(AtlasType::Bool),
             Expr::CharLit { .. } => Ok(AtlasType::Char),
+            Expr::StringLit { value, .. } => Ok(AtlasType::Array {
+                element: Box::new(AtlasType::Char),
+                size: value.chars().count(),
+            }),
+            Expr::Null { .. } => Ok(AtlasType::Null),
             Expr::Var { name, span } => {
                 if let Some(ty) = locals.get(name) {
                     Ok(ty.clone())
@@ -465,9 +811,44 @@ impl Checker {
             Expr::Binary { op, lhs, rhs, span } => {
                 let lhs_ty = self.check_expr(lhs, locals)?;
                 let rhs_ty = self.check_expr(rhs, locals)?;
+                if matches!(lhs_ty, AtlasType::Class(_)) || matches!(rhs_ty, AtlasType::Class(_)) {
+                    return Err(NativeCheckError::Unsupported);
+                }
                 check_binary(op, lhs_ty, rhs_ty, *span, &mut self.errors)
             }
             Expr::Call { callee, args, span } => {
+                if let Some(class_ty) = self.classes.get(callee).cloned() {
+                    let init_sig = class_ty
+                        .methods
+                        .get("init")
+                        .map(|method| method.sig.clone())
+                        .ok_or(NativeCheckError::Unsupported)?;
+                    let expected_args = init_sig.params.iter().skip(1).collect::<Vec<_>>();
+                    if expected_args.len() != args.len() {
+                        self.errors.push(AtlasError::TypeError {
+                            span: *span,
+                            message: format!("wrong argument count for constructor '{}'", callee),
+                            hint: None,
+                        });
+                        return Ok(AtlasType::Class(callee.clone()));
+                    }
+                    for (arg, (_, expected_ty)) in args.iter().zip(expected_args.iter()) {
+                        let actual = self.check_expr(arg, locals)?;
+                        if !is_assignable_to(expected_ty, &actual)
+                            && !can_construct_from_string_literal(expected_ty, arg, &self.classes)
+                        {
+                            self.errors.push(AtlasError::TypeError {
+                                span: arg.span(),
+                                message: format!(
+                                    "constructor argument type mismatch: expected '{:?}', found '{:?}'",
+                                    expected_ty, actual
+                                ),
+                                hint: None,
+                            });
+                        }
+                    }
+                    return Ok(AtlasType::Class(callee.clone()));
+                }
                 let Some(sig) = self.fn_sigs.get(callee).cloned() else {
                     return Err(NativeCheckError::Unsupported);
                 };
@@ -481,7 +862,9 @@ impl Checker {
                 }
                 for (arg, (_, expected_ty)) in args.iter().zip(sig.params.iter()) {
                     let actual = self.check_expr(arg, locals)?;
-                    if &actual != expected_ty {
+                    if !is_assignable_to(expected_ty, &actual)
+                        && !can_construct_from_string_literal(expected_ty, arg, &self.classes)
+                    {
                         self.errors.push(AtlasError::TypeError {
                             span: arg.span(),
                             message: format!(
@@ -493,6 +876,156 @@ impl Checker {
                     }
                 }
                 Ok(sig.ret_ty)
+            }
+            Expr::StaticMember {
+                class_name,
+                member_name,
+                span,
+            } => {
+                if let Some(enum_ty) = self.enums.get(class_name) {
+                    if enum_ty.variants.iter().any(|variant| variant == member_name) {
+                        return Ok(AtlasType::Enum(class_name.clone()));
+                    }
+                }
+                if let Some(choice_ty) = self.choices.get(class_name) {
+                    if let Some(variant) = choice_ty.variants.iter().find(|variant| variant.name == *member_name) {
+                        if variant.payload.is_none() {
+                            return Ok(AtlasType::Choice(class_name.clone()));
+                        }
+                    }
+                }
+                self.errors.push(AtlasError::TypeError {
+                    span: *span,
+                    message: format!("unknown static member '{}.{}'", class_name, member_name),
+                    hint: None,
+                });
+                Ok(AtlasType::Void)
+            }
+            Expr::MethodCall {
+                object,
+                method_name,
+                args,
+                span,
+            } => {
+                let object_ty = self.check_expr(object, locals)?;
+                let (class_name, is_instance) = match &object_ty {
+                    AtlasType::Class(name) => (name.clone(), true),
+                    AtlasType::Pointer { target, .. } => match target.as_ref() {
+                        AtlasType::Class(name) => (name.clone(), true),
+                        _ => return Err(NativeCheckError::Unsupported),
+                    },
+                    _ => return Err(NativeCheckError::Unsupported),
+                };
+                let method = self
+                    .classes
+                    .get(&class_name)
+                    .and_then(|class_ty| class_ty.methods.get(method_name))
+                    .cloned()
+                    .ok_or(NativeCheckError::Unsupported)?;
+                let params = if is_instance {
+                    method.sig.params.iter().skip(1).collect::<Vec<_>>()
+                } else {
+                    method.sig.params.iter().collect::<Vec<_>>()
+                };
+                if params.len() != args.len() {
+                    self.errors.push(AtlasError::TypeError {
+                        span: *span,
+                        message: format!("wrong argument count for method '{}'", method_name),
+                        hint: None,
+                    });
+                    return Ok(method.sig.ret_ty.clone());
+                }
+                for (arg, (_, expected_ty)) in args.iter().zip(params.iter()) {
+                    let actual = self.check_expr(arg, locals)?;
+                    if !is_assignable_to(expected_ty, &actual)
+                        && !can_construct_from_string_literal(expected_ty, arg, &self.classes)
+                    {
+                        self.errors.push(AtlasError::TypeError {
+                            span: arg.span(),
+                            message: format!(
+                                "method argument type mismatch: expected '{:?}', found '{:?}'",
+                                expected_ty, actual
+                            ),
+                            hint: None,
+                        });
+                    }
+                }
+                Ok(method.sig.ret_ty.clone())
+            }
+            Expr::StaticCall {
+                class_name,
+                method_name,
+                args,
+                span,
+            } => {
+                if let Some(choice_ty) = self.choices.get(class_name).cloned() {
+                    let Some(variant) = choice_ty
+                        .variants
+                        .iter()
+                        .find(|variant| variant.name == *method_name)
+                        .cloned()
+                    else {
+                        return Err(NativeCheckError::Unsupported);
+                    };
+                    match (&variant.payload, args.as_slice()) {
+                        (None, []) => return Ok(AtlasType::Choice(class_name.clone())),
+                        (Some(expected_ty), [arg]) => {
+                            let actual = self.check_expr(arg, locals)?;
+                            if !is_assignable_to(expected_ty, &actual) {
+                                self.errors.push(AtlasError::TypeError {
+                                    span: arg.span(),
+                                    message: format!(
+                                        "choice payload type mismatch: expected '{:?}', found '{:?}'",
+                                        expected_ty, actual
+                                    ),
+                                    hint: None,
+                                });
+                            }
+                            return Ok(AtlasType::Choice(class_name.clone()));
+                        }
+                        _ => {
+                            self.errors.push(AtlasError::TypeError {
+                                span: *span,
+                                message: format!(
+                                    "wrong argument count for variant '{}.{}'",
+                                    class_name, method_name
+                                ),
+                                hint: None,
+                            });
+                            return Ok(AtlasType::Choice(class_name.clone()));
+                        }
+                    }
+                }
+                let method = self
+                    .classes
+                    .get(class_name)
+                    .and_then(|class_ty| class_ty.methods.get(method_name))
+                    .cloned()
+                    .ok_or(NativeCheckError::Unsupported)?;
+                if method.sig.params.len() != args.len() {
+                    self.errors.push(AtlasError::TypeError {
+                        span: *span,
+                        message: format!("wrong argument count for static method '{}'", method_name),
+                        hint: None,
+                    });
+                    return Ok(method.sig.ret_ty.clone());
+                }
+                for (arg, (_, expected_ty)) in args.iter().zip(method.sig.params.iter()) {
+                    let actual = self.check_expr(arg, locals)?;
+                    if !is_assignable_to(expected_ty, &actual)
+                        && !can_construct_from_string_literal(expected_ty, arg, &self.classes)
+                    {
+                        self.errors.push(AtlasError::TypeError {
+                            span: arg.span(),
+                            message: format!(
+                                "static method argument type mismatch: expected '{:?}', found '{:?}'",
+                                expected_ty, actual
+                            ),
+                            hint: None,
+                        });
+                    }
+                }
+                Ok(method.sig.ret_ty.clone())
             }
             Expr::StructInit {
                 struct_name,
@@ -548,12 +1081,168 @@ impl Checker {
                 span,
             } => {
                 let object_ty = self.check_expr(object, locals)?;
-                self.resolve_member_type(&object_ty, member, *span)
+                match &object_ty {
+                    AtlasType::Slice(_) if member == "len" => Ok(AtlasType::Int),
+                    _ => self.resolve_member_type(&object_ty, member, *span),
+                }
             }
-            Expr::SizeOf { .. } | Expr::Cast { .. } | Expr::Destroy { .. } => {
-                Err(NativeCheckError::Unsupported)
+            Expr::ArrayIndex { array, index, span } => {
+                let array_ty = self.check_expr(array, locals)?;
+                let index_ty = self.check_expr(index, locals)?;
+                if !is_integer(&index_ty) {
+                    self.errors.push(AtlasError::TypeError {
+                        span: index.span(),
+                        message: format!("array index must be integer, found '{:?}'", index_ty),
+                        hint: None,
+                    });
+                }
+                match array_ty {
+                    AtlasType::Array { element, .. }
+                    | AtlasType::Slice(element)
+                    | AtlasType::Pointer { target: element, .. } => Ok(*element),
+                    other => {
+                        self.errors.push(AtlasError::TypeError {
+                            span: *span,
+                            message: format!("cannot index into '{:?}'", other),
+                            hint: None,
+                        });
+                        Ok(AtlasType::Void)
+                    }
+                }
             }
+            Expr::Cast { target_ty, expr, span } => {
+                let source_ty = self.check_expr(expr, locals)?;
+                let target_ty = resolve_native_type(&target_ty.0, &self.structs, &self.classes, &self.enums, &self.choices)
+                    .ok_or(NativeCheckError::Unsupported)?;
+                if !is_cast_supported(&source_ty, &target_ty) {
+                    self.errors.push(AtlasError::TypeError {
+                        span: *span,
+                        message: format!("cannot cast '{:?}' to '{:?}'", source_ty, target_ty),
+                        hint: None,
+                    });
+                }
+                Ok(target_ty)
+            }
+            Expr::SizeOf { ty, .. } => {
+                let _ = resolve_native_type(&ty.0, &self.structs, &self.classes, &self.enums, &self.choices)
+                    .ok_or(NativeCheckError::Unsupported)?;
+                Ok(AtlasType::Int)
+            }
+            Expr::Destroy { type_arg, expr, span } => {
+                let target_ty = resolve_native_type(type_arg, &self.structs, &self.classes, &self.enums, &self.choices)
+                    .ok_or(NativeCheckError::Unsupported)?;
+                let value_ty = self.check_expr(expr, locals)?;
+                if !is_assignable_to(&target_ty, &value_ty) {
+                    self.errors.push(AtlasError::TypeError {
+                        span: *span,
+                        message: format!(
+                            "destroy type mismatch: expected '{:?}', found '{:?}'",
+                            target_ty, value_ty
+                        ),
+                        hint: None,
+                    });
+                }
+                Ok(AtlasType::Void)
+            }
+            Expr::Match { .. } => Ok(AtlasType::Void),
             _ => Err(NativeCheckError::Unsupported),
+        }
+    }
+
+    fn check_match(
+        &mut self,
+        expr: &Expr,
+        cases: &[crate::parser::MatchCase],
+        locals: &HashMap<String, AtlasType>,
+        expected_ret: &AtlasType,
+        span: Span,
+    ) -> Result<(), NativeCheckError> {
+        let matched_ty = self.check_expr(expr, locals)?;
+        for case in cases {
+            let mut case_locals = locals.clone();
+            self.bind_pattern(&matched_ty, &case.pattern, &mut case_locals)?;
+            self.check_block(&case.body, &mut case_locals, expected_ret)?;
+        }
+        match matched_ty {
+            AtlasType::Enum(_) | AtlasType::Choice(_) => Ok(()),
+            _ => {
+                self.errors.push(AtlasError::TypeError {
+                    span,
+                    message: format!("match is not supported for '{:?}' in native backend", matched_ty),
+                    hint: None,
+                });
+                Ok(())
+            }
+        }
+    }
+
+    fn bind_pattern(
+        &mut self,
+        matched_ty: &AtlasType,
+        pattern: &crate::parser::Pattern,
+        locals: &mut HashMap<String, AtlasType>,
+    ) -> Result<(), NativeCheckError> {
+        match pattern {
+            crate::parser::Pattern::Variant { path, bind, span } => {
+                if path.len() != 2 {
+                    return Err(NativeCheckError::Unsupported);
+                }
+                match matched_ty {
+                    AtlasType::Enum(enum_name) => {
+                        let Some(enum_ty) = self.enums.get(enum_name) else {
+                            return Err(NativeCheckError::Unsupported);
+                        };
+                        if path[0] != *enum_name || !enum_ty.variants.iter().any(|variant| variant == &path[1]) {
+                            self.errors.push(AtlasError::TypeError {
+                                span: *span,
+                                message: format!("pattern '{}::{}' does not match enum '{}'", path[0], path[1], enum_name),
+                                hint: None,
+                            });
+                        }
+                        if bind.is_some() {
+                            self.errors.push(AtlasError::TypeError {
+                                span: *span,
+                                message: "enum patterns cannot bind payloads".to_string(),
+                                hint: None,
+                            });
+                        }
+                    }
+                    AtlasType::Choice(choice_name) => {
+                        let Some(choice_ty) = self.choices.get(choice_name) else {
+                            return Err(NativeCheckError::Unsupported);
+                        };
+                        let Some(variant) = choice_ty
+                            .variants
+                            .iter()
+                            .find(|variant| path[0] == *choice_name && variant.name == path[1])
+                        else {
+                            self.errors.push(AtlasError::TypeError {
+                                span: *span,
+                                message: format!("pattern '{}::{}' does not match choice '{}'", path[0], path[1], choice_name),
+                                hint: None,
+                            });
+                            return Ok(());
+                        };
+                        match (&variant.payload, bind) {
+                            (Some(payload_ty), Some(name)) => {
+                                locals.insert(name.0.clone(), payload_ty.clone());
+                            }
+                            (None, None) => {}
+                            (Some(_), None) | (None, Some(_)) => {
+                                self.errors.push(AtlasError::TypeError {
+                                    span: *span,
+                                    message: format!("pattern '{}::{}' has the wrong binding shape", path[0], path[1]),
+                                    hint: None,
+                                });
+                            }
+                        }
+                    }
+                    _ => return Err(NativeCheckError::Unsupported),
+                }
+                Ok(())
+            }
+            crate::parser::Pattern::Discard(_) => Ok(()),
+            crate::parser::Pattern::Literal(_, _) => Err(NativeCheckError::Unsupported),
         }
     }
 }
@@ -562,9 +1251,229 @@ fn check_file(ast: &SourceFile) -> Result<TypedAST, NativeCheckError> {
     Checker::new().check_file(ast)
 }
 
+fn collect_defined_class_names(ast: &SourceFile) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for item in &ast.items {
+        if let Item::ClassDecl(decl, _) = item {
+            names.insert(decl.name.0.clone());
+        }
+    }
+    names
+}
+
+fn collect_project_class_decls<'a>(project: &'a Project) -> HashMap<String, &'a crate::parser::ClassDecl> {
+    let mut classes = HashMap::new();
+    for module in project.modules.values() {
+        for item in &module.items {
+            if let Item::ClassDecl(decl, _) = item {
+                classes.insert(decl.name.0.clone(), decl);
+            }
+        }
+    }
+    classes
+}
+
+fn collect_referenced_classes_from_file(
+    ast: &SourceFile,
+    classes: &HashMap<String, ClassType>,
+) -> HashSet<String> {
+    let mut referenced = HashSet::new();
+    for item in &ast.items {
+        match item {
+            Item::FunctionDecl(decl, _) => {
+                collect_referenced_classes_from_function(decl, classes, &mut referenced);
+            }
+            Item::ClassDecl(decl, _) => {
+                for method in &decl.methods {
+                    collect_referenced_classes_from_function(&method.decl, classes, &mut referenced);
+                }
+            }
+            _ => {}
+        }
+    }
+    referenced
+}
+
+fn collect_referenced_classes_from_function(
+    decl: &crate::parser::FunctionDecl,
+    classes: &HashMap<String, ClassType>,
+    referenced: &mut HashSet<String>,
+) {
+    for param in &decl.params {
+        collect_referenced_classes_from_type(&param.ty.0, classes, referenced);
+    }
+    if let Some(ret_ty) = &decl.ret_ty {
+        collect_referenced_classes_from_type(&ret_ty.0, classes, referenced);
+    }
+    collect_referenced_classes_from_block_into(&decl.body, classes, referenced);
+}
+
+fn collect_referenced_classes_from_block(
+    block: &crate::parser::Block,
+    classes: &HashMap<String, ClassType>,
+) -> HashSet<String> {
+    let mut referenced = HashSet::new();
+    collect_referenced_classes_from_block_into(block, classes, &mut referenced);
+    referenced
+}
+
+fn collect_referenced_classes_from_block_into(
+    block: &crate::parser::Block,
+    classes: &HashMap<String, ClassType>,
+    referenced: &mut HashSet<String>,
+) {
+    for stmt in &block.stmts {
+        collect_referenced_classes_from_stmt(stmt, classes, referenced);
+    }
+}
+
+fn collect_referenced_classes_from_stmt(
+    stmt: &Stmt,
+    classes: &HashMap<String, ClassType>,
+    referenced: &mut HashSet<String>,
+) {
+    match stmt {
+        Stmt::VarDecl(decl) => {
+            if let Some(ty_hint) = &decl.ty_hint {
+                collect_referenced_classes_from_type(&ty_hint.0, classes, referenced);
+            }
+            if let Some(init) = &decl.init {
+                collect_referenced_classes_from_expr(init, classes, referenced);
+            }
+        }
+        Stmt::ConstDecl(decl) => {
+            if let Some(ty_hint) = &decl.ty_hint {
+                collect_referenced_classes_from_type(&ty_hint.0, classes, referenced);
+            }
+            collect_referenced_classes_from_expr(&decl.init, classes, referenced);
+        }
+        Stmt::Assign(assign) => {
+            collect_referenced_classes_from_expr(&assign.target, classes, referenced);
+            collect_referenced_classes_from_expr(&assign.value, classes, referenced);
+        }
+        Stmt::ExprStmt(expr) => collect_referenced_classes_from_expr(expr, classes, referenced),
+        Stmt::Return(expr, _) => {
+            if let Some(expr) = expr {
+                collect_referenced_classes_from_expr(expr, classes, referenced);
+            }
+        }
+        Stmt::If(if_stmt) => {
+            collect_referenced_classes_from_expr(&if_stmt.condition, classes, referenced);
+            collect_referenced_classes_from_block_into(&if_stmt.then_block, classes, referenced);
+            for (cond, block) in &if_stmt.else_if_clauses {
+                collect_referenced_classes_from_expr(cond, classes, referenced);
+                collect_referenced_classes_from_block_into(block, classes, referenced);
+            }
+            if let Some(block) = &if_stmt.else_block {
+                collect_referenced_classes_from_block_into(block, classes, referenced);
+            }
+        }
+        Stmt::While(while_stmt) => {
+            collect_referenced_classes_from_expr(&while_stmt.condition, classes, referenced);
+            collect_referenced_classes_from_block_into(&while_stmt.body, classes, referenced);
+        }
+        Stmt::Block(block) => collect_referenced_classes_from_block_into(block, classes, referenced),
+        Stmt::StructDecl(_) => {}
+    }
+}
+
+fn collect_referenced_classes_from_expr(
+    expr: &Expr,
+    classes: &HashMap<String, ClassType>,
+    referenced: &mut HashSet<String>,
+) {
+    match expr {
+        Expr::Call { callee, args, .. } => {
+            if classes.contains_key(callee) {
+                referenced.insert(callee.clone());
+            }
+            for arg in args {
+                collect_referenced_classes_from_expr(arg, classes, referenced);
+            }
+        }
+        Expr::MethodCall { object, args, .. } => {
+            collect_referenced_classes_from_expr(object, classes, referenced);
+            for arg in args {
+                collect_referenced_classes_from_expr(arg, classes, referenced);
+            }
+        }
+        Expr::StaticCall {
+            class_name, args, ..
+        } => {
+            if classes.contains_key(class_name) {
+                referenced.insert(class_name.clone());
+            }
+            for arg in args {
+                collect_referenced_classes_from_expr(arg, classes, referenced);
+            }
+        }
+        Expr::StructInit { fields, .. } => {
+            for (_, value) in fields {
+                collect_referenced_classes_from_expr(value, classes, referenced);
+            }
+        }
+        Expr::MemberAccess { object, .. } => collect_referenced_classes_from_expr(object, classes, referenced),
+        Expr::ArrayIndex { array, index, .. } => {
+            collect_referenced_classes_from_expr(array, classes, referenced);
+            collect_referenced_classes_from_expr(index, classes, referenced);
+        }
+        Expr::Unary { operand, .. } => collect_referenced_classes_from_expr(operand, classes, referenced),
+        Expr::Binary { lhs, rhs, .. } => {
+            collect_referenced_classes_from_expr(lhs, classes, referenced);
+            collect_referenced_classes_from_expr(rhs, classes, referenced);
+        }
+        Expr::Cast { target_ty, expr, .. } => {
+            collect_referenced_classes_from_type(&target_ty.0, classes, referenced);
+            collect_referenced_classes_from_expr(expr, classes, referenced);
+        }
+        Expr::SizeOf { ty, .. } => collect_referenced_classes_from_type(&ty.0, classes, referenced),
+        Expr::Destroy { type_arg, expr, .. } => {
+            collect_referenced_classes_from_type(type_arg, classes, referenced);
+            collect_referenced_classes_from_expr(expr, classes, referenced);
+        }
+        Expr::Group { inner, .. } => collect_referenced_classes_from_expr(inner, classes, referenced),
+        Expr::IntLit { .. }
+        | Expr::FloatLit { .. }
+        | Expr::BoolLit { .. }
+        | Expr::CharLit { .. }
+        | Expr::StringLit { .. }
+        | Expr::Var { .. }
+        | Expr::Null { .. }
+        | Expr::GenericCall { .. }
+        | Expr::GenericStaticCall { .. }
+        | Expr::ArrayLit { .. }
+        | Expr::Match { .. }
+        | Expr::StaticMember { .. }
+        | Expr::ErrorPropagate { .. } => {}
+    }
+}
+
+fn collect_referenced_classes_from_type(
+    ty: &TypeExpr,
+    classes: &HashMap<String, ClassType>,
+    referenced: &mut HashSet<String>,
+) {
+    match ty {
+        TypeExpr::Named(name) => {
+            if classes.contains_key(name) {
+                referenced.insert(name.clone());
+            }
+        }
+        TypeExpr::Pointer { target, .. }
+        | TypeExpr::Array { element: target, .. }
+        | TypeExpr::Slice { element: target, .. } => {
+            collect_referenced_classes_from_type(target, classes, referenced);
+        }
+        TypeExpr::Generic { .. } => {}
+    }
+}
+
 fn resolve_native_type(
     ty: &TypeExpr,
     structs: &HashMap<String, StructType>,
+    classes: &HashMap<String, ClassType>,
+    enums: &HashMap<String, EnumType>,
+    choices: &HashMap<String, ChoiceType>,
 ) -> Option<AtlasType> {
     match ty {
         TypeExpr::Named(name) => match name.as_str() {
@@ -584,16 +1493,40 @@ fn resolve_native_type(
             other => {
                 if structs.contains_key(other) {
                     Some(AtlasType::Struct(other.to_string()))
+                } else if classes.contains_key(other) {
+                    Some(AtlasType::Class(other.to_string()))
+                } else if enums.contains_key(other) {
+                    Some(AtlasType::Enum(other.to_string()))
+                } else if choices.contains_key(other) {
+                    Some(AtlasType::Choice(other.to_string()))
                 } else {
                     None
                 }
             }
         },
         TypeExpr::Pointer { target, nullable, .. } => Some(AtlasType::Pointer {
-            target: Box::new(resolve_native_type(target, structs)?),
+            target: Box::new(resolve_native_type(target, structs, classes, enums, choices)?),
             nullable: *nullable,
         }),
-        _ => None,
+        TypeExpr::Array { element, size, .. } => Some(AtlasType::Array {
+            element: Box::new(resolve_native_type(element, structs, classes, enums, choices)?),
+            size: *size,
+        }),
+        TypeExpr::Slice { element, .. } => Some(AtlasType::Slice(Box::new(
+            resolve_native_type(element, structs, classes, enums, choices)?,
+        ))),
+        TypeExpr::Generic { base, args, .. } => {
+            let mut resolved_args = Vec::new();
+            for arg in args {
+                resolved_args.push(resolve_native_type(arg, structs, classes, enums, choices)?);
+            }
+            let mangled = mangle_type_name(base, &resolved_args);
+            if choices.contains_key(&mangled) {
+                Some(AtlasType::Choice(mangled))
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -611,6 +1544,120 @@ fn is_numeric(ty: &AtlasType) -> bool {
             | AtlasType::Float
             | AtlasType::Float32
     )
+}
+
+fn is_integer(ty: &AtlasType) -> bool {
+    matches!(
+        ty,
+        AtlasType::Int
+            | AtlasType::Int8
+            | AtlasType::Int16
+            | AtlasType::Int32
+            | AtlasType::Int64
+            | AtlasType::Uint
+            | AtlasType::Uint8
+            | AtlasType::Uint16
+            | AtlasType::Uint32
+            | AtlasType::Uint64
+    )
+}
+
+fn is_assignable_to(expected: &AtlasType, actual: &AtlasType) -> bool {
+    if expected == actual {
+        return true;
+    }
+
+    if let (
+        AtlasType::Pointer {
+            target: expected_target,
+            nullable: true,
+        },
+        AtlasType::Pointer {
+            target: actual_target,
+            nullable: false,
+        },
+    ) = (expected, actual)
+    {
+        if expected_target == actual_target {
+            return true;
+        }
+    }
+
+    if matches!((expected, actual), (AtlasType::Pointer { nullable: true, .. }, AtlasType::Null)) {
+        return true;
+    }
+
+    matches!(
+        (expected, actual),
+        (
+            AtlasType::Slice(expected_elem),
+            AtlasType::Array {
+                element: actual_elem,
+                ..
+            }
+        ) if expected_elem == actual_elem
+    )
+}
+
+fn is_cast_supported(source: &AtlasType, target: &AtlasType) -> bool {
+    source == target
+        || (is_numeric(source) && is_numeric(target))
+        || matches!(
+            (source, target),
+            (AtlasType::Pointer { .. }, AtlasType::Pointer { .. })
+                | (AtlasType::Pointer { .. }, AtlasType::Int)
+                | (AtlasType::Pointer { .. }, AtlasType::Uint)
+                | (AtlasType::Pointer { .. }, AtlasType::Int32)
+                | (AtlasType::Pointer { .. }, AtlasType::Uint32)
+                | (AtlasType::Int, AtlasType::Pointer { .. })
+                | (AtlasType::Uint, AtlasType::Pointer { .. })
+                | (AtlasType::Int32, AtlasType::Pointer { .. })
+                | (AtlasType::Uint32, AtlasType::Pointer { .. })
+                | (AtlasType::Char, AtlasType::Int)
+                | (AtlasType::Int, AtlasType::Char)
+        )
+}
+
+fn default_class_method(class_name: &str, method_name: &str, ret_ty: AtlasType) -> ClassMethodType {
+    ClassMethodType {
+        name: method_name.to_string(),
+        sig: FnSignature {
+            params: vec![(
+                "self".to_string(),
+                AtlasType::Pointer {
+                    target: Box::new(AtlasType::Class(class_name.to_string())),
+                    nullable: false,
+                },
+            )],
+            ret_ty,
+        },
+        visibility: crate::parser::Visibility::Public,
+    }
+}
+
+fn can_construct_from_string_literal(
+    expected_ty: &AtlasType,
+    expr: &Expr,
+    classes: &HashMap<String, ClassType>,
+) -> bool {
+    if !matches!(expr, Expr::StringLit { .. }) {
+        return false;
+    }
+    let AtlasType::Class(class_name) = expected_ty else {
+        return false;
+    };
+    classes
+        .get(class_name)
+        .and_then(|class_ty| class_ty.methods.get("from"))
+        .map(|method| {
+            method.sig.params.len() == 1
+                && matches!(
+                    (&method.sig.params[0].1, &method.sig.ret_ty),
+                    (AtlasType::Slice(element), AtlasType::Class(ret_name))
+                        if **element == AtlasType::Char && ret_name == class_name
+                )
+        })
+        .unwrap_or(false)
 }
 
 fn check_binary(
@@ -638,7 +1685,13 @@ fn check_binary(
             }
         }
         Eq | NotEq | Lt | Gt | LtEq | GtEq => {
-            if lhs_ty == rhs_ty {
+            if lhs_ty == rhs_ty
+                || matches!(
+                    (&lhs_ty, &rhs_ty),
+                    (AtlasType::Pointer { nullable: true, .. }, AtlasType::Null)
+                        | (AtlasType::Null, AtlasType::Pointer { nullable: true, .. })
+                )
+            {
                 Ok(AtlasType::Bool)
             } else {
                 errors.push(AtlasError::TypeError {

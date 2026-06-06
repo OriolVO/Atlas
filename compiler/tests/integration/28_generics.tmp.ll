@@ -3,8 +3,8 @@ source_filename = "input.atl"
 target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-unknown-linux-gnu"
 
-%class.memory.Box_int = type { i64* }
 %class.main.ConsolePrinter = type {  }
+%class.memory.Box_int = type { i64* }
 
 declare i8* @malloc(i64)
 declare void @free(i8*)

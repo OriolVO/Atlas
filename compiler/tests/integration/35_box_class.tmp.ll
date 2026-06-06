@@ -3,8 +3,8 @@ source_filename = "input.atl"
 target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-unknown-linux-gnu"
 
-%class.memory.Box_string.String = type { %class.string.String* }
 %class.string.String = type { i8*, i64 }
+%class.memory.Box_string.String = type { %class.string.String* }
 
 @.str.0 = private unnamed_addr constant [6 x i8] c"Hello\00", align 1
 

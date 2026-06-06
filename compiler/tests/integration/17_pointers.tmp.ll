@@ -23,9 +23,10 @@ entry:
     %tmp7 = getelementptr inbounds %struct.main.Node, %struct.main.Node* %tmp6, i32 0, i32 0
     %tmp8 = load i64, i64* %tmp0
     store i64 %tmp8, i64* %tmp7
-    %tmp9 = getelementptr inbounds %struct.main.Node, %struct.main.Node* %tmp4, i32 0, i32 0
-    %tmp10 = load i64, i64* %tmp9
-    %tmp11 = trunc i64 %tmp10 to i32
-    ret i32 %tmp11
+    %tmp9 = load %struct.main.Node, %struct.main.Node* %tmp4
+    %tmp10 = getelementptr inbounds %struct.main.Node, %struct.main.Node* %tmp4, i32 0, i32 0
+    %tmp11 = load i64, i64* %tmp10
+    %tmp12 = trunc i64 %tmp11 to i32
+    ret i32 %tmp12
 }
 

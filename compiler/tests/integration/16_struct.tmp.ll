@@ -26,22 +26,34 @@ entry:
     %tmp11 = getelementptr inbounds %struct.main.Rect, %struct.main.Rect* %tmp10, i32 0, i32 1
     %tmp12 = getelementptr inbounds %struct.main.Point, %struct.main.Point* %tmp11, i32 0, i32 1
     store i64 40, i64* %tmp12
-    %tmp13 = getelementptr inbounds %struct.main.Rect, %struct.main.Rect* %tmp10, i32 0, i32 0
-    %tmp14 = getelementptr inbounds %struct.main.Point, %struct.main.Point* %tmp13, i32 0, i32 0
-    %tmp15 = load i64, i64* %tmp14
+    %tmp13 = load %struct.main.Rect, %struct.main.Rect* %tmp10
+    %tmp14 = getelementptr inbounds %struct.main.Rect, %struct.main.Rect* %tmp10, i32 0, i32 0
+    %tmp15 = load %struct.main.Point, %struct.main.Point* %tmp14
     %tmp16 = getelementptr inbounds %struct.main.Rect, %struct.main.Rect* %tmp10, i32 0, i32 0
-    %tmp17 = getelementptr inbounds %struct.main.Point, %struct.main.Point* %tmp16, i32 0, i32 1
+    %tmp17 = getelementptr inbounds %struct.main.Point, %struct.main.Point* %tmp16, i32 0, i32 0
     %tmp18 = load i64, i64* %tmp17
-    %tmp19 = add i64 %tmp15, %tmp18
-    %tmp20 = getelementptr inbounds %struct.main.Rect, %struct.main.Rect* %tmp10, i32 0, i32 1
-    %tmp21 = getelementptr inbounds %struct.main.Point, %struct.main.Point* %tmp20, i32 0, i32 0
-    %tmp22 = load i64, i64* %tmp21
-    %tmp23 = add i64 %tmp19, %tmp22
-    %tmp24 = getelementptr inbounds %struct.main.Rect, %struct.main.Rect* %tmp10, i32 0, i32 1
-    %tmp25 = getelementptr inbounds %struct.main.Point, %struct.main.Point* %tmp24, i32 0, i32 1
-    %tmp26 = load i64, i64* %tmp25
-    %tmp27 = add i64 %tmp23, %tmp26
-    %tmp28 = trunc i64 %tmp27 to i32
-    ret i32 %tmp28
+    %tmp19 = load %struct.main.Rect, %struct.main.Rect* %tmp10
+    %tmp20 = getelementptr inbounds %struct.main.Rect, %struct.main.Rect* %tmp10, i32 0, i32 0
+    %tmp21 = load %struct.main.Point, %struct.main.Point* %tmp20
+    %tmp22 = getelementptr inbounds %struct.main.Rect, %struct.main.Rect* %tmp10, i32 0, i32 0
+    %tmp23 = getelementptr inbounds %struct.main.Point, %struct.main.Point* %tmp22, i32 0, i32 1
+    %tmp24 = load i64, i64* %tmp23
+    %tmp25 = add i64 %tmp18, %tmp24
+    %tmp26 = load %struct.main.Rect, %struct.main.Rect* %tmp10
+    %tmp27 = getelementptr inbounds %struct.main.Rect, %struct.main.Rect* %tmp10, i32 0, i32 1
+    %tmp28 = load %struct.main.Point, %struct.main.Point* %tmp27
+    %tmp29 = getelementptr inbounds %struct.main.Rect, %struct.main.Rect* %tmp10, i32 0, i32 1
+    %tmp30 = getelementptr inbounds %struct.main.Point, %struct.main.Point* %tmp29, i32 0, i32 0
+    %tmp31 = load i64, i64* %tmp30
+    %tmp32 = add i64 %tmp25, %tmp31
+    %tmp33 = load %struct.main.Rect, %struct.main.Rect* %tmp10
+    %tmp34 = getelementptr inbounds %struct.main.Rect, %struct.main.Rect* %tmp10, i32 0, i32 1
+    %tmp35 = load %struct.main.Point, %struct.main.Point* %tmp34
+    %tmp36 = getelementptr inbounds %struct.main.Rect, %struct.main.Rect* %tmp10, i32 0, i32 1
+    %tmp37 = getelementptr inbounds %struct.main.Point, %struct.main.Point* %tmp36, i32 0, i32 1
+    %tmp38 = load i64, i64* %tmp37
+    %tmp39 = add i64 %tmp32, %tmp38
+    %tmp40 = trunc i64 %tmp39 to i32
+    ret i32 %tmp40
 }
 
