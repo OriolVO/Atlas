@@ -1,0 +1,14 @@
+// Type Error: non-exhaustive match on enum 'Color'
+
+enum Color {
+    Red,
+    Green
+}
+
+fn main(): int {
+    var c = Color::Red;
+    match c {
+        Color::Red => { return 1; }
+    };
+    return 0;
+}

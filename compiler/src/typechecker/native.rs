@@ -1,12 +1,13 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::error::{AtlasError, Span};
+use crate::monomorphizer::plan_generic_function_instantiation;
 use crate::lexer::IntSuffix;
 use crate::parser::{BinOp, Expr, Item, SourceFile, Stmt, TypeExpr, UnaryOp};
 use crate::resolver::Project;
 
 use super::{
-    helpers::{atlas_type_to_type_expr, mangle_type_name, substitute_class_decl, substitute_constraint_signature, substitute_fn_decl},
+    helpers::{atlas_type_to_type_expr, mangle_type_name, substitute_class_decl, substitute_constraint_signature},
     AtlasType, ChoiceType, ChoiceVariantType, ClassFieldType,
     ClassMethodType, ClassType, EnumType, FnSignature, StructType, TypedAST,
 };
@@ -15,13 +16,11 @@ pub struct NativeTypeChecker;
 
 pub enum NativeProjectCheck {
     Typed(TypedAST),
-    Unsupported,
     Errors(Vec<(String, String, Vec<AtlasError>)>),
 }
 
 pub enum NativeSingleCheck {
     Typed(TypedAST),
-    Unsupported,
     Errors(Vec<AtlasError>),
 }
 
@@ -33,7 +32,6 @@ impl NativeTypeChecker {
     pub fn try_check(&self, ast: &mut SourceFile) -> NativeSingleCheck {
         match check_file(ast) {
             Ok(typed) => NativeSingleCheck::Typed(typed),
-            Err(NativeCheckError::Unsupported) => NativeSingleCheck::Unsupported,
             Err(NativeCheckError::Errors(errors)) => NativeSingleCheck::Errors(errors),
         }
     }
@@ -69,7 +67,6 @@ impl NativeTypeChecker {
         let mut reachable_classes = collect_referenced_classes_from_file(main_ast, &checker.classes);
         if let Err(err) = checker.check_reachable_project_classes(project, &mut reachable_classes) {
             return match err {
-                NativeCheckError::Unsupported => NativeProjectCheck::Unsupported,
                 NativeCheckError::Errors(errors) => {
                     let (path, source) = project
                         .sources
@@ -83,7 +80,6 @@ impl NativeTypeChecker {
 
         match checker.finish_check(main_ast) {
             Ok(typed) => NativeProjectCheck::Typed(typed),
-            Err(NativeCheckError::Unsupported) => NativeProjectCheck::Unsupported,
             Err(NativeCheckError::Errors(errors)) => {
                 let (path, source) = project
                     .sources
@@ -97,8 +93,15 @@ impl NativeTypeChecker {
 }
 
 enum NativeCheckError {
-    Unsupported,
     Errors(Vec<AtlasError>),
+}
+
+fn internal_compiler_error(span: Span, message: impl Into<String>) -> AtlasError {
+    AtlasError::TypeError {
+        span,
+        message: format!("internal compiler error: {}", message.into()),
+        hint: Some("This is a compiler bug. Please report the source program that triggered it.".to_string()),
+    }
 }
 
 struct Checker {
@@ -150,6 +153,27 @@ impl Checker {
         for item in &ast.items {
             match item {
                 Item::StructDecl(decl, _) => {
+                    self.structs.entry(decl.name.0.clone()).or_insert_with(|| StructType {
+                        name: decl.name.0.clone(),
+                        fields: Vec::new(),
+                    });
+                }
+                Item::ClassDecl(decl, _) => {
+                    for nested in &decl.structs {
+                        self.structs
+                            .entry(nested.decl.name.0.clone())
+                            .or_insert_with(|| StructType {
+                                name: nested.decl.name.0.clone(),
+                                fields: Vec::new(),
+                            });
+                    }
+                }
+                _ => {}
+            }
+        }
+        for item in &ast.items {
+            match item {
+                Item::StructDecl(decl, _) => {
                     self.register_struct_decl(decl);
                 }
                 Item::ClassDecl(decl, _) => {
@@ -166,6 +190,15 @@ impl Checker {
         let mut fields = Vec::new();
         for field in &decl.fields {
             let Some(ty) = self.resolve_type_expr(&field.ty.0) else {
+                self.errors.push(AtlasError::TypeError {
+                    span: field.ty.1,
+                    message: format!(
+                        "unknown type in struct '{}': '{}'",
+                        decl.name.0,
+                        type_expr_name(&field.ty.0)
+                    ),
+                    hint: None,
+                });
                 return;
             };
             fields.push((field.name.0.clone(), ty));
@@ -177,6 +210,73 @@ impl Checker {
                 fields,
             },
         );
+        if self.struct_has_value_cycle(&decl.name.0, &decl.name.0, &mut HashSet::new()) {
+            self.errors.push(AtlasError::TypeError {
+                span: decl.span,
+                message: format!(
+                    "struct '{}' cannot contain itself by value; use a pointer like '@{}?'",
+                    decl.name.0, decl.name.0
+                ),
+                hint: None,
+            });
+        }
+    }
+
+    fn struct_has_value_cycle(
+        &self,
+        root: &str,
+        current: &str,
+        visiting: &mut HashSet<String>,
+    ) -> bool {
+        if !visiting.insert(current.to_string()) {
+            return false;
+        }
+        let result = self
+            .structs
+            .get(current)
+            .map(|struct_ty| {
+                struct_ty
+                    .fields
+                    .iter()
+                    .any(|(_, field_ty)| self.type_reaches_struct_by_value(field_ty, root, visiting))
+            })
+            .unwrap_or(false);
+        visiting.remove(current);
+        result
+    }
+
+    fn type_reaches_struct_by_value(
+        &self,
+        ty: &AtlasType,
+        root: &str,
+        visiting: &mut HashSet<String>,
+    ) -> bool {
+        match ty {
+            AtlasType::Struct(name) => name == root || self.struct_has_value_cycle(root, name, visiting),
+            AtlasType::Array { element, .. } => self.type_reaches_struct_by_value(element, root, visiting),
+            AtlasType::Pointer { .. } | AtlasType::Slice(_) => false,
+            _ => false,
+        }
+    }
+
+    fn check_forbidden_class_copy(
+        &mut self,
+        expected_ty: &AtlasType,
+        actual_ty: &AtlasType,
+        expr: &Expr,
+        span: Span,
+        message: &str,
+    ) {
+        if matches!(expected_ty, AtlasType::Class(_))
+            && matches!(actual_ty, AtlasType::Class(_))
+            && is_class_value_copy_source(expr)
+        {
+            self.errors.push(AtlasError::TypeError {
+                span,
+                message: message.to_string(),
+                hint: Some("Use '.clone()' for an explicit duplicate or pass the value by pointer.".to_string()),
+            });
+        }
     }
 
     fn build_signatures(&mut self, ast: &SourceFile) -> Result<(), NativeCheckError> {
@@ -609,7 +709,10 @@ impl Checker {
             }
 
             let Some(decl) = class_decls.get(&class_name).copied() else {
-                return Err(NativeCheckError::Unsupported);
+                return Err(NativeCheckError::Errors(vec![internal_compiler_error(
+                    Span::new(0, 0),
+                    format!("missing reachable class declaration for '{}'", class_name),
+                )]));
             };
 
             for method in &decl.methods {
@@ -638,7 +741,10 @@ impl Checker {
                         continue;
                     }
                     if !self.fn_sigs.contains_key(&decl.name.0) {
-                        return Err(NativeCheckError::Unsupported);
+                        return Err(NativeCheckError::Errors(vec![internal_compiler_error(
+                            decl.name.1,
+                            format!("missing function signature for '{}'", decl.name.0),
+                        )]));
                     }
                     self.check_function(decl)?;
                 }
@@ -678,7 +784,12 @@ impl Checker {
             .fn_sigs
             .get(&decl.name.0)
             .cloned()
-            .ok_or(NativeCheckError::Unsupported)?;
+            .ok_or_else(|| {
+                NativeCheckError::Errors(vec![internal_compiler_error(
+                    decl.name.1,
+                    format!("missing checked function signature for '{}'", decl.name.0),
+                )])
+            })?;
         let previous_ret = self.current_return_ty.clone();
         let previous_fn = self.current_function_name.clone();
         let previous_class = self.current_class_name.clone();
@@ -702,7 +813,12 @@ impl Checker {
             .fn_sigs
             .get(qualified_name)
             .cloned()
-            .ok_or(NativeCheckError::Unsupported)?;
+            .ok_or_else(|| {
+                NativeCheckError::Errors(vec![internal_compiler_error(
+                    decl.name.1,
+                    format!("missing checked method signature for '{}'", qualified_name),
+                )])
+            })?;
         let previous_ret = self.current_return_ty.clone();
         let previous_fn = self.current_function_name.clone();
         let previous_class = self.current_class_name.clone();
@@ -741,6 +857,7 @@ impl Checker {
                     if let Some(hint) = &decl.ty_hint {
                         let hint_ty = self.resolve_type_expr_or_error(&hint.0, decl.span, "variable declaration");
                         let init_ty = self.check_expr_with_expected(init, &hint_ty, locals)?;
+                        self.check_forbidden_class_copy(&hint_ty, &init_ty, init, decl.span, "class values cannot be copied with '='; use '.clone()' for an explicit copy");
                         if !is_assignable_to(&hint_ty, &init_ty) {
                             self.errors.push(AtlasError::TypeError {
                                 span: decl.span,
@@ -754,6 +871,7 @@ impl Checker {
                         hint_ty
                     } else {
                         let init_ty = self.check_expr(init, locals)?;
+                        self.check_forbidden_class_copy(&init_ty, &init_ty, init, decl.span, "class values cannot be copied with '='; use '.clone()' for an explicit copy");
                         init_ty
                     }
                 } else if let Some(hint) = &decl.ty_hint {
@@ -772,9 +890,13 @@ impl Checker {
             Stmt::ConstDecl(decl) => {
                 let init_ty = if let Some(hint) = &decl.ty_hint {
                     let hint_ty = self.resolve_type_expr_or_error(&hint.0, decl.span, "constant declaration");
-                    self.check_expr_with_expected(&decl.init, &hint_ty, locals)?
+                    let init_ty = self.check_expr_with_expected(&decl.init, &hint_ty, locals)?;
+                    self.check_forbidden_class_copy(&hint_ty, &init_ty, &decl.init, decl.span, "class values cannot be copied with '='; use '.clone()' for an explicit copy");
+                    init_ty
                 } else {
-                    self.check_expr(&decl.init, locals)?
+                    let init_ty = self.check_expr(&decl.init, locals)?;
+                    self.check_forbidden_class_copy(&init_ty, &init_ty, &decl.init, decl.span, "class values cannot be copied with '='; use '.clone()' for an explicit copy");
+                    init_ty
                 };
                 if let Some(hint) = &decl.ty_hint {
                     let hint_ty = self.resolve_type_expr_or_error(&hint.0, decl.span, "constant declaration");
@@ -813,6 +935,7 @@ impl Checker {
                 }
                 let target_ty = self.check_lvalue(&assign.target, locals)?;
                 let value_ty = self.check_expr_with_expected(&assign.value, &target_ty, locals)?;
+                self.check_forbidden_class_copy(&target_ty, &value_ty, &assign.value, assign.span, "class assignment by value is forbidden; use '.clone()' for an explicit copy");
                 if !is_assignable_to(&target_ty, &value_ty) {
                     self.errors.push(AtlasError::TypeError {
                         span: assign.span,
@@ -855,6 +978,9 @@ impl Checker {
                     });
                 }
                 let mut then_locals = locals.clone();
+                if let Some(name) = non_null_checked_var(&if_stmt.condition, true) {
+                    refine_nullable_local(&mut then_locals, &name);
+                }
                 self.check_block(&if_stmt.then_block, &mut then_locals, expected_ret)?;
                 for (cond, block) in &if_stmt.else_if_clauses {
                     let cond_ty = self.check_expr(cond, locals)?;
@@ -870,6 +996,9 @@ impl Checker {
                 }
                 if let Some(block) = &if_stmt.else_block {
                     let mut else_locals = locals.clone();
+                    if let Some(name) = non_null_checked_var(&if_stmt.condition, false) {
+                        refine_nullable_local(&mut else_locals, &name);
+                    }
                     self.check_block(block, &mut else_locals, expected_ret)?;
                 }
             }
@@ -883,6 +1012,9 @@ impl Checker {
                     });
                 }
                 let mut body_locals = locals.clone();
+                if let Some(name) = non_null_checked_var(&while_stmt.condition, true) {
+                    refine_nullable_local(&mut body_locals, &name);
+                }
                 self.check_block(&while_stmt.body, &mut body_locals, expected_ret)?;
             }
             Stmt::Block(block) => {
@@ -967,6 +1099,14 @@ impl Checker {
             } => {
                 let ty = self.check_expr(operand, locals)?;
                 match ty {
+                    AtlasType::Pointer { target, nullable: true } => {
+                        self.errors.push(AtlasError::TypeError {
+                            span: *span,
+                            message: "cannot dereference a nullable pointer without a non-null check".to_string(),
+                            hint: Some("Guard the pointer with 'if ptr != null { ... }' before dereferencing it.".to_string()),
+                        });
+                        Ok(*target)
+                    }
                     AtlasType::Pointer { target, .. } => Ok(*target),
                     other => {
                         self.errors.push(AtlasError::TypeError {
@@ -998,7 +1138,10 @@ impl Checker {
         match object_ty {
             AtlasType::Struct(name) => {
                 let Some(struct_ty) = self.structs.get(name) else {
-                    return Err(NativeCheckError::Unsupported);
+                    return Err(NativeCheckError::Errors(vec![internal_compiler_error(
+                        span,
+                        format!("missing struct metadata for '{}'", name),
+                    )]));
                 };
                 if let Some((_, field_ty)) = struct_ty.fields.iter().find(|(field, _)| field == member) {
                     Ok(field_ty.clone())
@@ -1013,7 +1156,10 @@ impl Checker {
             }
             AtlasType::Class(name) => {
                 let Some(class_ty) = self.classes.get(name) else {
-                    return Err(NativeCheckError::Unsupported);
+                    return Err(NativeCheckError::Errors(vec![internal_compiler_error(
+                        span,
+                        format!("missing class metadata for '{}'", name),
+                    )]));
                 };
                 if let Some(field_ty) = class_ty.fields.iter().find(|field| field.name == member) {
                     Ok(field_ty.ty.clone())
@@ -1084,6 +1230,14 @@ impl Checker {
                         nullable: false,
                     }),
                     UnaryOp::Dereference => match ty {
+                        AtlasType::Pointer { target, nullable: true } => {
+                            self.errors.push(AtlasError::TypeError {
+                                span: *span,
+                                message: "cannot dereference a nullable pointer without a non-null check".to_string(),
+                                hint: Some("Guard the pointer with 'if ptr != null { ... }' before dereferencing it.".to_string()),
+                            });
+                            Ok(*target)
+                        }
                         AtlasType::Pointer { target, .. } => Ok(*target),
                         other => {
                             self.errors.push(AtlasError::TypeError {
@@ -1194,6 +1348,7 @@ impl Checker {
                     }
                     for (arg, (_, expected_ty)) in args.iter().zip(expected_args.iter()) {
                         let actual = self.check_expr_with_expected(arg, expected_ty, locals)?;
+                        self.check_forbidden_class_copy(expected_ty, &actual, arg, arg.span(), "constructor arguments cannot copy class values by value; pass a pointer or call '.clone()'");
                         if !is_assignable_to(expected_ty, &actual) {
                             self.errors.push(AtlasError::TypeError {
                                 span: arg.span(),
@@ -1229,6 +1384,7 @@ impl Checker {
                 }
                 for (arg, (_, expected_ty)) in args.iter().zip(sig.params.iter()) {
                     let actual = self.check_expr_with_expected(arg, expected_ty, locals)?;
+                    self.check_forbidden_class_copy(expected_ty, &actual, arg, arg.span(), "function arguments cannot copy class values by value; pass a pointer or call '.clone()'");
                     if !is_assignable_to(expected_ty, &actual) {
                         self.errors.push(AtlasError::TypeError {
                             span: arg.span(),
@@ -1293,6 +1449,24 @@ impl Checker {
                 }
                 let (class_name, is_instance) = match &object_ty {
                     AtlasType::Class(name) => (name.clone(), true),
+                    AtlasType::Pointer { target, nullable: true } => match target.as_ref() {
+                        AtlasType::Class(name) => {
+                            self.errors.push(AtlasError::TypeError {
+                                span: *span,
+                                message: format!("cannot call method '{}' on a nullable pointer to class '{}'", method_name, name),
+                                hint: Some("Guard the pointer with 'if value != null { ... }' before calling methods on it.".to_string()),
+                            });
+                            (name.clone(), true)
+                        }
+                        _ => {
+                            self.errors.push(AtlasError::TypeError {
+                                span: *span,
+                                message: format!("type '{:?}' has no method '{}'", object_ty, method_name),
+                                hint: None,
+                            });
+                            return Ok(AtlasType::Void);
+                        }
+                    },
                     AtlasType::Pointer { target, .. } => match target.as_ref() {
                         AtlasType::Class(name) => (name.clone(), true),
                         _ => {
@@ -1341,6 +1515,7 @@ impl Checker {
                 }
                 for (arg, (_, expected_ty)) in args.iter().zip(params.iter()) {
                     let actual = self.check_expr_with_expected(arg, expected_ty, locals)?;
+                    self.check_forbidden_class_copy(expected_ty, &actual, arg, arg.span(), "method arguments cannot copy class values by value; pass a pointer or call '.clone()'");
                     if !is_assignable_to(expected_ty, &actual) {
                         self.errors.push(AtlasError::TypeError {
                             span: arg.span(),
@@ -1363,7 +1538,10 @@ impl Checker {
                 let inferred_choice_name = self.infer_choice_constructor_target(class_name);
                 if let Some(choice_name) = inferred_choice_name.or_else(|| self.choices.get(class_name).map(|_| class_name.clone())) {
                     let Some(choice_ty) = self.choices.get(&choice_name).cloned() else {
-                        return Err(NativeCheckError::Unsupported);
+                        return Err(NativeCheckError::Errors(vec![internal_compiler_error(
+                            *span,
+                            format!("missing choice metadata for '{}'", choice_name),
+                        )]));
                     };
                     let Some(variant) = choice_ty
                         .variants
@@ -1430,6 +1608,7 @@ impl Checker {
                 }
                 for (arg, (_, expected_ty)) in args.iter().zip(method.sig.params.iter()) {
                     let actual = self.check_expr_with_expected(arg, expected_ty, locals)?;
+                    self.check_forbidden_class_copy(expected_ty, &actual, arg, arg.span(), "static method arguments cannot copy class values by value; pass a pointer or call '.clone()'");
                     if !is_assignable_to(expected_ty, &actual) {
                         self.errors.push(AtlasError::TypeError {
                             span: arg.span(),
@@ -1483,6 +1662,7 @@ impl Checker {
                         continue;
                     };
                     let actual_ty = self.check_expr(expr, locals)?;
+                    self.check_forbidden_class_copy(expected_ty, &actual_ty, expr, expr.span(), "struct fields cannot copy class values by value; use '.clone()' or a pointer");
                     if !is_assignable_to(expected_ty, &actual_ty) {
                         self.errors.push(AtlasError::TypeError {
                             span: expr.span(),
@@ -1504,6 +1684,14 @@ impl Checker {
                 let object_ty = self.check_expr(object, locals)?;
                 match &object_ty {
                     AtlasType::Slice(_) if member == "len" => Ok(AtlasType::Int),
+                    AtlasType::Pointer { target, nullable: true } if matches!(target.as_ref(), AtlasType::Class(_)) => {
+                        self.errors.push(AtlasError::TypeError {
+                            span: *span,
+                            message: format!("cannot access member '{}' through a nullable class pointer", member),
+                            hint: Some("Guard the pointer with 'if value != null { ... }' before accessing members.".to_string()),
+                        });
+                        self.resolve_member_type(target.as_ref(), member, *span)
+                    }
                     _ => self.resolve_member_type(&object_ty, member, *span),
                 }
             }
@@ -1615,7 +1803,10 @@ impl Checker {
                     return Ok(AtlasType::Void);
                 }
                 let Some(choice_ty) = self.choices.get(&choice_name) else {
-                    return Err(NativeCheckError::Unsupported);
+                    return Err(NativeCheckError::Errors(vec![internal_compiler_error(
+                        *span,
+                        format!("missing choice metadata during '?' handling for '{}'", choice_name),
+                    )]));
                 };
                 let Some(ok_variant) = choice_ty.variants.iter().find(|variant| variant.name == "Ok") else {
                     self.errors.push(AtlasError::TypeError {
@@ -1636,7 +1827,10 @@ impl Checker {
                 Ok(ok_payload_ty)
             }
             Expr::Match { .. } => Ok(AtlasType::Void),
-            _ => Err(NativeCheckError::Unsupported),
+            _ => Err(NativeCheckError::Errors(vec![internal_compiler_error(
+                expr.span(),
+                format!("unexpected expression shape in native typechecker: {:?}", expr),
+            )])),
         }
     }
 
@@ -1655,7 +1849,26 @@ impl Checker {
             self.check_block(&case.body, &mut case_locals, expected_ret)?;
         }
         match matched_ty {
-            AtlasType::Enum(_) | AtlasType::Choice(_) => Ok(()),
+            AtlasType::Enum(enum_name) => {
+                if !is_exhaustive_enum_match(cases, &enum_name, self.enums.get(&enum_name)) {
+                    self.errors.push(AtlasError::TypeError {
+                        span,
+                        message: format!("non-exhaustive match on enum '{}'", enum_name),
+                        hint: Some("Cover every variant or add a '_' case.".to_string()),
+                    });
+                }
+                Ok(())
+            }
+            AtlasType::Choice(choice_name) => {
+                if !is_exhaustive_choice_match(cases, &choice_name, self.choices.get(&choice_name)) {
+                    self.errors.push(AtlasError::TypeError {
+                        span,
+                        message: format!("non-exhaustive match on choice '{}'", choice_name),
+                        hint: Some("Cover every variant or add a '_' case.".to_string()),
+                    });
+                }
+                Ok(())
+            }
             ty if supports_literal_match(&ty) => Ok(()),
             _ => {
                 self.errors.push(AtlasError::TypeError {
@@ -1677,12 +1890,18 @@ impl Checker {
         match pattern {
             crate::parser::Pattern::Variant { path, bind, span } => {
                 if path.len() != 2 {
-                    return Err(NativeCheckError::Unsupported);
+                    return Err(NativeCheckError::Errors(vec![internal_compiler_error(
+                        *span,
+                        "variant patterns must be normalized to a two-segment path",
+                    )]));
                 }
                 match matched_ty {
                     AtlasType::Enum(enum_name) => {
                         let Some(enum_ty) = self.enums.get(enum_name) else {
-                            return Err(NativeCheckError::Unsupported);
+                            return Err(NativeCheckError::Errors(vec![internal_compiler_error(
+                                *span,
+                                format!("missing enum metadata for '{}'", enum_name),
+                            )]));
                         };
                         if path[0] != *enum_name || !enum_ty.variants.iter().any(|variant| variant == &path[1]) {
                             self.errors.push(AtlasError::TypeError {
@@ -1701,7 +1920,10 @@ impl Checker {
                     }
                     AtlasType::Choice(choice_name) => {
                         let Some(choice_ty) = self.choices.get(choice_name) else {
-                            return Err(NativeCheckError::Unsupported);
+                            return Err(NativeCheckError::Errors(vec![internal_compiler_error(
+                                *span,
+                                format!("missing choice metadata for '{}'", choice_name),
+                            )]));
                         };
                         let Some(variant) = choice_ty
                             .variants
@@ -1974,64 +2196,45 @@ impl Checker {
         locals: &HashMap<String, AtlasType>,
         call_span: Span,
     ) -> Result<FnSignature, NativeCheckError> {
-        if template.params.len() != args.len() {
-            self.errors.push(AtlasError::TypeError {
-                span: call_span,
-                message: format!("wrong argument count for '{}'", template.name.0),
-                hint: None,
-            });
-            return Ok(FnSignature { params: Vec::new(), ret_ty: AtlasType::Void, is_variadic: false });
-        }
-
-        let generic_names: HashSet<String> = template.generic_params.iter().map(|param| param.0.clone()).collect();
-        let mut bindings: HashMap<String, AtlasType> = HashMap::new();
-        for (param, arg) in template.params.iter().zip(args.iter()) {
-            let actual_ty = self.check_expr(arg, locals)?;
-            if !infer_type_bindings(&param.ty.0, &actual_ty, &generic_names, &mut bindings) {
-                self.errors.push(AtlasError::TypeError {
-                    span: arg.span(),
-                    message: format!("could not infer generic arguments for '{}'", template.name.0),
-                    hint: None,
-                });
-                return Ok(FnSignature { params: Vec::new(), ret_ty: AtlasType::Void, is_variadic: false });
-            }
-        }
-
-        for generic_name in &generic_names {
-            if !bindings.contains_key(generic_name) {
-                self.errors.push(AtlasError::TypeError {
-                    span: call_span,
-                    message: format!("generic argument '{}' could not be inferred for '{}'", generic_name, template.name.0),
-                    hint: None,
-                });
-                return Ok(FnSignature { params: Vec::new(), ret_ty: AtlasType::Void, is_variadic: false });
-            }
-        }
-
-        if !self.check_where_clauses(template, &bindings, call_span)? {
-            return Ok(FnSignature { params: Vec::new(), ret_ty: AtlasType::Void, is_variadic: false });
-        }
-
-        let ordered_args: Vec<AtlasType> = template
-            .generic_params
+        let arg_types: Vec<(Span, AtlasType)> = args
             .iter()
-            .map(|param| bindings.get(&param.0).cloned().expect("generic binding missing"))
-            .collect();
-        let mangled_name = mangle_type_name(&template.name.0, &ordered_args);
-        self.mangled_calls.insert(call_span, mangled_name.clone());
+            .map(|arg| Ok((arg.span(), self.check_expr(arg, locals)?)))
+            .collect::<Result<_, NativeCheckError>>()?;
 
-        if let Some(sig) = self.fn_sigs.get(&mangled_name).cloned() {
+        let plan = match plan_generic_function_instantiation(template, &arg_types, call_span) {
+            Ok(plan) => plan,
+            Err(error) => {
+                self.errors.push(error);
+                return Ok(FnSignature { params: Vec::new(), ret_ty: AtlasType::Void, is_variadic: false });
+            }
+        };
+
+        if !self.check_where_clauses(template, &plan.bindings, call_span)? {
+            return Ok(FnSignature { params: Vec::new(), ret_ty: AtlasType::Void, is_variadic: false });
+        }
+
+        self.mangled_calls.insert(call_span, plan.mangled_name.clone());
+
+        if let Some(sig) = self.fn_sigs.get(&plan.mangled_name).cloned() {
             return Ok(sig);
         }
 
-        let substitutions: HashMap<String, TypeExpr> = bindings
+        let substitutions: HashMap<String, TypeExpr> = plan.bindings
             .iter()
             .map(|(name, ty)| (name.clone(), atlas_type_to_type_expr(ty)))
             .collect();
-        let mut instantiated_decl = substitute_fn_decl(template, &mangled_name, &substitutions);
+        let mut instantiated_decl = plan.instantiated_decl;
         self.rewrite_generic_class_calls_in_block(&mut instantiated_decl.body, &substitutions);
-        let sig = self.build_fn_signature(&instantiated_decl).ok_or(NativeCheckError::Unsupported)?;
-        self.fn_sigs.insert(mangled_name.clone(), sig.clone());
+        let sig = self.build_fn_signature(&instantiated_decl).ok_or_else(|| {
+            NativeCheckError::Errors(vec![internal_compiler_error(
+                call_span,
+                format!(
+                    "failed to build monomorphized signature for '{}' as '{}'",
+                    template.name.0, plan.mangled_name
+                ),
+            )])
+        })?;
+        self.fn_sigs.insert(plan.mangled_name.clone(), sig.clone());
         self.generated_functions.push(instantiated_decl.clone());
         self.check_function(&instantiated_decl)?;
         Ok(sig)
@@ -2131,7 +2334,13 @@ impl Checker {
             .collect();
         for where_clause in &template.where_clauses {
             let Some(actual_ty) = bindings.get(&where_clause.target.0) else {
-                return Err(NativeCheckError::Unsupported);
+                return Err(NativeCheckError::Errors(vec![internal_compiler_error(
+                    span,
+                    format!(
+                        "missing generic binding '{}' while checking constraints for '{}'",
+                        where_clause.target.0, template.name.0
+                    ),
+                )]));
             };
             for constraint in &where_clause.constraints {
                 let substituted = substitute_constraint_signature(constraint, &substitutions);
@@ -2924,46 +3133,6 @@ fn type_to_type_expr(ty: &AtlasType) -> TypeExpr {
     }
 }
 
-fn infer_type_bindings(
-    expected: &TypeExpr,
-    actual: &AtlasType,
-    generic_names: &HashSet<String>,
-    bindings: &mut HashMap<String, AtlasType>,
-) -> bool {
-    match expected {
-        TypeExpr::Named(name) if generic_names.contains(name) => match bindings.get(name) {
-            Some(bound) => bound == actual,
-            None => {
-                bindings.insert(name.clone(), actual.clone());
-                true
-            }
-        },
-        TypeExpr::Named(_) => true,
-        TypeExpr::Pointer { target, nullable, .. } => {
-            if let AtlasType::Pointer { target: actual_target, nullable: actual_nullable } = actual {
-                *nullable == *actual_nullable && infer_type_bindings(target, actual_target, generic_names, bindings)
-            } else {
-                false
-            }
-        }
-        TypeExpr::Array { element, size, .. } => {
-            if let AtlasType::Array { element: actual_element, size: actual_size } = actual {
-                *size == *actual_size && infer_type_bindings(element, actual_element, generic_names, bindings)
-            } else {
-                false
-            }
-        }
-        TypeExpr::Slice { element, .. } => {
-            if let AtlasType::Slice(actual_element) = actual {
-                infer_type_bindings(element, actual_element, generic_names, bindings)
-            } else {
-                false
-            }
-        }
-        TypeExpr::Generic { .. } => true,
-    }
-}
-
 fn check_binary(
     op: &BinOp,
     lhs_ty: AtlasType,
@@ -3042,4 +3211,120 @@ fn binary_operator_method_name(op: &BinOp) -> Option<&'static str> {
         BinOp::GtEq => Some("operator_gte"),
         _ => None,
     }
+}
+
+fn type_expr_name(ty: &TypeExpr) -> String {
+    match ty {
+        TypeExpr::Named(name) => name.clone(),
+        TypeExpr::Pointer { target, nullable, .. } => {
+            let suffix = if *nullable { "?" } else { "" };
+            format!("@{}{}", type_expr_name(target), suffix)
+        }
+        TypeExpr::Array { element, size, .. } => format!("{}[{}]", type_expr_name(element), size),
+        TypeExpr::Slice { element, .. } => format!("[]{}", type_expr_name(element)),
+        TypeExpr::Generic { base, args, .. } => {
+            let rendered = args.iter().map(type_expr_name).collect::<Vec<_>>().join(", ");
+            format!("{base}<{rendered}>")
+        }
+    }
+}
+
+fn refine_nullable_local(locals: &mut HashMap<String, AtlasType>, name: &str) {
+    if let Some(AtlasType::Pointer { target, nullable: true }) = locals.get(name).cloned() {
+        locals.insert(
+            name.to_string(),
+            AtlasType::Pointer {
+                target,
+                nullable: false,
+            },
+        );
+    }
+}
+
+fn non_null_checked_var(expr: &Expr, truthy_branch: bool) -> Option<String> {
+    match expr {
+        Expr::Binary { op, lhs, rhs, .. } => match op {
+            BinOp::NotEq if truthy_branch => null_compared_var(lhs, rhs).or_else(|| null_compared_var(rhs, lhs)),
+            BinOp::Eq if !truthy_branch => null_compared_var(lhs, rhs).or_else(|| null_compared_var(rhs, lhs)),
+            _ => None,
+        },
+        Expr::Group { inner, .. } => non_null_checked_var(inner, truthy_branch),
+        _ => None,
+    }
+}
+
+fn null_compared_var(var_side: &Expr, null_side: &Expr) -> Option<String> {
+    match (var_side, null_side) {
+        (Expr::Var { name, .. }, Expr::Null { .. }) => Some(name.clone()),
+        _ => None,
+    }
+}
+
+fn is_class_value_copy_source(expr: &Expr) -> bool {
+    match expr {
+        Expr::Var { .. }
+        | Expr::MemberAccess { .. }
+        | Expr::ArrayIndex { .. }
+        | Expr::Unary {
+            op: UnaryOp::Dereference,
+            ..
+        } => true,
+        Expr::Group { inner, .. } => is_class_value_copy_source(inner),
+        _ => false,
+    }
+}
+
+fn is_exhaustive_enum_match(
+    cases: &[crate::parser::MatchCase],
+    enum_name: &str,
+    enum_ty: Option<&EnumType>,
+) -> bool {
+    if cases.iter().any(|case| matches!(case.pattern, crate::parser::Pattern::Discard(_))) {
+        return true;
+    }
+    let Some(enum_ty) = enum_ty else {
+        return false;
+    };
+    let seen: HashSet<String> = cases
+        .iter()
+        .filter_map(|case| match &case.pattern {
+            crate::parser::Pattern::Variant { path, .. } if path.len() == 2 && path[0] == enum_name => Some(path[1].clone()),
+            _ => None,
+        })
+        .collect();
+    enum_ty.variants.iter().all(|variant| seen.contains(variant))
+}
+
+fn is_exhaustive_choice_match(
+    cases: &[crate::parser::MatchCase],
+    choice_name: &str,
+    choice_ty: Option<&ChoiceType>,
+) -> bool {
+    if cases.iter().any(|case| matches!(case.pattern, crate::parser::Pattern::Discard(_))) {
+        return true;
+    }
+    let Some(choice_ty) = choice_ty else {
+        return false;
+    };
+    let seen: HashSet<String> = cases
+        .iter()
+        .filter_map(|case| match &case.pattern {
+            crate::parser::Pattern::Variant { path, .. } if path.len() == 2 && path[1].as_str() != "_" => {
+                if choice_name_matches_path(choice_name, &path[0]) {
+                    Some(path[1].clone())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        })
+        .collect();
+    choice_ty.variants.iter().all(|variant| seen.contains(&variant.name))
+}
+
+fn choice_name_matches_path(choice_name: &str, path_head: &str) -> bool {
+    choice_name == path_head
+        || choice_name.starts_with(&format!("{path_head}_"))
+        || choice_name.ends_with(&format!(".{path_head}"))
+        || choice_name.contains(&format!(".{path_head}_"))
 }

@@ -1,0 +1,11 @@
+// Type Error: class values cannot be copied with '='; use '.clone()' for an explicit copy
+
+class File {
+    public value: int;
+}
+
+fn main(): int {
+    var a = File();
+    var b = a;
+    return 0;
+}

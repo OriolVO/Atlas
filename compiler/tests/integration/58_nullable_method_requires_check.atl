@@ -1,0 +1,14 @@
+// Type Error: cannot call method 'get' on a nullable pointer to class 'Box'
+
+class Box {
+    public value: int;
+
+    fn get(self: @Box): int {
+        return (*self).value;
+    }
+}
+
+fn main(): int {
+    var p: @Box? = null;
+    return p.get();
+}

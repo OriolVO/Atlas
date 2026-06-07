@@ -1,0 +1,9 @@
+// Type Error: struct 'Node' cannot contain itself by value; use a pointer like '@Node?'
+
+struct Node {
+    next: Node;
+}
+
+fn main(): int {
+    return 0;
+}
