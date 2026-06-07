@@ -1,0 +1,22 @@
+// Exit Code: 0
+fn main(): int {
+    var a32: int32 = 7i32;
+    var a64: int64 = cast<int64>(a32);
+    if a64 != 7i64 {
+        return 1;
+    }
+
+    var s: int = 9;
+    var u: uint = cast<uint>(s);
+    if u != 9u64 {
+        return 2;
+    }
+
+    var f32: float32 = cast<float32>(1.5);
+    var f64: float64 = cast<float64>(f32);
+    if f64 < 1.49 || f64 > 1.51 {
+        return 3;
+    }
+
+    return 0;
+}

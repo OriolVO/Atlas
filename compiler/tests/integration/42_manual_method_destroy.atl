@@ -1,0 +1,18 @@
+// Type Error: manual '.destroy()' calls on class instances are forbidden; destruction is automatic
+class FileLike {
+    public closed: bool;
+
+    fn init(self: @FileLike) {
+        (*self).closed = false;
+    }
+
+    fn destroy(self: @FileLike) {
+        (*self).closed = true;
+    }
+}
+
+fn main(): int {
+    var f = FileLike();
+    f.destroy();
+    return 0;
+}

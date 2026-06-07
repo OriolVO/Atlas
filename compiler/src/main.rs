@@ -1,7 +1,7 @@
 use clap::{Parser as ClapParser, Subcommand};
 use miette::{NamedSource, Report};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
 
 use atlas::lexer::Lexer;
@@ -23,7 +23,7 @@ enum Commands {
     /// Build an Atlas source file or multi-file project
     Build {
         /// The source file to compile (single-file mode)
-        file: PathBuf,
+        file: Option<PathBuf>,
 
         /// Compile as a multi-file project rooted at this entry point.
         /// The compiler will resolve all transitive imports automatically.
@@ -70,13 +70,88 @@ fn main() {
             emit_ir,
             output,
         } => {
-            if project {
-                build_project(file, stdlib, dump_ast, dump_ir, emit_ir, output);
-            } else {
-                build_single(file, dump_tokens, dump_ast, dump_ir, emit_ir, output);
+            match resolve_build_target(file, project) {
+                Ok(BuildTarget::Single(file)) => {
+                    build_single(file, dump_tokens, dump_ast, dump_ir, emit_ir, output);
+                }
+                Ok(BuildTarget::Project(entry)) => {
+                    if dump_tokens {
+                        eprintln!("error: '--dump-tokens' is only supported in single-file mode");
+                        process::exit(1);
+                    }
+                    build_project(entry, stdlib, dump_ast, dump_ir, emit_ir, output);
+                }
+                Err(message) => {
+                    eprintln!("error: {}", message);
+                    process::exit(1);
+                }
             }
         }
     }
+}
+
+enum BuildTarget {
+    Single(PathBuf),
+    Project(PathBuf),
+}
+
+fn resolve_build_target(file: Option<PathBuf>, project: bool) -> Result<BuildTarget, String> {
+    match (file, project) {
+        (Some(file), true) => Ok(BuildTarget::Project(file)),
+        (Some(file), false) => Ok(BuildTarget::Single(file)),
+        (None, true) | (None, false) => {
+            let package_path = PathBuf::from("package.atl");
+            if !package_path.exists() {
+                return Err(
+                    "missing build target: pass a source file or add a package.atl with an entry field".to_string(),
+                );
+            }
+            let entry = load_package_entry(&package_path)?;
+            Ok(BuildTarget::Project(entry))
+        }
+    }
+}
+
+fn load_package_entry(package_path: &Path) -> Result<PathBuf, String> {
+    let source = fs::read_to_string(package_path)
+        .map_err(|err| format!("failed to read '{}': {}", package_path.display(), err))?;
+    let package_dir = package_path.parent().unwrap_or_else(|| Path::new("."));
+
+    for raw_line in source.lines() {
+        let line = raw_line.split("//").next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() != "entry" {
+            continue;
+        }
+
+        let entry_value = value.trim();
+        if !(entry_value.starts_with('"') && entry_value.ends_with('"') && entry_value.len() >= 2) {
+            return Err(format!(
+                "invalid entry in '{}': expected entry = \"path/to/main.atl\"",
+                package_path.display()
+            ));
+        }
+
+        let relative = &entry_value[1..entry_value.len() - 1];
+        let entry_path = package_dir.join(relative);
+        if entry_path.extension().and_then(|ext| ext.to_str()) != Some("atl") {
+            return Err(format!(
+                "package entry must point to an '.atl' file (got '{}')",
+                entry_path.display()
+            ));
+        }
+        return Ok(entry_path);
+    }
+
+    Err(format!(
+        "missing 'entry' field in '{}'",
+        package_path.display()
+    ))
 }
 
 // ─── Single-file compilation ──────────────────────────────────────────────────

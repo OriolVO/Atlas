@@ -23,8 +23,8 @@ impl TypeChecker {
             native::NativeSingleCheck::Typed(typed) => Ok(typed),
             native::NativeSingleCheck::Unsupported => Err(vec![AtlasError::TypeError {
                 span: Span::new(0, 0),
-                message: "single-file typechecking is not supported natively for this program yet".to_string(),
-                hint: None,
+                message: "internal compiler error: reached an unexpected unsupported native typechecking path".to_string(),
+                hint: Some("This is a compiler bug. Please report the source program that triggered it.".to_string()),
             }]),
             native::NativeSingleCheck::Errors(errors) => Err(errors),
         }
@@ -41,8 +41,8 @@ impl TypeChecker {
                 String::new(),
                 vec![AtlasError::TypeError {
                     span: Span::new(0, 0),
-                    message: "project typechecking is not supported natively for this program yet".to_string(),
-                    hint: None,
+                    message: "internal compiler error: reached an unexpected unsupported native project typechecking path".to_string(),
+                    hint: Some("This is a compiler bug. Please report the source program that triggered it.".to_string()),
                 }],
             )]),
             native::NativeProjectCheck::Errors(errors) => Err(errors),

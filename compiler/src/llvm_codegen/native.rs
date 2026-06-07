@@ -316,10 +316,24 @@ impl NativeCodegen {
     fn emit_default_class_destroy(&mut self, class_name: &str) -> Result<(), AtlasError> {
         let class_ty = map_type(&AtlasType::Class(class_name.to_string()))?;
         self.output.push_str(&format!(
-            "define void {}({}* %self) {{\nentry:\n    ret void\n}}\n\n",
+            "define void {}({}* %self) {{\nentry:\n",
             llvm_symbol(&format!("{}.destroy", class_name)),
             class_ty
         ));
+        if let Some(class_def) = self.typed_ast.classes.get(class_name).cloned() {
+            for (field_index, field) in class_def.fields.iter().enumerate().rev() {
+                if !matches!(field.ty, AtlasType::Class(_)) {
+                    continue;
+                }
+                let field_ptr = self.next_temp();
+                self.output.push_str(&format!(
+                    "    {} = getelementptr inbounds %class.{}, %class.{}* %self, i32 0, i32 {}\n",
+                    field_ptr, class_name, class_name, field_index
+                ));
+                self.emit_destroy_for_ptr(&field_ptr, &field.ty)?;
+            }
+        }
+        self.output.push_str("    ret void\n}\n\n");
         Ok(())
     }
 
@@ -386,13 +400,8 @@ impl NativeCodegen {
                     final_ty
                 } else {
                     let final_ty = ty.ok_or_else(|| AtlasError::CodegenError {
-                        message: "native codegen requires initialized local variables unless an array type is declared".to_string(),
+                        message: "native codegen requires a type annotation for uninitialized local variables".to_string(),
                     })?;
-                    if !matches!(final_ty, AtlasType::Array { .. }) {
-                        return Err(AtlasError::CodegenError {
-                            message: "native codegen only supports uninitialized array locals".to_string(),
-                        });
-                    }
                     let llvm_ty = map_type(&final_ty)?;
                     let ptr = self.next_temp();
                     self.output
@@ -569,11 +578,12 @@ impl NativeCodegen {
                     Some(crate::lexer::IntSuffix::I32) => AtlasType::Int32,
                     Some(crate::lexer::IntSuffix::I8) => AtlasType::Int8,
                     Some(crate::lexer::IntSuffix::I16) => AtlasType::Int16,
-                    Some(crate::lexer::IntSuffix::I64) | None => AtlasType::Int,
+                    Some(crate::lexer::IntSuffix::I64) => AtlasType::Int64,
+                    None => AtlasType::Int,
                     Some(crate::lexer::IntSuffix::U8) => AtlasType::Uint8,
                     Some(crate::lexer::IntSuffix::U16) => AtlasType::Uint16,
                     Some(crate::lexer::IntSuffix::U32) => AtlasType::Uint32,
-                    Some(crate::lexer::IntSuffix::U64) => AtlasType::Uint,
+                    Some(crate::lexer::IntSuffix::U64) => AtlasType::Uint64,
                 },
             )),
             Expr::FloatLit { value, .. } => Ok((value.to_string(), AtlasType::Float)),
@@ -583,9 +593,7 @@ impl NativeCodegen {
             )),
             Expr::CharLit { value, .. } => Ok(((*value as u32).to_string(), AtlasType::Char)),
             Expr::Null { .. } => Ok(("null".to_string(), AtlasType::Null)),
-            Expr::StringLit { .. } => Err(AtlasError::CodegenError {
-                message: "string literals require an expected coercion target in native codegen".to_string(),
-            }),
+            Expr::StringLit { value, .. } => self.emit_string_literal_slice(value),
             Expr::StaticMember {
                 class_name,
                 member_name,
@@ -700,7 +708,7 @@ impl NativeCodegen {
                 }
                 let (lhs_val, lhs_ty, rhs_val, rhs_ty) =
                     self.emit_binary_operands(lhs, rhs)?;
-                if lhs_ty != rhs_ty {
+                if !same_runtime_type(&lhs_ty, &rhs_ty) {
                     return Err(AtlasError::CodegenError {
                         message: "binary operand type mismatch".to_string(),
                     });
@@ -1196,10 +1204,85 @@ impl NativeCodegen {
         match ty {
             AtlasType::Enum(enum_name) => self.emit_enum_match_stmt(value, &enum_name, cases),
             AtlasType::Choice(choice_name) => self.emit_choice_match_stmt(value, &choice_name, cases),
+            ty if supports_literal_match(&ty) => self.emit_literal_match_stmt(value, &ty, cases),
             other => Err(AtlasError::CodegenError {
                 message: format!("native match does not support '{:?}'", other),
             }),
         }
+    }
+
+    fn emit_literal_match_stmt(
+        &mut self,
+        value: String,
+        matched_ty: &AtlasType,
+        cases: &[crate::parser::MatchCase],
+    ) -> Result<(), AtlasError> {
+        let end_label = self.next_label("match_end");
+        let mut next_label: Option<String> = None;
+        for (index, case) in cases.iter().enumerate() {
+            let body_label = self.next_label("match_case_body");
+            let fallthrough_label = if index + 1 == cases.len() {
+                end_label.clone()
+            } else {
+                self.next_label("match_case_next")
+            };
+            if let Some(label) = next_label.take() {
+                self.emit_label(&label);
+            }
+            match &case.pattern {
+                Pattern::Discard(_) => {
+                    self.emit_pattern_block(None, &case.body)?;
+                    if !self.current_block_terminated() {
+                        self.output.push_str(&format!("    br label %{}\n", end_label));
+                        self.block_terminated = true;
+                    }
+                    break;
+                }
+                Pattern::Literal(lit, _) => {
+                    let (lit_value, lit_ty) = self.emit_expr(lit)?;
+                    if !same_runtime_type(matched_ty, &lit_ty) {
+                        return Err(AtlasError::CodegenError {
+                            message: "literal match pattern type mismatch".to_string(),
+                        });
+                    }
+                    let cond = self.next_temp();
+                    self.output.push_str(&format!(
+                        "    {} = {} {} {}, {}\n",
+                        cond,
+                        compare_opcode(matched_ty)?,
+                        map_type(matched_ty)?,
+                        value,
+                        lit_value
+                    ));
+                    self.output.push_str(&format!(
+                        "    br i1 {}, label %{}, label %{}\n",
+                        cond, body_label, fallthrough_label
+                    ));
+                    self.block_terminated = true;
+                    self.emit_label(&body_label);
+                    self.emit_pattern_block(None, &case.body)?;
+                    if !self.current_block_terminated() {
+                        self.output.push_str(&format!("    br label %{}\n", end_label));
+                        self.block_terminated = true;
+                    }
+                    if fallthrough_label != end_label {
+                        next_label = Some(fallthrough_label);
+                    }
+                }
+                _ => {
+                    return Err(AtlasError::CodegenError {
+                        message: "unsupported native literal match pattern".to_string(),
+                    });
+                }
+            }
+        }
+        if let Some(label) = next_label {
+            self.emit_label(&label);
+            self.output.push_str(&format!("    br label %{}\n", end_label));
+            self.block_terminated = true;
+        }
+        self.emit_label(&end_label);
+        Ok(())
     }
 
     fn emit_enum_match_stmt(
@@ -1747,7 +1830,7 @@ impl NativeCodegen {
         args: &[Expr],
     ) -> Result<Option<(String, AtlasType)>, AtlasError> {
         let (value, object_ty) = self.emit_expr(object)?;
-        if !matches!(object_ty, AtlasType::Int | AtlasType::Bool | AtlasType::Char) {
+        if !supports_primitive_methods(&object_ty) {
             return Ok(None);
         }
 
@@ -1760,7 +1843,7 @@ impl NativeCodegen {
                     });
                 }
                 let (rhs, rhs_ty) = self.emit_expr_coerced(&args[0], &object_ty)?;
-                if rhs_ty != object_ty {
+                if !same_runtime_type(&rhs_ty, &object_ty) {
                     return Err(AtlasError::CodegenError {
                         message: "primitive equals argument type mismatch".to_string(),
                     });
@@ -1785,7 +1868,10 @@ impl NativeCodegen {
         ty: AtlasType,
     ) -> Result<(String, AtlasType), AtlasError> {
         match ty {
-            AtlasType::Int => Ok((value, AtlasType::Int)),
+            ty if is_integer(&ty) && !matches!(ty, AtlasType::Bool | AtlasType::Char) => {
+                let widened = self.widen_integer_to_i64(value, &ty)?;
+                Ok((widened, AtlasType::Int))
+            }
             AtlasType::Bool => {
                 let reg = self.next_temp();
                 self.output
@@ -1840,7 +1926,10 @@ impl NativeCodegen {
                 Ok((reg, AtlasType::Class("string.String".to_string())))
             }
             AtlasType::Char => self.emit_string_from_char_value(value),
-            AtlasType::Int => self.emit_string_from_int_value(value),
+            ty if is_integer(&ty) && !matches!(ty, AtlasType::Bool | AtlasType::Char) => {
+                let widened = self.widen_integer_to_i64(value, &ty)?;
+                self.emit_string_from_int_value(widened, is_unsigned_like(&ty))
+            }
             _ => Err(AtlasError::CodegenError {
                 message: "unsupported primitive format receiver".to_string(),
             }),
@@ -1867,7 +1956,11 @@ impl NativeCodegen {
         self.emit_string_value(malloc_ptr, "1".to_string())
     }
 
-    fn emit_string_from_int_value(&mut self, int_value: String) -> Result<(String, AtlasType), AtlasError> {
+    fn emit_string_from_int_value(
+        &mut self,
+        int_value: String,
+        is_unsigned: bool,
+    ) -> Result<(String, AtlasType), AtlasError> {
         let buf = self.next_temp();
         self.output.push_str(&format!("    {} = alloca [32 x i8]\n", buf));
         let buf_ptr = self.next_temp();
@@ -1875,7 +1968,7 @@ impl NativeCodegen {
             "    {} = getelementptr inbounds [32 x i8], [32 x i8]* {}, i64 0, i64 0\n",
             buf_ptr, buf
         ));
-        let fmt_ptr = self.next_global_cstring("%lld");
+        let fmt_ptr = self.next_global_cstring(if is_unsigned { "%llu" } else { "%lld" });
         let len_i32 = self.next_temp();
         self.output.push_str(&format!(
             "    {} = call i32 {}(i8* {}, i64 32, i8* {}, i64 {})\n",
@@ -1957,6 +2050,25 @@ impl NativeCodegen {
             with_len, llvm_ty, with_ptr, len_value
         ));
         Ok((with_len, string_ty))
+    }
+
+    fn widen_integer_to_i64(
+        &mut self,
+        value: String,
+        ty: &AtlasType,
+    ) -> Result<String, AtlasError> {
+        let llvm_ty = map_type(ty)?;
+        let bits = integer_width(ty)?;
+        if bits == 64 {
+            return Ok(value);
+        }
+        let reg = self.next_temp();
+        let op = if is_unsigned_like(ty) { "zext" } else { "sext" };
+        self.output.push_str(&format!(
+            "    {} = {} {} {} to i64\n",
+            reg, op, llvm_ty, value
+        ));
+        Ok(reg)
     }
 
     fn next_global_cstring(&mut self, value: &str) -> String {
@@ -2221,41 +2333,6 @@ impl NativeCodegen {
                 return Ok(value);
             }
         }
-        if let Expr::StringLit { value, .. } = expr {
-            if matches!(expected_ty, AtlasType::Slice(element) if **element == AtlasType::Char) {
-                return self.emit_string_literal_slice(value);
-            }
-            if let AtlasType::Class(class_name) = expected_ty {
-                if let Some(method) = self
-                    .typed_ast
-                    .classes
-                    .get(class_name)
-                    .and_then(|class_ty| class_ty.methods.get("from"))
-                    .cloned()
-                {
-                    if method.sig.params.len() == 1
-                        && matches!(
-                            (&method.sig.params[0].1, &method.sig.ret_ty),
-                            (AtlasType::Slice(element), AtlasType::Class(ret_name))
-                                if **element == AtlasType::Char && ret_name == class_name
-                        )
-                    {
-                        let (slice_value, _) = self.emit_string_literal_slice(value)?;
-                        let reg = self.next_temp();
-                        self.output.push_str(&format!(
-                            "    {} = call {} {}({} {})\n",
-                            reg,
-                            map_type(expected_ty)?,
-                            llvm_symbol(&format!("{}.from", class_name)),
-                            map_type(&method.sig.params[0].1)?,
-                            slice_value
-                        ));
-                        return Ok((reg, expected_ty.clone()));
-                    }
-                }
-            }
-        }
-
         if matches!(expr, Expr::Null { .. }) {
             if matches!(expected_ty, AtlasType::Pointer { nullable: true, .. }) {
                 return Ok(("null".to_string(), expected_ty.clone()));
@@ -2310,6 +2387,20 @@ impl NativeCodegen {
                 return Ok((with_len, slice_ty));
             }
         }
+        if let Some(class_name) = class_from_char_slice(expected_ty, &actual_ty, &self.typed_ast.classes) {
+            let reg = self.next_temp();
+            let param_ty = AtlasType::Slice(Box::new(AtlasType::Char));
+            self.output.push_str(&format!(
+                "    {} = call {} {}({} {})\n",
+                reg,
+                map_type(expected_ty)?,
+                llvm_symbol(&format!("{}.from", class_name)),
+                map_type(&param_ty)?,
+                value
+            ));
+            return Ok((reg, expected_ty.clone()));
+        }
+
         Ok((value, actual_ty))
     }
 
@@ -2362,7 +2453,7 @@ impl NativeCodegen {
         let (lhs_val, lhs_ty) = self.emit_expr(lhs)?;
         let (rhs_val, rhs_ty) = self.emit_expr(rhs)?;
 
-        if lhs_ty == rhs_ty {
+        if same_runtime_type(&lhs_ty, &rhs_ty) {
             return Ok((lhs_val, lhs_ty, rhs_val, rhs_ty));
         }
 
@@ -2532,15 +2623,18 @@ fn resolve_simple_type(
 ) -> Result<AtlasType, AtlasError> {
     match ty {
         crate::parser::TypeExpr::Named(name) => match name.as_str() {
-            "int" | "int64" => Ok(AtlasType::Int),
+            "int" => Ok(AtlasType::Int),
+            "int64" => Ok(AtlasType::Int64),
             "int32" => Ok(AtlasType::Int32),
             "int16" => Ok(AtlasType::Int16),
             "int8" => Ok(AtlasType::Int8),
-            "uint" | "uint64" => Ok(AtlasType::Uint),
+            "uint" => Ok(AtlasType::Uint),
+            "uint64" => Ok(AtlasType::Uint64),
             "uint32" => Ok(AtlasType::Uint32),
             "uint16" => Ok(AtlasType::Uint16),
             "uint8" => Ok(AtlasType::Uint8),
-            "float" | "float64" => Ok(AtlasType::Float),
+            "float" => Ok(AtlasType::Float),
+            "float64" => Ok(AtlasType::Float64),
             "float32" => Ok(AtlasType::Float32),
             "bool" => Ok(AtlasType::Bool),
             "char" => Ok(AtlasType::Char),
@@ -2619,8 +2713,21 @@ fn is_float(ty: &AtlasType) -> bool {
     matches!(ty, AtlasType::Float | AtlasType::Float32 | AtlasType::Float64)
 }
 
+fn normalize_machine_alias(ty: &AtlasType) -> AtlasType {
+    match ty {
+        AtlasType::Int => AtlasType::Int64,
+        AtlasType::Uint => AtlasType::Uint64,
+        AtlasType::Float => AtlasType::Float64,
+        other => other.clone(),
+    }
+}
+
+fn same_runtime_type(lhs: &AtlasType, rhs: &AtlasType) -> bool {
+    lhs == rhs || normalize_machine_alias(lhs) == normalize_machine_alias(rhs)
+}
+
 fn is_assignable_to(expected: &AtlasType, actual: &AtlasType) -> bool {
-    if expected == actual {
+    if same_runtime_type(expected, actual) {
         return true;
     }
 
@@ -2654,6 +2761,46 @@ fn is_assignable_to(expected: &AtlasType, actual: &AtlasType) -> bool {
             }
         ) if expected_elem == actual_elem
     )
+}
+
+fn supports_primitive_methods(ty: &AtlasType) -> bool {
+    is_integer(ty) || matches!(ty, AtlasType::Bool | AtlasType::Char)
+}
+
+fn supports_literal_match(ty: &AtlasType) -> bool {
+    is_integer(ty) || is_float(ty) || matches!(ty, AtlasType::Bool | AtlasType::Char)
+}
+
+fn class_from_char_slice(
+    expected_ty: &AtlasType,
+    actual_ty: &AtlasType,
+    classes: &HashMap<String, ClassType>,
+) -> Option<String> {
+    let AtlasType::Class(class_name) = expected_ty else {
+        return None;
+    };
+    let AtlasType::Slice(actual_element) = actual_ty else {
+        return None;
+    };
+    if **actual_element != AtlasType::Char {
+        return None;
+    }
+    classes
+        .get(class_name)
+        .and_then(|class_ty| class_ty.methods.get("from"))
+        .and_then(|method| {
+            if method.sig.params.len() == 1
+                && matches!(
+                    (&method.sig.params[0].1, &method.sig.ret_ty),
+                    (AtlasType::Slice(expected_element), AtlasType::Class(ret_name))
+                        if **expected_element == AtlasType::Char && ret_name == class_name
+                )
+            {
+                Some(class_name.clone())
+            } else {
+                None
+            }
+        })
 }
 
 fn is_integer(ty: &AtlasType) -> bool {
@@ -2836,11 +2983,12 @@ fn llvm_symbol(name: &str) -> String {
 }
 
 fn compare_opcode(ty: &AtlasType) -> Result<&'static str, AtlasError> {
-    match ty {
-        AtlasType::Int | AtlasType::Bool | AtlasType::Char => Ok("icmp eq"),
-        _ => Err(AtlasError::CodegenError {
+    if is_integer(ty) || matches!(ty, AtlasType::Bool | AtlasType::Char) {
+        Ok("icmp eq")
+    } else {
+        Err(AtlasError::CodegenError {
             message: format!("unsupported primitive comparison type '{:?}'", ty),
-        }),
+        })
     }
 }
 

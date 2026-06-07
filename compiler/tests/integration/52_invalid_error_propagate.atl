@@ -1,0 +1,10 @@
+// Type Error: error propagation requires the enclosing function to return a Result-like choice
+
+fn plain_value(): int {
+    return 7;
+}
+
+fn main(): int {
+    var x = plain_value()?;
+    return x;
+}

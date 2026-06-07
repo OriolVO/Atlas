@@ -1,0 +1,24 @@
+// Exit Code: 0
+struct Pair {
+    a: int;
+    b: int;
+}
+
+fn main(): int {
+    var p: @int?;
+    if p != null {
+        return 1;
+    }
+
+    var n: int;
+    if n != 0 {
+        return 2;
+    }
+
+    var pair: Pair;
+    if pair.a != 0 || pair.b != 0 {
+        return 3;
+    }
+
+    return 0;
+}

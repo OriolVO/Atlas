@@ -1,0 +1,10 @@
+// Type Error: class 'NoIndex' does not support indexing
+
+class NoIndex {
+    value: int;
+}
+
+fn main(): int {
+    var n = NoIndex();
+    return n[0];
+}

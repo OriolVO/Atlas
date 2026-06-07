@@ -1,0 +1,9 @@
+// Type Error: class 'Counter' has no static method 'missing'
+
+class Counter {
+    value: int;
+}
+
+fn main(): int {
+    return Counter::missing();
+}

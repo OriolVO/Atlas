@@ -3,25 +3,7 @@
 extern "C" fn putchar(c: int32): int32;
 
 struct GlobalState {
-    destroyed_flag: int;
-}
-
-class Resource {
-    public state: @GlobalState;
-    
-    fn init(self: @Resource, state: @GlobalState) {
-        (*self).state = state;
-    }
-    
-    fn destroy(self: @Resource) {
-        (*(*self).state).destroyed_flag = 42;
-    }
-}
-
-class PureClass {
-    public a: int;
-    fn init(self: @PureClass) { (*self).a = 0; }
-    // No destroy method
+    value: int;
 }
 
 fn print_char(c: int32) {
@@ -29,29 +11,14 @@ fn print_char(c: int32) {
 }
 
 fn main(): int {
-    var state = GlobalState(0);
-    
-    var r = Resource(@state);
-    
-    // Test 1: Class with destroy
-    memory::destroy<Resource>(r);
-    
-    if state.destroyed_flag != 42 {
-        return 1;
-    }
-    
-    // Test 2: Primitive (should do nothing and compile fine)
+    // Primitive destroy remains a no-op.
     var x = 100;
     memory::destroy<int>(x);
-    
-    // Test 3: Struct (should do nothing and compile fine)
+
+    // Struct destroy remains a no-op.
     var s = GlobalState(1);
     memory::destroy<GlobalState>(s);
-    
-    // Test 4: Class without destroy
-    var p = PureClass();
-    memory::destroy<PureClass>(p);
-    
+
     print_char(52i32); // 4
     print_char(50i32); // 2
     print_char(10i32); // \n

@@ -1,4 +1,4 @@
-// Exit Code: 42
+// Type Error: manual 'memory::destroy<T>' is forbidden for class values; destruction is automatic
 import memory;
 
 struct State {
@@ -28,6 +28,5 @@ fn test_heap(st: @State) {
 fn main(): int {
     var st = State { destroyed_count: 0 };
     test_heap(@st);
-    
-    return st.destroyed_count + 41;
+    return 0;
 }

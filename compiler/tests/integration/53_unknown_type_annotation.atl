@@ -1,0 +1,6 @@
+// Type Error: unknown type
+
+fn main(): int {
+    var x: MissingType;
+    return 0;
+}

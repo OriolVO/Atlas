@@ -1,0 +1,6 @@
+// Type Error: mismatched initializer type
+fn main(): int {
+    var a32: int32 = 7i32;
+    var a64: int64 = a32;
+    return 0;
+}

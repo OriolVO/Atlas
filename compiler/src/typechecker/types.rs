@@ -120,15 +120,18 @@ pub fn resolve_type(
 ) -> Option<AtlasType> {
     match type_expr {
         TypeExpr::Named(name) => match name.as_str() {
-            "int" | "int64" => Some(AtlasType::Int),
-            "uint" | "uint64" => Some(AtlasType::Uint),
+            "int" => Some(AtlasType::Int),
+            "int64" => Some(AtlasType::Int64),
+            "uint" => Some(AtlasType::Uint),
+            "uint64" => Some(AtlasType::Uint64),
             "int8" => Some(AtlasType::Int8),
             "int16" => Some(AtlasType::Int16),
             "int32" => Some(AtlasType::Int32),
             "uint8" => Some(AtlasType::Uint8),
             "uint16" => Some(AtlasType::Uint16),
             "uint32" => Some(AtlasType::Uint32),
-            "float" | "float64" => Some(AtlasType::Float),
+            "float" => Some(AtlasType::Float),
+            "float64" => Some(AtlasType::Float64),
             "float32" => Some(AtlasType::Float32),
             "bool" => Some(AtlasType::Bool),
             "char" => Some(AtlasType::Char),
@@ -201,11 +204,11 @@ fn map_suffix(suffix: IntSuffix) -> AtlasType {
         IntSuffix::I8 => AtlasType::Int8,
         IntSuffix::I16 => AtlasType::Int16,
         IntSuffix::I32 => AtlasType::Int32,
-        IntSuffix::I64 => AtlasType::Int,
+        IntSuffix::I64 => AtlasType::Int64,
         IntSuffix::U8 => AtlasType::Uint8,
         IntSuffix::U16 => AtlasType::Uint16,
         IntSuffix::U32 => AtlasType::Uint32,
-        IntSuffix::U64 => AtlasType::Uint,
+        IntSuffix::U64 => AtlasType::Uint64,
     }
 }
 

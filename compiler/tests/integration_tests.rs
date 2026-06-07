@@ -6,6 +6,7 @@ fn run_integration_test(path: &std::path::Path) -> Result<(), String> {
     
     let mut expected_exit_code = 0;
     let mut expected_output = String::new();
+    let mut expected_type_error: Option<String> = None;
     for line in source.lines() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("// Exit Code:") {
@@ -16,6 +17,8 @@ fn run_integration_test(path: &std::path::Path) -> Result<(), String> {
             expected_output = rest.trim().to_string();
         } else if let Some(rest) = trimmed.strip_prefix("// Expected Output:") {
             expected_output = rest.trim().to_string();
+        } else if let Some(rest) = trimmed.strip_prefix("// Type Error:") {
+            expected_type_error = Some(rest.trim().to_string());
         }
     }
 
@@ -36,9 +39,29 @@ fn run_integration_test(path: &std::path::Path) -> Result<(), String> {
     let typed_ast = match typechecker.check_project(&mut project) {
         Ok(t) => t,
         Err(e) => {
+            if let Some(expected) = &expected_type_error {
+                let rendered = format!("{:?}", e);
+                if rendered.contains(expected) {
+                    return Ok(());
+                }
+                return Err(format!(
+                    "Typecheck error mismatch in {}. Expected substring {:?}, got {:?}",
+                    path.display(),
+                    expected,
+                    rendered
+                ));
+            }
             return Err(format!("Typecheck errors in {}: {:?}", path.display(), e));
         }
     };
+
+    if let Some(expected) = &expected_type_error {
+        return Err(format!(
+            "Expected a typecheck error containing {:?} in {}, but compilation succeeded",
+            expected,
+            path.display()
+        ));
+    }
 
     let mut merged = atlas::parser::SourceFile { items: Vec::new() };
     for mod_name in &project.topological_order {

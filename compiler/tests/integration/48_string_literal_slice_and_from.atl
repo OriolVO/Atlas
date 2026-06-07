@@ -1,0 +1,28 @@
+// Exit Code: 0
+import string;
+
+fn main(): int {
+    var chars: []char = "Hi";
+    if chars.len != 2 {
+        return 1;
+    }
+    if chars[0] != 'H' {
+        return 2;
+    }
+    if chars[1] != 'i' {
+        return 3;
+    }
+
+    var s: string::String = "Hi";
+    if s.length() != 2 {
+        return 4;
+    }
+    if s.c_str()[0] != 'H' {
+        return 5;
+    }
+    if s.c_str()[1] != 'i' {
+        return 6;
+    }
+
+    return 0;
+}

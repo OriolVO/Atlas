@@ -1,0 +1,50 @@
+// Exit Code: 42
+extern "C" fn putchar(c: int32): int32;
+
+struct Log {
+    order: int;
+}
+
+class First {
+    public log: @Log;
+
+    fn init(self: @First, log: @Log) {
+        (*self).log = log;
+    }
+
+    fn destroy(self: @First) {
+        (*(*self).log).order = (*(*self).log).order * 10 + 1;
+    }
+}
+
+class Second {
+    public log: @Log;
+
+    fn init(self: @Second, log: @Log) {
+        (*self).log = log;
+    }
+
+    fn destroy(self: @Second) {
+        (*(*self).log).order = (*(*self).log).order * 10 + 2;
+    }
+}
+
+class Pair {
+    public first: First;
+    public second: Second;
+
+    fn init(self: @Pair, log: @Log) {
+        (*self).first = First(log);
+        (*self).second = Second(log);
+    }
+}
+
+fn test(log: @Log) {
+    var p = Pair(log);
+}
+
+fn main(): int {
+    var log = Log(0);
+    test(@log);
+    return log.order + 21;
+}

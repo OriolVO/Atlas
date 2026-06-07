@@ -1,0 +1,6 @@
+// Type Error: mismatched initializer type
+fn main(): int {
+    var s: int = 9;
+    var u: uint = s;
+    return 0;
+}

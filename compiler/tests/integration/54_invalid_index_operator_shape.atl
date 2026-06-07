@@ -1,0 +1,12 @@
+// Type Error: index operator 'Broken.operator[]' must take exactly one explicit index argument
+
+class Broken {
+    fn operator[](self: @Broken): int {
+        return 0;
+    }
+}
+
+fn main(): int {
+    var b = Broken();
+    return b[0];
+}

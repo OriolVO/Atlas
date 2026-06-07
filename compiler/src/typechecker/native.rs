@@ -114,6 +114,8 @@ struct Checker {
     generated_functions: Vec<crate::parser::FunctionDecl>,
     mangled_calls: HashMap<Span, String>,
     current_return_ty: Option<AtlasType>,
+    current_function_name: Option<String>,
+    current_class_name: Option<String>,
     errors: Vec<AtlasError>,
 }
 
@@ -138,6 +140,8 @@ impl Checker {
             generated_functions: Vec::new(),
             mangled_calls: HashMap::new(),
             current_return_ty: None,
+            current_function_name: None,
+            current_class_name: None,
             errors: Vec::new(),
         }
     }
@@ -191,15 +195,18 @@ impl Checker {
     fn resolve_type_expr(&mut self, ty: &TypeExpr) -> Option<AtlasType> {
         match ty {
             TypeExpr::Named(name) => match name.as_str() {
-                "int" | "int64" => Some(AtlasType::Int),
+                "int" => Some(AtlasType::Int),
+                "int64" => Some(AtlasType::Int64),
                 "int32" => Some(AtlasType::Int32),
                 "int16" => Some(AtlasType::Int16),
                 "int8" => Some(AtlasType::Int8),
-                "uint" | "uint64" => Some(AtlasType::Uint),
+                "uint" => Some(AtlasType::Uint),
+                "uint64" => Some(AtlasType::Uint64),
                 "uint32" => Some(AtlasType::Uint32),
                 "uint16" => Some(AtlasType::Uint16),
                 "uint8" => Some(AtlasType::Uint8),
-                "float" | "float64" => Some(AtlasType::Float),
+                "float" => Some(AtlasType::Float),
+                "float64" => Some(AtlasType::Float64),
                 "float32" => Some(AtlasType::Float32),
                 "bool" => Some(AtlasType::Bool),
                 "char" => Some(AtlasType::Char),
@@ -296,6 +303,25 @@ impl Checker {
                 } else {
                     None
                 }
+            }
+        }
+    }
+
+    fn resolve_type_expr_or_error(
+        &mut self,
+        ty: &TypeExpr,
+        span: Span,
+        context: &str,
+    ) -> AtlasType {
+        match self.resolve_type_expr(ty) {
+            Some(resolved) => resolved,
+            None => {
+                self.errors.push(AtlasError::TypeError {
+                    span,
+                    message: format!("unknown type '{:?}' in {}", ty, context),
+                    hint: None,
+                });
+                AtlasType::Void
             }
         }
     }
@@ -651,10 +677,16 @@ impl Checker {
             .cloned()
             .ok_or(NativeCheckError::Unsupported)?;
         let previous_ret = self.current_return_ty.clone();
+        let previous_fn = self.current_function_name.clone();
+        let previous_class = self.current_class_name.clone();
         self.current_return_ty = Some(sig.ret_ty.clone());
+        self.current_function_name = Some(decl.name.0.clone());
+        self.current_class_name = None;
         let mut locals: HashMap<String, AtlasType> = sig.params.into_iter().collect();
         let result = self.check_block(&decl.body, &mut locals, &sig.ret_ty);
         self.current_return_ty = previous_ret;
+        self.current_function_name = previous_fn;
+        self.current_class_name = previous_class;
         result
     }
 
@@ -669,10 +701,16 @@ impl Checker {
             .cloned()
             .ok_or(NativeCheckError::Unsupported)?;
         let previous_ret = self.current_return_ty.clone();
+        let previous_fn = self.current_function_name.clone();
+        let previous_class = self.current_class_name.clone();
         self.current_return_ty = Some(sig.ret_ty.clone());
+        self.current_function_name = Some(qualified_name.to_string());
+        self.current_class_name = qualified_name.rsplit_once('.').map(|(class_name, _)| class_name.to_string());
         let mut locals: HashMap<String, AtlasType> = sig.params.into_iter().collect();
         let result = self.check_block(&decl.body, &mut locals, &sig.ret_ty);
         self.current_return_ty = previous_ret;
+        self.current_function_name = previous_fn;
+        self.current_class_name = previous_class;
         result
     }
 
@@ -698,11 +736,9 @@ impl Checker {
             Stmt::VarDecl(decl) => {
                 let var_ty = if let Some(init) = &decl.init {
                     if let Some(hint) = &decl.ty_hint {
-                        let hint_ty = self.resolve_type_expr(&hint.0).ok_or(NativeCheckError::Unsupported)?;
+                        let hint_ty = self.resolve_type_expr_or_error(&hint.0, decl.span, "variable declaration");
                         let init_ty = self.check_expr_with_expected(init, &hint_ty, locals)?;
-                        if !is_assignable_to(&hint_ty, &init_ty)
-                            && !can_construct_from_string_literal(&hint_ty, init, &self.classes)
-                        {
+                        if !is_assignable_to(&hint_ty, &init_ty) {
                             self.errors.push(AtlasError::TypeError {
                                 span: decl.span,
                                 message: format!(
@@ -718,28 +754,28 @@ impl Checker {
                         init_ty
                     }
                 } else if let Some(hint) = &decl.ty_hint {
-                    let hint_ty = self.resolve_type_expr(&hint.0).ok_or(NativeCheckError::Unsupported)?;
-                    if !matches!(hint_ty, AtlasType::Array { .. }) {
-                        return Err(NativeCheckError::Unsupported);
-                    }
+                    let hint_ty = self.resolve_type_expr_or_error(&hint.0, decl.span, "variable declaration");
                     hint_ty
                 } else {
-                    return Err(NativeCheckError::Unsupported);
+                    self.errors.push(AtlasError::TypeError {
+                        span: decl.span,
+                        message: "uninitialized local variables require a type annotation".to_string(),
+                        hint: Some("Add an explicit type, for example 'var x: int;'".to_string()),
+                    });
+                    AtlasType::Void
                 };
                 locals.insert(decl.name.0.clone(), var_ty);
             }
             Stmt::ConstDecl(decl) => {
                 let init_ty = if let Some(hint) = &decl.ty_hint {
-                    let hint_ty = self.resolve_type_expr(&hint.0).ok_or(NativeCheckError::Unsupported)?;
+                    let hint_ty = self.resolve_type_expr_or_error(&hint.0, decl.span, "constant declaration");
                     self.check_expr_with_expected(&decl.init, &hint_ty, locals)?
                 } else {
                     self.check_expr(&decl.init, locals)?
                 };
                 if let Some(hint) = &decl.ty_hint {
-                    let hint_ty = self.resolve_type_expr(&hint.0).ok_or(NativeCheckError::Unsupported)?;
-                    if !is_assignable_to(&hint_ty, &init_ty)
-                        && !can_construct_from_string_literal(&hint_ty, &decl.init, &self.classes)
-                    {
+                    let hint_ty = self.resolve_type_expr_or_error(&hint.0, decl.span, "constant declaration");
+                    if !is_assignable_to(&hint_ty, &init_ty) {
                         self.errors.push(AtlasError::TypeError {
                             span: decl.span,
                             message: format!(
@@ -759,9 +795,7 @@ impl Checker {
                     {
                         let actual = self.check_expr_with_expected(&assign.value, &method.sig.params[2].1, locals)?;
                         let expected_ty = &method.sig.params[2].1;
-                        if !is_assignable_to(expected_ty, &actual)
-                            && !can_construct_from_string_literal(expected_ty, &assign.value, &self.classes)
-                        {
+                        if !is_assignable_to(expected_ty, &actual) {
                             self.errors.push(AtlasError::TypeError {
                                 span: assign.value.span(),
                                 message: format!(
@@ -797,7 +831,7 @@ impl Checker {
                 } else {
                     AtlasType::Void
                 };
-                if &actual != expected_ret {
+                if !is_assignable_to(expected_ret, &actual) {
                     self.errors.push(AtlasError::TypeError {
                         span: *span,
                         message: format!(
@@ -901,11 +935,6 @@ impl Checker {
                         Ok(*element)
                     }
                     AtlasType::Pointer { target, .. } => match *target {
-                        AtlasType::Class(class_name) => {
-                            let index_ty = self.check_expr(index, locals)?;
-                            self.resolve_index_read_method(&class_name, &index_ty, *span)
-                                .map(|method| method.sig.ret_ty.clone())
-                        }
                         other => {
                             let index_ty = self.check_expr(index, locals)?;
                             if !is_integer(&index_ty) {
@@ -946,7 +975,14 @@ impl Checker {
                     }
                 }
             }
-            _ => Err(NativeCheckError::Unsupported),
+            _ => {
+                self.errors.push(AtlasError::TypeError {
+                    span: expr.span(),
+                    message: "invalid assignment target".to_string(),
+                    hint: None,
+                });
+                Ok(AtlasType::Void)
+            }
         }
     }
 
@@ -987,7 +1023,14 @@ impl Checker {
                     Ok(AtlasType::Void)
                 }
             }
-            _ => Err(NativeCheckError::Unsupported),
+            _ => {
+                self.errors.push(AtlasError::TypeError {
+                    span,
+                    message: format!("type '{:?}' has no member '{}'", object_ty, member),
+                    hint: None,
+                });
+                Ok(AtlasType::Void)
+            }
         }
     }
 
@@ -1001,19 +1044,17 @@ impl Checker {
                 Some(IntSuffix::I32) => AtlasType::Int32,
                 Some(IntSuffix::I8) => AtlasType::Int8,
                 Some(IntSuffix::I16) => AtlasType::Int16,
-                Some(IntSuffix::I64) | None => AtlasType::Int,
+                Some(IntSuffix::I64) => AtlasType::Int64,
+                None => AtlasType::Int,
                 Some(IntSuffix::U8) => AtlasType::Uint8,
                 Some(IntSuffix::U16) => AtlasType::Uint16,
                 Some(IntSuffix::U32) => AtlasType::Uint32,
-                Some(IntSuffix::U64) => AtlasType::Uint,
+                Some(IntSuffix::U64) => AtlasType::Uint64,
             }),
             Expr::FloatLit { .. } => Ok(AtlasType::Float),
             Expr::BoolLit { .. } => Ok(AtlasType::Bool),
             Expr::CharLit { .. } => Ok(AtlasType::Char),
-            Expr::StringLit { value, .. } => Ok(AtlasType::Array {
-                element: Box::new(AtlasType::Char),
-                size: value.chars().count(),
-            }),
+            Expr::StringLit { .. } => Ok(AtlasType::Slice(Box::new(AtlasType::Char))),
             Expr::Null { .. } => Ok(AtlasType::Null),
             Expr::Var { name, span } => {
                 if let Some(ty) = locals.get(name) {
@@ -1071,10 +1112,23 @@ impl Checker {
                             .and_then(|class_ty| class_ty.methods.get(method_name))
                             .cloned()
                         else {
-                            return Err(NativeCheckError::Unsupported);
+                            self.errors.push(AtlasError::TypeError {
+                                span: *span,
+                                message: format!("type '{class_name}' does not support operator '{:?}'", op),
+                                hint: None,
+                            });
+                            return Ok(AtlasType::Void);
                         };
                         if method.sig.params.len() != 2 {
-                            return Err(NativeCheckError::Unsupported);
+                            self.errors.push(AtlasError::TypeError {
+                                span: *span,
+                                message: format!(
+                                    "operator method '{}.{}' must take exactly one explicit argument",
+                                    class_name, method_name
+                                ),
+                                hint: None,
+                            });
+                            return Ok(method.sig.ret_ty.clone());
                         }
                         let expected_rhs_ty = &method.sig.params[1].1;
                         if !is_assignable_to(expected_rhs_ty, &rhs_ty) {
@@ -1118,11 +1172,14 @@ impl Checker {
                     return Ok(AtlasType::Struct(callee.clone()));
                 }
                 if let Some(class_ty) = self.classes.get(callee).cloned() {
-                    let init_sig = class_ty
-                        .methods
-                        .get("init")
-                        .map(|method| method.sig.clone())
-                        .ok_or(NativeCheckError::Unsupported)?;
+                    let Some(init_sig) = class_ty.methods.get("init").map(|method| method.sig.clone()) else {
+                        self.errors.push(AtlasError::TypeError {
+                            span: *span,
+                            message: format!("class '{}' has no constructor 'init'", callee),
+                            hint: None,
+                        });
+                        return Ok(AtlasType::Class(callee.clone()));
+                    };
                     let expected_args = init_sig.params.iter().skip(1).collect::<Vec<_>>();
                     if expected_args.len() != args.len() {
                         self.errors.push(AtlasError::TypeError {
@@ -1134,9 +1191,7 @@ impl Checker {
                     }
                     for (arg, (_, expected_ty)) in args.iter().zip(expected_args.iter()) {
                         let actual = self.check_expr_with_expected(arg, expected_ty, locals)?;
-                        if !is_assignable_to(expected_ty, &actual)
-                            && !can_construct_from_string_literal(expected_ty, arg, &self.classes)
-                        {
+                        if !is_assignable_to(expected_ty, &actual) {
                             self.errors.push(AtlasError::TypeError {
                                 span: arg.span(),
                                 message: format!(
@@ -1154,7 +1209,12 @@ impl Checker {
                     return Ok(instantiated_sig.ret_ty);
                 }
                 let Some(sig) = self.fn_sigs.get(callee).cloned() else {
-                    return Err(NativeCheckError::Unsupported);
+                    self.errors.push(AtlasError::TypeError {
+                        span: *span,
+                        message: format!("unknown function '{}'", callee),
+                        hint: None,
+                    });
+                    return Ok(AtlasType::Void);
                 };
                 if sig.params.len() != args.len() {
                     self.errors.push(AtlasError::TypeError {
@@ -1166,9 +1226,7 @@ impl Checker {
                 }
                 for (arg, (_, expected_ty)) in args.iter().zip(sig.params.iter()) {
                     let actual = self.check_expr_with_expected(arg, expected_ty, locals)?;
-                    if !is_assignable_to(expected_ty, &actual)
-                        && !can_construct_from_string_literal(expected_ty, arg, &self.classes)
-                    {
+                    if !is_assignable_to(expected_ty, &actual) {
                         self.errors.push(AtlasError::TypeError {
                             span: arg.span(),
                             message: format!(
@@ -1217,20 +1275,49 @@ impl Checker {
                 {
                     return Ok(ret_ty);
                 }
+                if method_name == "destroy" && is_class_receiver(&object_ty) {
+                    self.errors.push(AtlasError::TypeError {
+                        span: *span,
+                        message: "manual '.destroy()' calls on class instances are forbidden; destruction is automatic".to_string(),
+                        hint: Some("Remove the explicit destroy call and let the compiler manage object teardown.".to_string()),
+                    });
+                    return Ok(AtlasType::Void);
+                }
                 let (class_name, is_instance) = match &object_ty {
                     AtlasType::Class(name) => (name.clone(), true),
                     AtlasType::Pointer { target, .. } => match target.as_ref() {
                         AtlasType::Class(name) => (name.clone(), true),
-                        _ => return Err(NativeCheckError::Unsupported),
+                        _ => {
+                            self.errors.push(AtlasError::TypeError {
+                                span: *span,
+                                message: format!("type '{:?}' has no method '{}'", object_ty, method_name),
+                                hint: None,
+                            });
+                            return Ok(AtlasType::Void);
+                        }
                     },
-                    _ => return Err(NativeCheckError::Unsupported),
+                    _ => {
+                        self.errors.push(AtlasError::TypeError {
+                            span: *span,
+                            message: format!("type '{:?}' has no method '{}'", object_ty, method_name),
+                            hint: None,
+                        });
+                        return Ok(AtlasType::Void);
+                    }
                 };
                 let method = self
                     .classes
                     .get(&class_name)
                     .and_then(|class_ty| class_ty.methods.get(method_name))
-                    .cloned()
-                    .ok_or(NativeCheckError::Unsupported)?;
+                    .cloned();
+                let Some(method) = method else {
+                    self.errors.push(AtlasError::TypeError {
+                        span: *span,
+                        message: format!("class '{}' has no method '{}'", class_name, method_name),
+                        hint: None,
+                    });
+                    return Ok(AtlasType::Void);
+                };
                 let params = if is_instance {
                     method.sig.params.iter().skip(1).collect::<Vec<_>>()
                 } else {
@@ -1246,9 +1333,7 @@ impl Checker {
                 }
                 for (arg, (_, expected_ty)) in args.iter().zip(params.iter()) {
                     let actual = self.check_expr_with_expected(arg, expected_ty, locals)?;
-                    if !is_assignable_to(expected_ty, &actual)
-                        && !can_construct_from_string_literal(expected_ty, arg, &self.classes)
-                    {
+                    if !is_assignable_to(expected_ty, &actual) {
                         self.errors.push(AtlasError::TypeError {
                             span: arg.span(),
                             message: format!(
@@ -1269,14 +1354,21 @@ impl Checker {
             } => {
                 let inferred_choice_name = self.infer_choice_constructor_target(class_name);
                 if let Some(choice_name) = inferred_choice_name.or_else(|| self.choices.get(class_name).map(|_| class_name.clone())) {
-                    let choice_ty = self.choices.get(&choice_name).cloned().ok_or(NativeCheckError::Unsupported)?;
+                    let Some(choice_ty) = self.choices.get(&choice_name).cloned() else {
+                        return Err(NativeCheckError::Unsupported);
+                    };
                     let Some(variant) = choice_ty
                         .variants
                         .iter()
                         .find(|variant| variant.name == *method_name)
                         .cloned()
                     else {
-                        return Err(NativeCheckError::Unsupported);
+                        self.errors.push(AtlasError::TypeError {
+                            span: *span,
+                            message: format!("choice '{}' has no variant '{}'", class_name, method_name),
+                            hint: None,
+                        });
+                        return Ok(AtlasType::Choice(choice_name.clone()));
                     };
                     match (&variant.payload, args.as_slice()) {
                         (None, []) => return Ok(AtlasType::Choice(choice_name.clone())),
@@ -1311,8 +1403,15 @@ impl Checker {
                     .classes
                     .get(class_name)
                     .and_then(|class_ty| class_ty.methods.get(method_name))
-                    .cloned()
-                    .ok_or(NativeCheckError::Unsupported)?;
+                    .cloned();
+                let Some(method) = method else {
+                    self.errors.push(AtlasError::TypeError {
+                        span: *span,
+                        message: format!("class '{}' has no static method '{}'", class_name, method_name),
+                        hint: None,
+                    });
+                    return Ok(AtlasType::Void);
+                };
                 if method.sig.params.len() != args.len() {
                     self.errors.push(AtlasError::TypeError {
                         span: *span,
@@ -1323,9 +1422,7 @@ impl Checker {
                 }
                 for (arg, (_, expected_ty)) in args.iter().zip(method.sig.params.iter()) {
                     let actual = self.check_expr_with_expected(arg, expected_ty, locals)?;
-                    if !is_assignable_to(expected_ty, &actual)
-                        && !can_construct_from_string_literal(expected_ty, arg, &self.classes)
-                    {
+                    if !is_assignable_to(expected_ty, &actual) {
                         self.errors.push(AtlasError::TypeError {
                             span: arg.span(),
                             message: format!(
@@ -1344,7 +1441,12 @@ impl Checker {
                 span,
             } => {
                 let Some(struct_ty) = self.structs.get(struct_name).cloned() else {
-                    return Err(NativeCheckError::Unsupported);
+                    self.errors.push(AtlasError::TypeError {
+                        span: *span,
+                        message: format!("unknown struct '{}'", struct_name),
+                        hint: None,
+                    });
+                    return Ok(AtlasType::Void);
                 };
                 if struct_ty.fields.len() != fields.len() {
                     self.errors.push(AtlasError::TypeError {
@@ -1373,7 +1475,7 @@ impl Checker {
                         continue;
                     };
                     let actual_ty = self.check_expr(expr, locals)?;
-                    if &actual_ty != expected_ty {
+                    if !is_assignable_to(expected_ty, &actual_ty) {
                         self.errors.push(AtlasError::TypeError {
                             span: expr.span(),
                             message: format!(
@@ -1417,11 +1519,6 @@ impl Checker {
                         Ok(*element)
                     }
                     AtlasType::Pointer { target, .. } => match *target {
-                        AtlasType::Class(class_name) => {
-                            let index_ty = self.check_expr(index, locals)?;
-                            self.resolve_index_read_method(&class_name, &index_ty, *span)
-                                .map(|method| method.sig.ret_ty.clone())
-                        }
                         other => {
                             let index_ty = self.check_expr(index, locals)?;
                             if !is_integer(&index_ty) {
@@ -1446,7 +1543,7 @@ impl Checker {
             }
             Expr::Cast { target_ty, expr, span } => {
                 let source_ty = self.check_expr(expr, locals)?;
-                let target_ty = self.resolve_type_expr(&target_ty.0).ok_or(NativeCheckError::Unsupported)?;
+                let target_ty = self.resolve_type_expr_or_error(&target_ty.0, *span, "cast");
                 if !is_cast_supported(&source_ty, &target_ty) {
                     self.errors.push(AtlasError::TypeError {
                         span: *span,
@@ -1457,12 +1554,20 @@ impl Checker {
                 Ok(target_ty)
             }
             Expr::SizeOf { ty, .. } => {
-                let _ = self.resolve_type_expr(&ty.0).ok_or(NativeCheckError::Unsupported)?;
+                let _ = self.resolve_type_expr_or_error(&ty.0, expr.span(), "sizeof");
                 Ok(AtlasType::Int)
             }
             Expr::Destroy { type_arg, expr, span } => {
-                let target_ty = self.resolve_type_expr(type_arg).ok_or(NativeCheckError::Unsupported)?;
+                let target_ty = self.resolve_type_expr_or_error(type_arg, *span, "memory::destroy");
                 let value_ty = self.check_expr(expr, locals)?;
+                if matches!(target_ty, AtlasType::Class(_)) && !self.allow_internal_class_destroy() {
+                    self.errors.push(AtlasError::TypeError {
+                        span: *span,
+                        message: "manual 'memory::destroy<T>' is forbidden for class values; destruction is automatic".to_string(),
+                        hint: Some("Remove the explicit destroy call and let scope exit or the owning container release the class.".to_string()),
+                    });
+                    return Ok(AtlasType::Void);
+                }
                 if !is_assignable_to(&target_ty, &value_ty) {
                     self.errors.push(AtlasError::TypeError {
                         span: *span,
@@ -1478,10 +1583,20 @@ impl Checker {
             Expr::ErrorPropagate { expr, span } => {
                 let inner_ty = self.check_expr(expr, locals)?;
                 let AtlasType::Choice(choice_name) = inner_ty else {
-                    return Err(NativeCheckError::Unsupported);
+                    self.errors.push(AtlasError::TypeError {
+                        span: *span,
+                        message: "error propagation requires a Result-like choice value".to_string(),
+                        hint: None,
+                    });
+                    return Ok(AtlasType::Void);
                 };
                 let Some(AtlasType::Choice(current_return_choice)) = self.current_return_ty.clone() else {
-                    return Err(NativeCheckError::Unsupported);
+                    self.errors.push(AtlasError::TypeError {
+                        span: *span,
+                        message: "error propagation requires the enclosing function to return a Result-like choice".to_string(),
+                        hint: None,
+                    });
+                    return Ok(AtlasType::Void);
                 };
                 if current_return_choice != choice_name {
                     self.errors.push(AtlasError::TypeError {
@@ -1491,12 +1606,24 @@ impl Checker {
                     });
                     return Ok(AtlasType::Void);
                 }
-                let choice_ty = self.choices.get(&choice_name).ok_or(NativeCheckError::Unsupported)?;
-                let Some(ok_variant) = choice_ty.variants.iter().find(|variant| variant.name == "Ok") else {
+                let Some(choice_ty) = self.choices.get(&choice_name) else {
                     return Err(NativeCheckError::Unsupported);
                 };
+                let Some(ok_variant) = choice_ty.variants.iter().find(|variant| variant.name == "Ok") else {
+                    self.errors.push(AtlasError::TypeError {
+                        span: *span,
+                        message: "error propagation currently requires a choice with an 'Ok' variant".to_string(),
+                        hint: None,
+                    });
+                    return Ok(AtlasType::Void);
+                };
                 let Some(ok_payload_ty) = ok_variant.payload.clone() else {
-                    return Err(NativeCheckError::Unsupported);
+                    self.errors.push(AtlasError::TypeError {
+                        span: *span,
+                        message: "error propagation requires the 'Ok' variant to carry a value".to_string(),
+                        hint: None,
+                    });
+                    return Ok(AtlasType::Void);
                 };
                 Ok(ok_payload_ty)
             }
@@ -1521,6 +1648,7 @@ impl Checker {
         }
         match matched_ty {
             AtlasType::Enum(_) | AtlasType::Choice(_) => Ok(()),
+            ty if supports_literal_match(&ty) => Ok(()),
             _ => {
                 self.errors.push(AtlasError::TypeError {
                     span,
@@ -1593,12 +1721,31 @@ impl Checker {
                             }
                         }
                     }
-                    _ => return Err(NativeCheckError::Unsupported),
+                    _ => {
+                        self.errors.push(AtlasError::TypeError {
+                            span: *span,
+                            message: format!("variant patterns cannot match values of type '{:?}'", matched_ty),
+                            hint: None,
+                        });
+                    }
                 }
                 Ok(())
             }
             crate::parser::Pattern::Discard(_) => Ok(()),
-            crate::parser::Pattern::Literal(_, _) => Err(NativeCheckError::Unsupported),
+            crate::parser::Pattern::Literal(lit, span) => {
+                let literal_ty = self.check_expr(lit, locals)?;
+                if !same_runtime_type(matched_ty, &literal_ty) {
+                    self.errors.push(AtlasError::TypeError {
+                        span: *span,
+                        message: format!(
+                            "literal pattern type mismatch: matched '{:?}', pattern '{:?}'",
+                            matched_ty, literal_ty
+                        ),
+                        hint: None,
+                    });
+                }
+                Ok(())
+            }
         }
     }
 
@@ -1630,10 +1777,39 @@ impl Checker {
             .and_then(|class_ty| class_ty.methods.get("operator_index"))
             .cloned()
         else {
-            return Err(NativeCheckError::Unsupported);
+            self.errors.push(AtlasError::TypeError {
+                span,
+                message: format!("class '{}' does not support indexing", class_name),
+                hint: None,
+            });
+            return Ok(ClassMethodType {
+                name: "operator_index".to_string(),
+                sig: FnSignature {
+                    params: vec![
+                        (
+                            "self".to_string(),
+                            AtlasType::Pointer {
+                                target: Box::new(AtlasType::Class(class_name.to_string())),
+                                nullable: false,
+                            },
+                        ),
+                        ("index".to_string(), AtlasType::Void),
+                    ],
+                    ret_ty: AtlasType::Void,
+                },
+                visibility: crate::parser::Visibility::Public,
+            });
         };
         if method.sig.params.len() != 2 {
-            return Err(NativeCheckError::Unsupported);
+            self.errors.push(AtlasError::TypeError {
+                span,
+                message: format!(
+                    "index operator '{}.operator[]' must take exactly one explicit index argument",
+                    class_name
+                ),
+                hint: None,
+            });
+            return Ok(method);
         }
         let expected_index_ty = &method.sig.params[1].1;
         if !is_assignable_to(expected_index_ty, index_ty) {
@@ -1660,10 +1836,6 @@ impl Checker {
         let index_ty = self.check_expr(index, locals)?;
         let class_name = match array_ty {
             AtlasType::Class(class_name) => class_name,
-            AtlasType::Pointer { target, .. } => match *target {
-                AtlasType::Class(class_name) => class_name,
-                _ => return Ok(None),
-            },
             _ => return Ok(None),
         };
         let Some(method) = self
@@ -1672,10 +1844,44 @@ impl Checker {
             .and_then(|class_ty| class_ty.methods.get("operator_index_set"))
             .cloned()
         else {
-            return Ok(None);
+            self.errors.push(AtlasError::TypeError {
+                span,
+                message: format!("class '{}' does not support indexed assignment", class_name),
+                hint: None,
+            });
+            let recovery_class_name = class_name.clone();
+            return Ok(Some((
+                class_name,
+                ClassMethodType {
+                    name: "operator_index_set".to_string(),
+                    sig: FnSignature {
+                        params: vec![
+                            (
+                                "self".to_string(),
+                                AtlasType::Pointer {
+                                    target: Box::new(AtlasType::Class(recovery_class_name)),
+                                    nullable: false,
+                                },
+                            ),
+                            ("index".to_string(), AtlasType::Void),
+                            ("value".to_string(), AtlasType::Void),
+                        ],
+                        ret_ty: AtlasType::Void,
+                    },
+                    visibility: crate::parser::Visibility::Public,
+                },
+            )));
         };
         if method.sig.params.len() != 3 {
-            return Err(NativeCheckError::Unsupported);
+            self.errors.push(AtlasError::TypeError {
+                span,
+                message: format!(
+                    "index assignment operator '{}.operator[]=' must take index and value arguments",
+                    class_name
+                ),
+                hint: None,
+            });
+            return Ok(Some((class_name, method)));
         }
         let expected_index_ty = &method.sig.params[1].1;
         if !is_assignable_to(expected_index_ty, &index_ty) {
@@ -1699,7 +1905,7 @@ impl Checker {
         locals: &HashMap<String, AtlasType>,
         span: Span,
     ) -> Result<Option<AtlasType>, NativeCheckError> {
-        let is_supported = matches!(object_ty, AtlasType::Int | AtlasType::Bool | AtlasType::Char);
+        let is_supported = supports_primitive_methods(object_ty);
         if !is_supported {
             return Ok(None);
         }
@@ -1735,7 +1941,7 @@ impl Checker {
                     return Ok(Some(AtlasType::Bool));
                 }
                 let actual = self.check_expr_with_expected(&args[0], object_ty, locals)?;
-                if &actual != object_ty {
+                if !same_runtime_type(&actual, object_ty) {
                     self.errors.push(AtlasError::TypeError {
                         span: args[0].span(),
                         message: format!(
@@ -1847,15 +2053,18 @@ impl Checker {
     fn resolve_type_expr_shallow(&self, ty: &TypeExpr) -> Option<AtlasType> {
         match ty {
             TypeExpr::Named(name) => match name.as_str() {
-                "int" | "int64" => Some(AtlasType::Int),
+                "int" => Some(AtlasType::Int),
+                "int64" => Some(AtlasType::Int64),
                 "int32" => Some(AtlasType::Int32),
                 "int16" => Some(AtlasType::Int16),
                 "int8" => Some(AtlasType::Int8),
-                "uint" | "uint64" => Some(AtlasType::Uint),
+                "uint" => Some(AtlasType::Uint),
+                "uint64" => Some(AtlasType::Uint64),
                 "uint32" => Some(AtlasType::Uint32),
                 "uint16" => Some(AtlasType::Uint16),
                 "uint8" => Some(AtlasType::Uint8),
-                "float" | "float64" => Some(AtlasType::Float),
+                "float" => Some(AtlasType::Float),
+                "float64" => Some(AtlasType::Float64),
                 "float32" => Some(AtlasType::Float32),
                 "bool" => Some(AtlasType::Bool),
                 "char" => Some(AtlasType::Char),
@@ -1985,7 +2194,7 @@ impl Checker {
         actual_ty: &AtlasType,
         constraint: &crate::parser::ConstraintSignature,
     ) -> bool {
-        if !matches!(actual_ty, AtlasType::Int | AtlasType::Bool | AtlasType::Char) {
+        if !supports_primitive_methods(actual_ty) {
             return false;
         }
 
@@ -2060,7 +2269,11 @@ impl Checker {
                 return Ok(constructed);
             }
         }
-        self.check_expr(expr, locals)
+        let actual = self.check_expr(expr, locals)?;
+        if can_construct_from_char_slice(expected_ty, &actual, &self.classes) {
+            return Ok(expected_ty.clone());
+        }
+        Ok(actual)
     }
 
     fn check_constructor_call_with_expected(
@@ -2080,11 +2293,14 @@ impl Checker {
         let Some(class_ty) = self.classes.get(expected_class).cloned() else {
             return Ok(None);
         };
-        let init_sig = class_ty
-            .methods
-            .get("init")
-            .map(|method| method.sig.clone())
-            .ok_or(NativeCheckError::Unsupported)?;
+        let Some(init_sig) = class_ty.methods.get("init").map(|method| method.sig.clone()) else {
+            self.errors.push(AtlasError::TypeError {
+                span,
+                message: format!("class '{}' has no constructor 'init'", expected_class),
+                hint: None,
+            });
+            return Ok(Some(AtlasType::Class(expected_class.clone())));
+        };
         let expected_args = init_sig.params.iter().skip(1).collect::<Vec<_>>();
         if expected_args.len() != args.len() {
             self.errors.push(AtlasError::TypeError {
@@ -2096,9 +2312,7 @@ impl Checker {
         }
         for (arg, (_, expected_arg_ty)) in args.iter().zip(expected_args.iter()) {
             let actual = self.check_expr_with_expected(arg, expected_arg_ty, locals)?;
-            if !is_assignable_to(expected_arg_ty, &actual)
-                && !can_construct_from_string_literal(expected_arg_ty, arg, &self.classes)
-            {
+            if !is_assignable_to(expected_arg_ty, &actual) {
                 self.errors.push(AtlasError::TypeError {
                     span: arg.span(),
                     message: format!(
@@ -2228,6 +2442,20 @@ impl Checker {
             | Expr::StaticMember { .. }
             | Expr::SizeOf { .. } => {}
         }
+    }
+
+    fn allow_internal_class_destroy(&self) -> bool {
+        let Some(class_name) = self.current_class_name.as_deref() else {
+            return false;
+        };
+        class_name == "array.Array"
+            || class_name.starts_with("array.Array_")
+            || class_name == "memory.Box"
+            || class_name.starts_with("memory.Box_")
+            || class_name == "hashmap.HashMapEntry"
+            || class_name.starts_with("hashmap.HashMapEntry_")
+            || class_name == "hashmap.HashMap"
+            || class_name.starts_with("hashmap.HashMap_")
     }
 }
 
@@ -2449,12 +2677,15 @@ fn is_numeric(ty: &AtlasType) -> bool {
             | AtlasType::Int8
             | AtlasType::Int16
             | AtlasType::Int32
+            | AtlasType::Int64
             | AtlasType::Uint
             | AtlasType::Uint8
             | AtlasType::Uint16
             | AtlasType::Uint32
+            | AtlasType::Uint64
             | AtlasType::Float
             | AtlasType::Float32
+            | AtlasType::Float64
     )
 }
 
@@ -2474,8 +2705,21 @@ fn is_integer(ty: &AtlasType) -> bool {
     )
 }
 
+fn normalize_machine_alias(ty: &AtlasType) -> AtlasType {
+    match ty {
+        AtlasType::Int => AtlasType::Int64,
+        AtlasType::Uint => AtlasType::Uint64,
+        AtlasType::Float => AtlasType::Float64,
+        other => other.clone(),
+    }
+}
+
+fn same_runtime_type(lhs: &AtlasType, rhs: &AtlasType) -> bool {
+    lhs == rhs || normalize_machine_alias(lhs) == normalize_machine_alias(rhs)
+}
+
 fn is_assignable_to(expected: &AtlasType, actual: &AtlasType) -> bool {
-    if expected == actual {
+    if same_runtime_type(expected, actual) {
         return true;
     }
 
@@ -2524,6 +2768,22 @@ fn is_assignable_to(expected: &AtlasType, actual: &AtlasType) -> bool {
     )
 }
 
+fn is_class_receiver(ty: &AtlasType) -> bool {
+    match ty {
+        AtlasType::Class(_) => true,
+        AtlasType::Pointer { target, .. } => matches!(target.as_ref(), AtlasType::Class(_)),
+        _ => false,
+    }
+}
+
+fn supports_primitive_methods(ty: &AtlasType) -> bool {
+    is_integer(ty) || matches!(ty, AtlasType::Bool | AtlasType::Char)
+}
+
+fn supports_literal_match(ty: &AtlasType) -> bool {
+    is_numeric(ty) || matches!(ty, AtlasType::Bool | AtlasType::Char)
+}
+
 fn is_cast_supported(source: &AtlasType, target: &AtlasType) -> bool {
     source == target
         || (is_numeric(source) && is_numeric(target))
@@ -2562,14 +2822,11 @@ fn default_class_method(class_name: &str, method_name: &str, ret_ty: AtlasType) 
     }
 }
 
-fn can_construct_from_string_literal(
+fn can_construct_from_char_slice(
     expected_ty: &AtlasType,
-    expr: &Expr,
+    actual_ty: &AtlasType,
     classes: &HashMap<String, ClassType>,
 ) -> bool {
-    if !matches!(expr, Expr::StringLit { .. }) {
-        return false;
-    }
     let AtlasType::Class(class_name) = expected_ty else {
         return false;
     };
@@ -2579,9 +2836,11 @@ fn can_construct_from_string_literal(
         .map(|method| {
             method.sig.params.len() == 1
                 && matches!(
-                    (&method.sig.params[0].1, &method.sig.ret_ty),
-                    (AtlasType::Slice(element), AtlasType::Class(ret_name))
-                        if **element == AtlasType::Char && ret_name == class_name
+                    (&method.sig.params[0].1, actual_ty, &method.sig.ret_ty),
+                    (AtlasType::Slice(expected_element), AtlasType::Slice(actual_element), AtlasType::Class(ret_name))
+                        if **expected_element == AtlasType::Char
+                            && **actual_element == AtlasType::Char
+                            && ret_name == class_name
                 )
         })
         .unwrap_or(false)
@@ -2704,7 +2963,7 @@ fn check_binary(
     use BinOp::*;
     match op {
         Add | Sub | Mul | Div | Mod => {
-            if lhs_ty == rhs_ty && is_numeric(&lhs_ty) {
+            if same_runtime_type(&lhs_ty, &rhs_ty) && is_numeric(&lhs_ty) && is_numeric(&rhs_ty) {
                 Ok(lhs_ty)
             } else {
                 errors.push(AtlasError::TypeError {
@@ -2719,7 +2978,7 @@ fn check_binary(
             }
         }
         Eq | NotEq | Lt | Gt | LtEq | GtEq => {
-            if lhs_ty == rhs_ty
+            if same_runtime_type(&lhs_ty, &rhs_ty)
                 || matches!(
                     (&lhs_ty, &rhs_ty),
                     (AtlasType::Pointer { nullable: true, .. }, AtlasType::Null)

@@ -12,6 +12,14 @@ export class HashMapEntry<K, V> {
     public fn init(self: @HashMapEntry<K, V>) {
         (*self).is_used = false;
     }
+
+    public fn destroy(self: @HashMapEntry<K, V>) {
+        if (*self).is_used {
+            memory::destroy<K>((*self).key);
+            memory::destroy<V>((*self).value);
+            (*self).is_used = false;
+        }
+    }
 }
 
 export class HashMap<K, V> 
@@ -56,6 +64,7 @@ where K (
             // Overwriting existing value
             memory::destroy<K>((*entry_ptr).key);
             memory::destroy<V>((*entry_ptr).value);
+            (*entry_ptr).is_used = false;
         }
 
         memory::memcpy(cast<@char>(@(*entry_ptr).key), cast<@char>(@key), memory::sizeof<K>());

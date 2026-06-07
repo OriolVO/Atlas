@@ -1,0 +1,40 @@
+// Exit Code: 0
+fn add_i64(x: int64): int64 {
+    return x + 1i64;
+}
+
+fn add_u64(x: uint64): uint64 {
+    return x + 1u64;
+}
+
+fn main(): int {
+    var a: int = 40;
+    var b: int64 = a;
+    if b != 40i64 {
+        return 1;
+    }
+
+    var c = add_i64(a);
+    if c != 41i64 {
+        return 2;
+    }
+
+    var u: uint = 9u64;
+    var v: uint64 = u;
+    if v != 9u64 {
+        return 3;
+    }
+
+    var w = add_u64(u);
+    if w != 10u64 {
+        return 4;
+    }
+
+    var f: float = 1.5;
+    var g: float64 = f;
+    if g < 1.49 || g > 1.51 {
+        return 5;
+    }
+
+    return 0;
+}
