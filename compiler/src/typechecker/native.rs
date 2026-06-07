@@ -52,6 +52,11 @@ impl NativeTypeChecker {
         let mut checker = Checker::new();
         for mod_name in &project.topological_order {
             if let Some(ast) = project.modules.get(mod_name) {
+                checker.collect_type_names_from_ast(ast);
+            }
+        }
+        for mod_name in &project.topological_order {
+            if let Some(ast) = project.modules.get(mod_name) {
                 checker.collect_structs_from_ast(ast);
                 checker.collect_classes_from_ast(ast);
                 checker.collect_enums_from_ast(ast);
@@ -119,6 +124,7 @@ struct Checker {
     current_return_ty: Option<AtlasType>,
     current_function_name: Option<String>,
     current_class_name: Option<String>,
+    loop_depth: usize,
     errors: Vec<AtlasError>,
 }
 
@@ -145,32 +151,12 @@ impl Checker {
             current_return_ty: None,
             current_function_name: None,
             current_class_name: None,
+            loop_depth: 0,
             errors: Vec::new(),
         }
     }
 
     fn collect_structs_from_ast(&mut self, ast: &SourceFile) {
-        for item in &ast.items {
-            match item {
-                Item::StructDecl(decl, _) => {
-                    self.structs.entry(decl.name.0.clone()).or_insert_with(|| StructType {
-                        name: decl.name.0.clone(),
-                        fields: Vec::new(),
-                    });
-                }
-                Item::ClassDecl(decl, _) => {
-                    for nested in &decl.structs {
-                        self.structs
-                            .entry(nested.decl.name.0.clone())
-                            .or_insert_with(|| StructType {
-                                name: nested.decl.name.0.clone(),
-                                fields: Vec::new(),
-                            });
-                    }
-                }
-                _ => {}
-            }
-        }
         for item in &ast.items {
             match item {
                 Item::StructDecl(decl, _) => {
@@ -280,6 +266,7 @@ impl Checker {
     }
 
     fn build_signatures(&mut self, ast: &SourceFile) -> Result<(), NativeCheckError> {
+        self.collect_type_names_from_ast(ast);
         self.collect_structs_from_ast(ast);
         self.collect_classes_from_ast(ast);
         self.collect_enums_from_ast(ast);
@@ -289,6 +276,75 @@ impl Checker {
             Ok(())
         } else {
             Err(NativeCheckError::Errors(std::mem::take(&mut self.errors)))
+        }
+    }
+
+    fn collect_type_names_from_ast(&mut self, ast: &SourceFile) {
+        for item in &ast.items {
+            match item {
+                Item::StructDecl(decl, _) => {
+                    self.structs.entry(decl.name.0.clone()).or_insert_with(|| StructType {
+                        name: decl.name.0.clone(),
+                        fields: Vec::new(),
+                    });
+                }
+                Item::ClassDecl(decl, _) => {
+                    if !decl.generic_params.is_empty() || !decl.where_clauses.is_empty() {
+                        self.generic_class_templates
+                            .entry(decl.name.0.clone())
+                            .or_insert_with(|| decl.clone());
+                    } else {
+                        self.classes.entry(decl.name.0.clone()).or_insert_with(|| ClassType {
+                            name: decl.name.0.clone(),
+                            fields: Vec::new(),
+                            methods: HashMap::new(),
+                        });
+                    }
+                    for nested in &decl.structs {
+                        self.structs
+                            .entry(nested.decl.name.0.clone())
+                            .or_insert_with(|| StructType {
+                                name: nested.decl.name.0.clone(),
+                                fields: Vec::new(),
+                            });
+                    }
+                }
+                Item::EnumDecl(decl, _) => {
+                    self.enums.entry(decl.name.0.clone()).or_insert_with(|| EnumType {
+                        name: decl.name.0.clone(),
+                        variants: Vec::new(),
+                    });
+                }
+                Item::ChoiceDecl(decl, _) => {
+                    if !decl.generic_params.is_empty() {
+                        self.choice_templates
+                            .entry(decl.name.0.clone())
+                            .or_insert_with(|| GenericChoiceTemplate {
+                                generic_params: decl
+                                    .generic_params
+                                    .iter()
+                                    .map(|param| param.0.clone())
+                                    .collect(),
+                                variants: decl
+                                    .variants
+                                    .iter()
+                                    .map(|variant| {
+                                        (
+                                            variant.name.0.clone(),
+                                            variant.payload.as_ref().map(|payload| payload.0.clone()),
+                                        )
+                                    })
+                                    .collect(),
+                            });
+                    } else {
+                        self.choices.entry(decl.name.0.clone()).or_insert_with(|| ChoiceType {
+                            name: decl.name.0.clone(),
+                            variants: Vec::new(),
+                        });
+                    }
+                }
+                _ => {}
+            }
         }
     }
 
@@ -480,7 +536,6 @@ impl Checker {
         for item in &ast.items {
             if let Item::ClassDecl(decl, _) = item {
                 if !decl.generic_params.is_empty() || !decl.where_clauses.is_empty() {
-                    self.generic_class_templates.insert(decl.name.0.clone(), decl.clone());
                     continue;
                 }
                 self.register_class_decl(decl);
@@ -500,6 +555,15 @@ impl Checker {
         let mut fields = Vec::new();
         for field in &decl.fields {
             let Some(ty) = self.resolve_type_expr(&field.ty.0) else {
+                self.errors.push(AtlasError::TypeError {
+                    span: field.ty.1,
+                    message: format!(
+                        "unknown type in class '{}': '{}'",
+                        decl.name.0,
+                        type_expr_name(&field.ty.0)
+                    ),
+                    hint: None,
+                });
                 return;
             };
             fields.push(ClassFieldType {
@@ -1015,7 +1079,27 @@ impl Checker {
                 if let Some(name) = non_null_checked_var(&while_stmt.condition, true) {
                     refine_nullable_local(&mut body_locals, &name);
                 }
+                self.loop_depth += 1;
                 self.check_block(&while_stmt.body, &mut body_locals, expected_ret)?;
+                self.loop_depth -= 1;
+            }
+            Stmt::Break(span) => {
+                if self.loop_depth == 0 {
+                    self.errors.push(AtlasError::TypeError {
+                        span: *span,
+                        message: "'break' can only be used inside a loop".to_string(),
+                        hint: None,
+                    });
+                }
+            }
+            Stmt::Continue(span) => {
+                if self.loop_depth == 0 {
+                    self.errors.push(AtlasError::TypeError {
+                        span: *span,
+                        message: "'continue' can only be used inside a loop".to_string(),
+                        hint: None,
+                    });
+                }
             }
             Stmt::Block(block) => {
                 let mut nested = locals.clone();
@@ -2578,6 +2662,7 @@ impl Checker {
                 self.rewrite_generic_class_calls_in_expr(&mut while_stmt.condition, substitutions);
                 self.rewrite_generic_class_calls_in_block(&mut while_stmt.body, substitutions);
             }
+            Stmt::Break(_) | Stmt::Continue(_) => {}
             Stmt::Block(block) => self.rewrite_generic_class_calls_in_block(block, substitutions),
             Stmt::StructDecl(_) | Stmt::Return(None, _) => {}
         }
@@ -2793,6 +2878,7 @@ fn collect_referenced_classes_from_stmt(
             collect_referenced_classes_from_expr(&while_stmt.condition, classes, referenced);
             collect_referenced_classes_from_block_into(&while_stmt.body, classes, referenced);
         }
+        Stmt::Break(_) | Stmt::Continue(_) => {}
         Stmt::Block(block) => collect_referenced_classes_from_block_into(block, classes, referenced),
         Stmt::StructDecl(_) => {}
     }

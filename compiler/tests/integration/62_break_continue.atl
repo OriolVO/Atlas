@@ -1,0 +1,22 @@
+// Output: 4
+
+import io;
+
+fn main(): int {
+    var i = 0;
+    var sum = 0;
+
+    while i < 5 {
+        i = i + 1;
+        if i == 2 {
+            continue;
+        }
+        if i == 4 {
+            break;
+        }
+        sum = sum + i;
+    }
+
+    io::print(sum);
+    return 0;
+}

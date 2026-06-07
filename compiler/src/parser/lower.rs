@@ -64,6 +64,7 @@ fn lower_stmt(stmt: &mut Stmt) {
             lower_expr(&mut while_stmt.condition);
             lower_block(&mut while_stmt.body);
         }
+        Stmt::Break(_) | Stmt::Continue(_) => {}
         Stmt::Block(block) => lower_block(block),
         Stmt::StructDecl(_) | Stmt::Return(None, _) => {}
     }

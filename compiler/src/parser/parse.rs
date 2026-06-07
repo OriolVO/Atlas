@@ -721,6 +721,8 @@ impl<'src> Parser<'src> {
             Token::Return => self.parse_return_stmt(),
             Token::If => self.parse_if_stmt().map(Stmt::If),
             Token::While => self.parse_while_stmt().map(Stmt::While),
+            Token::Break => self.parse_break_stmt(),
+            Token::Continue => self.parse_continue_stmt(),
             Token::LBrace => self.parse_block().map(Stmt::Block),
             Token::Struct => self.parse_struct_decl().map(Stmt::StructDecl),
             _ => {
@@ -851,6 +853,18 @@ impl<'src> Parser<'src> {
             let semi_span = self.expect(&Token::Semicolon)?;
             Some(Stmt::Return(Some(expr), Span::new(ret_span.start, semi_span.end)))
         }
+    }
+
+    fn parse_break_stmt(&mut self) -> Option<Stmt> {
+        let break_span = self.expect(&Token::Break)?;
+        let semi_span = self.expect(&Token::Semicolon)?;
+        Some(Stmt::Break(Span::new(break_span.start, semi_span.end)))
+    }
+
+    fn parse_continue_stmt(&mut self) -> Option<Stmt> {
+        let continue_span = self.expect(&Token::Continue)?;
+        let semi_span = self.expect(&Token::Semicolon)?;
+        Some(Stmt::Continue(Span::new(continue_span.start, semi_span.end)))
     }
 
     pub fn parse_expr(&mut self, min_bp: u8) -> Option<Expr> {

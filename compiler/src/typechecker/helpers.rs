@@ -310,6 +310,8 @@ pub(crate) fn substitute_stmt(stmt: &Stmt, subs: &HashMap<String, TypeExpr>) -> 
             body: substitute_block(&while_stmt.body, subs),
             span: while_stmt.span,
         }),
+        Stmt::Break(span) => Stmt::Break(*span),
+        Stmt::Continue(span) => Stmt::Continue(*span),
         Stmt::Block(block) => Stmt::Block(substitute_block(block, subs)),
     }
 }

@@ -1,0 +1,6 @@
+// Type Error: 'break' can only be used inside a loop
+
+fn main(): int {
+    break;
+    return 0;
+}

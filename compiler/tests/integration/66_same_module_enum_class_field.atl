@@ -1,0 +1,25 @@
+enum State {
+    Idle,
+    Busy
+}
+
+class Machine {
+    state: State;
+
+    fn init(self: @Machine) {
+        (*self).state = State::Idle;
+    }
+}
+
+fn main(): int {
+    var machine = Machine();
+
+    match machine.state {
+        State::Idle => {
+            return 0;
+        },
+        State::Busy => {
+            return 1;
+        }
+    };
+}

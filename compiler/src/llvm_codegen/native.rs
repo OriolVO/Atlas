@@ -14,6 +14,7 @@ pub struct NativeCodegen {
     helper_counter: usize,
     scopes: Vec<HashMap<String, (String, AtlasType)>>,
     cleanup_scopes: Vec<Vec<(String, AtlasType)>>,
+    loop_stack: Vec<(String, String, usize)>,
     block_terminated: bool,
     current_fn_is_main: bool,
     current_fn_return_ty: Option<AtlasType>,
@@ -31,6 +32,7 @@ impl NativeCodegen {
             helper_counter: 0,
             scopes: Vec::new(),
             cleanup_scopes: Vec::new(),
+            loop_stack: Vec::new(),
             block_terminated: false,
             current_fn_is_main: false,
             current_fn_return_ty: None,
@@ -358,6 +360,24 @@ impl NativeCodegen {
     fn emit_block(&mut self, block: &Block) -> Result<(), AtlasError> {
         for stmt in &block.stmts {
             self.emit_stmt(stmt)?;
+            if self.current_block_terminated() {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_cleanups_to_depth(&mut self, target_depth: usize) -> Result<(), AtlasError> {
+        let scopes: Vec<Vec<(String, AtlasType)>> = self
+            .cleanup_scopes
+            .iter()
+            .skip(target_depth)
+            .cloned()
+            .collect();
+        for cleanup_scope in scopes.iter().rev() {
+            for (ptr, ty) in cleanup_scope.iter().rev() {
+                self.emit_destroy_for_ptr(ptr, ty)?;
+            }
         }
         Ok(())
     }
@@ -566,12 +586,38 @@ impl NativeCodegen {
                 ));
                 self.block_terminated = true;
                 self.emit_label(&body_label);
+                let loop_cleanup_depth = self.cleanup_scopes.len();
+                self.loop_stack
+                    .push((end_label.clone(), cond_label.clone(), loop_cleanup_depth));
                 self.emit_scoped_block(&while_stmt.body)?;
+                self.loop_stack.pop();
                 if !self.current_block_terminated() {
                     self.output.push_str(&format!("    br label %{}\n", cond_label));
                     self.block_terminated = true;
                 }
                 self.emit_label(&end_label);
+            }
+            Stmt::Break(_) => {
+                let Some((break_label, _, cleanup_depth)) = self.loop_stack.last().cloned() else {
+                    return Err(AtlasError::CodegenError {
+                        message: "'break' used outside of a loop".to_string(),
+                    });
+                };
+                self.emit_cleanups_to_depth(cleanup_depth)?;
+                self.output
+                    .push_str(&format!("    br label %{}\n", break_label));
+                self.block_terminated = true;
+            }
+            Stmt::Continue(_) => {
+                let Some((_, continue_label, cleanup_depth)) = self.loop_stack.last().cloned() else {
+                    return Err(AtlasError::CodegenError {
+                        message: "'continue' used outside of a loop".to_string(),
+                    });
+                };
+                self.emit_cleanups_to_depth(cleanup_depth)?;
+                self.output
+                    .push_str(&format!("    br label %{}\n", continue_label));
+                self.block_terminated = true;
             }
             Stmt::Block(block) => self.emit_scoped_block(block)?,
             Stmt::StructDecl(_) => {}

@@ -1,0 +1,59 @@
+import span;
+
+export struct Token {
+    kind: int;
+    span: span::Span;
+    int_value: int;
+    bool_value: bool;
+    char_value: char;
+    has_suffix: bool;
+    suffix: int;
+}
+
+export fn make(kind: int, start: int, end: int): Token {
+    return Token {
+        kind: kind,
+        span: span::make(start, end),
+        int_value: 0,
+        bool_value: false,
+        char_value: '\0',
+        has_suffix: false,
+        suffix: 0
+    };
+}
+
+export fn make_int(value: int, has_suffix: bool, suffix: int, start: int, end: int): Token {
+    return Token {
+        kind: 1,
+        span: span::make(start, end),
+        int_value: value,
+        bool_value: false,
+        char_value: '\0',
+        has_suffix: has_suffix,
+        suffix: suffix
+    };
+}
+
+export fn make_bool(value: bool, start: int, end: int): Token {
+    return Token {
+        kind: 3,
+        span: span::make(start, end),
+        int_value: 0,
+        bool_value: value,
+        char_value: '\0',
+        has_suffix: false,
+        suffix: 0
+    };
+}
+
+export fn make_char(value: char, start: int, end: int): Token {
+    return Token {
+        kind: 4,
+        span: span::make(start, end),
+        int_value: 0,
+        bool_value: false,
+        char_value: value,
+        has_suffix: false,
+        suffix: 0
+    };
+}

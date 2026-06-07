@@ -1,3 +1,7 @@
 target
-*/.ll
-*/.tmp.ll
+*.ll
+*.tmp
+*.tmp.*
+*.log
+*.out
+bootstrap/atlasc/src/main

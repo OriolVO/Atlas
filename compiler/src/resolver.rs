@@ -637,6 +637,7 @@ impl<'a> NameResolver<'a> {
                     self.resolve_stmt(s);
                 }
             }
+            Stmt::Break(_) | Stmt::Continue(_) => {}
             Stmt::Block(block) => {
                 for s in &mut block.stmts {
                     self.resolve_stmt(s);

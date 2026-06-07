@@ -1,0 +1,410 @@
+import array;
+import span;
+import token;
+
+export struct SemanticError {
+    kind: int;
+    span: span::Span;
+}
+
+export struct Summary {
+    function_count: int;
+    duplicate_function_count: int;
+    duplicate_param_count: int;
+    duplicate_local_count: int;
+    unknown_variable_count: int;
+    unknown_function_count: int;
+}
+
+export fn make_error(kind: int, start: int, end: int): SemanticError {
+    return SemanticError {
+        kind: kind,
+        span: span::make(start, end)
+    };
+}
+
+export fn make_empty_summary(): Summary {
+    return Summary {
+        function_count: 0,
+        duplicate_function_count: 0,
+        duplicate_param_count: 0,
+        duplicate_local_count: 0,
+        unknown_variable_count: 0,
+        unknown_function_count: 0
+    };
+}
+
+fn name_equals(source: []char, left: span::Span, right: span::Span): bool {
+    var left_len = left.end - left.start;
+    var right_len = right.end - right.start;
+    if left_len != right_len {
+        return false;
+    }
+
+    var i = 0;
+    while i < left_len {
+        if source[left.start + i] != source[right.start + i] {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn seen_name(
+    source: []char,
+    names: @span::Span?,
+    name_count: int,
+    candidate: span::Span
+): bool {
+    if names == null {
+        return false;
+    }
+    var i = 0;
+    while i < name_count {
+        if name_equals(source, names[i], candidate) {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn seen_name_in_scope(
+    source: []char,
+    names: @span::Span?,
+    depths: @int?,
+    name_count: int,
+    candidate: span::Span,
+    depth: int
+): bool {
+    if names == null or depths == null {
+        return false;
+    }
+    var i = 0;
+    while i < name_count {
+        if depths[i] == depth and name_equals(source, names[i], candidate) {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn record_name(
+    names: @array::Array<span::Span>,
+    depths: @array::Array<int>,
+    candidate: span::Span,
+    depth: int
+) {
+    names.push(candidate);
+    depths.push(depth);
+}
+
+fn visible_name(
+    source: []char,
+    names: @span::Span?,
+    depths: @int?,
+    name_count: int,
+    candidate: span::Span,
+    depth: int
+): bool {
+    if names == null or depths == null {
+        return false;
+    }
+    var i = 0;
+    while i < name_count {
+        if depths[i] <= depth and name_equals(source, names[i], candidate) {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn scan_expr_until(
+    source: []char,
+    tokens: @token::Token?,
+    token_count: int,
+    index: @int,
+    stop_kind: int,
+    local_names: @span::Span?,
+    local_depths: @int?,
+    local_count: int,
+    fn_names: @span::Span?,
+    fn_count: int,
+    depth: int,
+    errors: @array::Array<SemanticError>,
+    summary: @Summary
+) {
+    if tokens == null {
+        return;
+    }
+    var paren_depth = 0;
+    while (*index) < token_count {
+        var tok = tokens[(*index)];
+        if paren_depth == 0 and tok.kind == stop_kind {
+            return;
+        }
+        if tok.kind == 70 {
+            paren_depth = paren_depth + 1;
+            (*index) = (*index) + 1;
+        } else if tok.kind == 71 {
+            paren_depth = paren_depth - 1;
+            (*index) = (*index) + 1;
+        } else if tok.kind == 6 {
+            var name_span = tok.span;
+            if (*index) + 1 < token_count and tokens[(*index) + 1].kind == 70 {
+                if !seen_name(source, fn_names, fn_count, name_span) {
+                    errors.push(make_error(5, name_span.start, name_span.end));
+                    (*summary).unknown_function_count = (*summary).unknown_function_count + 1;
+                }
+            } else if !visible_name(source, local_names, local_depths, local_count, name_span, depth) {
+                errors.push(make_error(4, name_span.start, name_span.end));
+                (*summary).unknown_variable_count = (*summary).unknown_variable_count + 1;
+            }
+            (*index) = (*index) + 1;
+        } else {
+            (*index) = (*index) + 1;
+        }
+    }
+}
+
+fn scan_function_body(
+    source: []char,
+    tokens: @token::Token?,
+    token_count: int,
+    index: @int,
+    param_names: @span::Span?,
+    param_count: int,
+    fn_names: @span::Span?,
+    fn_count: int,
+    errors: @array::Array<SemanticError>,
+    summary: @Summary
+) {
+    var local_names: array::Array<span::Span> = array::Array();
+    var local_depths: array::Array<int> = array::Array();
+
+    var i = 0;
+    while i < param_count {
+        if param_names != null {
+            record_name(@local_names, @local_depths, param_names[i], 1);
+        }
+        i = i + 1;
+    }
+
+    var brace_depth = 1;
+    (*index) = (*index) + 1;
+    while (*index) < token_count and brace_depth > 0 {
+        var tok = tokens[(*index)];
+
+        if tok.kind == 72 {
+            brace_depth = brace_depth + 1;
+            (*index) = (*index) + 1;
+        } else if tok.kind == 73 {
+            brace_depth = brace_depth - 1;
+            (*index) = (*index) + 1;
+        } else if tok.kind == 7 or tok.kind == 8 {
+            var decl_kind = tok.kind;
+            (*index) = (*index) + 1;
+            if (*index) < token_count and tokens[(*index)].kind == 6 {
+                var name_span = tokens[(*index)].span;
+                if seen_name_in_scope(source, local_names.data, local_depths.data, local_names.len, name_span, brace_depth) {
+                    errors.push(make_error(2, name_span.start, name_span.end));
+                    (*summary).duplicate_local_count = (*summary).duplicate_local_count + 1;
+                } else {
+                    record_name(@local_names, @local_depths, name_span, brace_depth);
+                }
+                (*index) = (*index) + 1;
+            }
+            if (*index) < token_count and tokens[(*index)].kind == 64 {
+                (*index) = (*index) + 1;
+                if (*index) < token_count {
+                    (*index) = (*index) + 1;
+                }
+            }
+            if (*index) < token_count and tokens[(*index)].kind == 57 {
+                (*index) = (*index) + 1;
+                scan_expr_until(
+                    source,
+                    tokens,
+                    token_count,
+                    index,
+                    65,
+                    local_names.data,
+                    local_depths.data,
+                    local_names.len,
+                    fn_names,
+                    fn_count,
+                    brace_depth,
+                    errors,
+                    summary
+                );
+            } else if decl_kind == 8 {
+                if (*index) < token_count and tokens[(*index)].kind != 65 {
+                    scan_expr_until(
+                        source,
+                        tokens,
+                        token_count,
+                        index,
+                        65,
+                        local_names.data,
+                        local_depths.data,
+                        local_names.len,
+                        fn_names,
+                        fn_count,
+                        brace_depth,
+                        errors,
+                        summary
+                    );
+                }
+            }
+            if (*index) < token_count and tokens[(*index)].kind == 65 {
+                (*index) = (*index) + 1;
+            }
+        } else if tok.kind == 6 and (*index) + 1 < token_count and tokens[(*index) + 1].kind == 57 {
+            var target_span = tok.span;
+            if !visible_name(source, local_names.data, local_depths.data, local_names.len, target_span, brace_depth) {
+                errors.push(make_error(4, target_span.start, target_span.end));
+                (*summary).unknown_variable_count = (*summary).unknown_variable_count + 1;
+            }
+            (*index) = (*index) + 2;
+            scan_expr_until(
+                source,
+                tokens,
+                token_count,
+                index,
+                65,
+                local_names.data,
+                local_depths.data,
+                local_names.len,
+                fn_names,
+                fn_count,
+                brace_depth,
+                errors,
+                summary
+            );
+            if (*index) < token_count and tokens[(*index)].kind == 65 {
+                (*index) = (*index) + 1;
+            }
+        } else if tok.kind == 15 or tok.kind == 17 {
+            (*index) = (*index) + 1;
+            scan_expr_until(
+                source,
+                tokens,
+                token_count,
+                index,
+                72,
+                local_names.data,
+                local_depths.data,
+                local_names.len,
+                fn_names,
+                fn_count,
+                brace_depth,
+                errors,
+                summary
+            );
+        } else if tok.kind == 18 {
+            (*index) = (*index) + 1;
+            if (*index) < token_count and tokens[(*index)].kind != 65 {
+                scan_expr_until(
+                    source,
+                    tokens,
+                    token_count,
+                    index,
+                    65,
+                    local_names.data,
+                    local_depths.data,
+                    local_names.len,
+                    fn_names,
+                    fn_count,
+                    brace_depth,
+                    errors,
+                    summary
+                );
+            }
+            if (*index) < token_count and tokens[(*index)].kind == 65 {
+                (*index) = (*index) + 1;
+            }
+        } else if tok.kind == 77 or tok.kind == 78 {
+            (*index) = (*index) + 1;
+            if (*index) < token_count and tokens[(*index)].kind == 65 {
+                (*index) = (*index) + 1;
+            }
+        } else {
+            (*index) = (*index) + 1;
+        }
+    }
+}
+
+export fn analyze_tokens(
+    source: []char,
+    tokens: @token::Token?,
+    token_count: int,
+    summary: @Summary,
+    errors: @array::Array<SemanticError>
+) {
+    (*summary) = make_empty_summary();
+    if tokens == null {
+        return;
+    }
+
+    var fn_names: array::Array<span::Span> = array::Array();
+    var index = 0;
+    while index < token_count and tokens[index].kind != 76 {
+        if tokens[index].kind != 9 {
+            index = index + 1;
+        } else {
+            (*summary).function_count = (*summary).function_count + 1;
+            index = index + 1;
+            if index >= token_count or tokens[index].kind != 6 {
+                return;
+            }
+
+            var fn_name = tokens[index].span;
+            if seen_name(source, fn_names.data, fn_names.len, fn_name) {
+                errors.push(make_error(1, fn_name.start, fn_name.end));
+                (*summary).duplicate_function_count = (*summary).duplicate_function_count + 1;
+            } else {
+                fn_names.push(fn_name);
+            }
+            index = index + 1;
+
+            if index >= token_count or tokens[index].kind != 70 {
+                return;
+            }
+            index = index + 1;
+
+            var param_names: array::Array<span::Span> = array::Array();
+            while index < token_count and tokens[index].kind != 71 {
+                if tokens[index].kind == 6 {
+                    var param_name = tokens[index].span;
+                    if seen_name(source, param_names.data, param_names.len, param_name) {
+                        errors.push(make_error(3, param_name.start, param_name.end));
+                        (*summary).duplicate_param_count = (*summary).duplicate_param_count + 1;
+                    } else {
+                        param_names.push(param_name);
+                    }
+                }
+                index = index + 1;
+            }
+
+            if index >= token_count or tokens[index].kind != 71 {
+                return;
+            }
+            index = index + 1;
+
+            if index < token_count and tokens[index].kind == 64 {
+                index = index + 1;
+                if index < token_count {
+                    index = index + 1;
+                }
+            }
+
+            if index >= token_count or tokens[index].kind != 72 {
+                return;
+            }
+            scan_function_body(source, tokens, token_count, @index, param_names.data, param_names.len, fn_names.data, fn_names.len, errors, summary);
+        }
+    }
+}

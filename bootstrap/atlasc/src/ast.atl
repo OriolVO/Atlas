@@ -1,0 +1,592 @@
+import span;
+
+export struct ParseError {
+    kind: int;
+    span: span::Span;
+}
+
+export struct ParamInfo {
+    name_span: span::Span;
+    has_type_hint: bool;
+    type_token_kind: int;
+}
+
+export struct Expr {
+    kind: int;
+    name_span: span::Span;
+    int_value: int;
+    bool_value: bool;
+    op_kind: int;
+    lhs_span: span::Span;
+    rhs_span: span::Span;
+    span: span::Span;
+}
+
+export struct VarDecl {
+    name_span: span::Span;
+    has_type_hint: bool;
+    type_token_kind: int;
+    has_init: bool;
+    init_expr: Expr;
+    span: span::Span;
+}
+
+export struct ConstDecl {
+    name_span: span::Span;
+    has_type_hint: bool;
+    type_token_kind: int;
+    init_expr: Expr;
+    span: span::Span;
+}
+
+export struct AssignStmt {
+    target_name_span: span::Span;
+    value_expr: Expr;
+    span: span::Span;
+}
+
+export struct BlockInfo {
+    stmt_count: int;
+    span: span::Span;
+}
+
+export struct IfStmt {
+    condition: Expr;
+    then_block: BlockInfo;
+    has_else_block: bool;
+    else_block: BlockInfo;
+    span: span::Span;
+}
+
+export struct WhileStmt {
+    condition: Expr;
+    body: BlockInfo;
+    span: span::Span;
+}
+
+export struct ReturnStmt {
+    has_value: bool;
+    value_expr: Expr;
+    span: span::Span;
+}
+
+export struct FunctionInfo {
+    name_span: span::Span;
+    param_count: int;
+    first_param: ParamInfo;
+    second_param: ParamInfo;
+    has_return_type: bool;
+    return_type_kind: int;
+    body: BlockInfo;
+    span: span::Span;
+}
+
+export struct Stmt {
+    kind: int;
+    var_decl: VarDecl;
+    const_decl: ConstDecl;
+    assign_stmt: AssignStmt;
+    block: BlockInfo;
+    if_stmt: IfStmt;
+    while_stmt: WhileStmt;
+    return_stmt: ReturnStmt;
+    span: span::Span;
+}
+
+export struct Item {
+    kind: int;
+    function_info: FunctionInfo;
+    span: span::Span;
+}
+
+export struct FileInfo {
+    item_count: int;
+    first_item: Item;
+    second_item: Item;
+    span: span::Span;
+}
+
+export fn make_parse_error(kind: int, start: int, end: int): ParseError {
+    return ParseError {
+        kind: kind,
+        span: span::make(start, end)
+    };
+}
+
+export fn make_empty_param_info(): ParamInfo {
+    return ParamInfo {
+        name_span: span::make(0, 0),
+        has_type_hint: false,
+        type_token_kind: 0
+    };
+}
+
+export fn make_param_info(
+    name_start: int,
+    name_end: int,
+    has_type_hint: bool,
+    type_token_kind: int
+): ParamInfo {
+    return ParamInfo {
+        name_span: span::make(name_start, name_end),
+        has_type_hint: has_type_hint,
+        type_token_kind: type_token_kind
+    };
+}
+
+export fn make_empty_expr(): Expr {
+    return Expr {
+        kind: 0,
+        name_span: span::make(0, 0),
+        int_value: 0,
+        bool_value: false,
+        op_kind: 0,
+        lhs_span: span::make(0, 0),
+        rhs_span: span::make(0, 0),
+        span: span::make(0, 0)
+    };
+}
+
+export fn make_name_expr(start: int, end: int): Expr {
+    return Expr {
+        kind: 1,
+        name_span: span::make(start, end),
+        int_value: 0,
+        bool_value: false,
+        op_kind: 0,
+        lhs_span: span::make(0, 0),
+        rhs_span: span::make(0, 0),
+        span: span::make(start, end)
+    };
+}
+
+export fn make_int_expr(value: int, start: int, end: int): Expr {
+    return Expr {
+        kind: 2,
+        name_span: span::make(0, 0),
+        int_value: value,
+        bool_value: false,
+        op_kind: 0,
+        lhs_span: span::make(0, 0),
+        rhs_span: span::make(0, 0),
+        span: span::make(start, end)
+    };
+}
+
+export fn make_bool_expr(value: bool, start: int, end: int): Expr {
+    return Expr {
+        kind: 3,
+        name_span: span::make(0, 0),
+        int_value: 0,
+        bool_value: value,
+        op_kind: 0,
+        lhs_span: span::make(0, 0),
+        rhs_span: span::make(0, 0),
+        span: span::make(start, end)
+    };
+}
+
+export fn make_group_expr(start: int, end: int): Expr {
+    return Expr {
+        kind: 4,
+        name_span: span::make(0, 0),
+        int_value: 0,
+        bool_value: false,
+        op_kind: 0,
+        lhs_span: span::make(0, 0),
+        rhs_span: span::make(0, 0),
+        span: span::make(start, end)
+    };
+}
+
+export fn make_binary_expr(
+    op_kind: int,
+    lhs_start: int,
+    lhs_end: int,
+    rhs_start: int,
+    rhs_end: int,
+    start: int,
+    end: int
+): Expr {
+    return Expr {
+        kind: 5,
+        name_span: span::make(0, 0),
+        int_value: 0,
+        bool_value: false,
+        op_kind: op_kind,
+        lhs_span: span::make(lhs_start, lhs_end),
+        rhs_span: span::make(rhs_start, rhs_end),
+        span: span::make(start, end)
+    };
+}
+
+export fn make_empty_var_decl(): VarDecl {
+    return VarDecl {
+        name_span: span::make(0, 0),
+        has_type_hint: false,
+        type_token_kind: 0,
+        has_init: false,
+        init_expr: make_empty_expr(),
+        span: span::make(0, 0)
+    };
+}
+
+export fn make_var_decl(
+    name_start: int,
+    name_end: int,
+    has_type_hint: bool,
+    type_token_kind: int,
+    has_init: bool,
+    init_expr: Expr,
+    start: int,
+    end: int
+): VarDecl {
+    return VarDecl {
+        name_span: span::make(name_start, name_end),
+        has_type_hint: has_type_hint,
+        type_token_kind: type_token_kind,
+        has_init: has_init,
+        init_expr: init_expr,
+        span: span::make(start, end)
+    };
+}
+
+export fn make_empty_const_decl(): ConstDecl {
+    return ConstDecl {
+        name_span: span::make(0, 0),
+        has_type_hint: false,
+        type_token_kind: 0,
+        init_expr: make_empty_expr(),
+        span: span::make(0, 0)
+    };
+}
+
+export fn make_const_decl(
+    name_start: int,
+    name_end: int,
+    has_type_hint: bool,
+    type_token_kind: int,
+    init_expr: Expr,
+    start: int,
+    end: int
+): ConstDecl {
+    return ConstDecl {
+        name_span: span::make(name_start, name_end),
+        has_type_hint: has_type_hint,
+        type_token_kind: type_token_kind,
+        init_expr: init_expr,
+        span: span::make(start, end)
+    };
+}
+
+export fn make_empty_assign_stmt(): AssignStmt {
+    return AssignStmt {
+        target_name_span: span::make(0, 0),
+        value_expr: make_empty_expr(),
+        span: span::make(0, 0)
+    };
+}
+
+export fn make_assign_stmt(
+    name_start: int,
+    name_end: int,
+    value_expr: Expr,
+    start: int,
+    end: int
+): AssignStmt {
+    return AssignStmt {
+        target_name_span: span::make(name_start, name_end),
+        value_expr: value_expr,
+        span: span::make(start, end)
+    };
+}
+
+export fn make_empty_block_info(): BlockInfo {
+    return BlockInfo {
+        stmt_count: 0,
+        span: span::make(0, 0)
+    };
+}
+
+export fn make_block_info(stmt_count: int, start: int, end: int): BlockInfo {
+    return BlockInfo {
+        stmt_count: stmt_count,
+        span: span::make(start, end)
+    };
+}
+
+export fn make_empty_if_stmt(): IfStmt {
+    return IfStmt {
+        condition: make_empty_expr(),
+        then_block: make_empty_block_info(),
+        has_else_block: false,
+        else_block: make_empty_block_info(),
+        span: span::make(0, 0)
+    };
+}
+
+export fn make_if_stmt(
+    condition: Expr,
+    then_block: BlockInfo,
+    has_else_block: bool,
+    else_block: BlockInfo,
+    start: int,
+    end: int
+): IfStmt {
+    return IfStmt {
+        condition: condition,
+        then_block: then_block,
+        has_else_block: has_else_block,
+        else_block: else_block,
+        span: span::make(start, end)
+    };
+}
+
+export fn make_empty_while_stmt(): WhileStmt {
+    return WhileStmt {
+        condition: make_empty_expr(),
+        body: make_empty_block_info(),
+        span: span::make(0, 0)
+    };
+}
+
+export fn make_while_stmt(condition: Expr, body: BlockInfo, start: int, end: int): WhileStmt {
+    return WhileStmt {
+        condition: condition,
+        body: body,
+        span: span::make(start, end)
+    };
+}
+
+export fn make_empty_return_stmt(): ReturnStmt {
+    return ReturnStmt {
+        has_value: false,
+        value_expr: make_empty_expr(),
+        span: span::make(0, 0)
+    };
+}
+
+export fn make_return_stmt(has_value: bool, value_expr: Expr, start: int, end: int): ReturnStmt {
+    return ReturnStmt {
+        has_value: has_value,
+        value_expr: value_expr,
+        span: span::make(start, end)
+    };
+}
+
+export fn make_empty_function_info(): FunctionInfo {
+    return FunctionInfo {
+        name_span: span::make(0, 0),
+        param_count: 0,
+        first_param: make_empty_param_info(),
+        second_param: make_empty_param_info(),
+        has_return_type: false,
+        return_type_kind: 0,
+        body: make_empty_block_info(),
+        span: span::make(0, 0)
+    };
+}
+
+export fn make_function_info(
+    name_start: int,
+    name_end: int,
+    param_count: int,
+    first_param: ParamInfo,
+    second_param: ParamInfo,
+    has_return_type: bool,
+    return_type_kind: int,
+    body: BlockInfo,
+    start: int,
+    end: int
+): FunctionInfo {
+    return FunctionInfo {
+        name_span: span::make(name_start, name_end),
+        param_count: param_count,
+        first_param: first_param,
+        second_param: second_param,
+        has_return_type: has_return_type,
+        return_type_kind: return_type_kind,
+        body: body,
+        span: span::make(start, end)
+    };
+}
+
+export fn make_empty_stmt(): Stmt {
+    return Stmt {
+        kind: 0,
+        var_decl: make_empty_var_decl(),
+        const_decl: make_empty_const_decl(),
+        assign_stmt: make_empty_assign_stmt(),
+        block: make_empty_block_info(),
+        if_stmt: make_empty_if_stmt(),
+        while_stmt: make_empty_while_stmt(),
+        return_stmt: make_empty_return_stmt(),
+        span: span::make(0, 0)
+    };
+}
+
+export fn make_var_stmt(var_decl: VarDecl): Stmt {
+    return Stmt {
+        kind: 1,
+        var_decl: var_decl,
+        const_decl: make_empty_const_decl(),
+        assign_stmt: make_empty_assign_stmt(),
+        block: make_empty_block_info(),
+        if_stmt: make_empty_if_stmt(),
+        while_stmt: make_empty_while_stmt(),
+        return_stmt: make_empty_return_stmt(),
+        span: var_decl.span
+    };
+}
+
+export fn make_const_stmt(const_decl: ConstDecl): Stmt {
+    return Stmt {
+        kind: 2,
+        var_decl: make_empty_var_decl(),
+        const_decl: const_decl,
+        assign_stmt: make_empty_assign_stmt(),
+        block: make_empty_block_info(),
+        if_stmt: make_empty_if_stmt(),
+        while_stmt: make_empty_while_stmt(),
+        return_stmt: make_empty_return_stmt(),
+        span: const_decl.span
+    };
+}
+
+export fn make_assign_only_stmt(assign_stmt: AssignStmt): Stmt {
+    return Stmt {
+        kind: 3,
+        var_decl: make_empty_var_decl(),
+        const_decl: make_empty_const_decl(),
+        assign_stmt: assign_stmt,
+        block: make_empty_block_info(),
+        if_stmt: make_empty_if_stmt(),
+        while_stmt: make_empty_while_stmt(),
+        return_stmt: make_empty_return_stmt(),
+        span: assign_stmt.span
+    };
+}
+
+export fn make_block_stmt(block: BlockInfo): Stmt {
+    return Stmt {
+        kind: 4,
+        var_decl: make_empty_var_decl(),
+        const_decl: make_empty_const_decl(),
+        assign_stmt: make_empty_assign_stmt(),
+        block: block,
+        if_stmt: make_empty_if_stmt(),
+        while_stmt: make_empty_while_stmt(),
+        return_stmt: make_empty_return_stmt(),
+        span: block.span
+    };
+}
+
+export fn make_if_only_stmt(if_stmt: IfStmt): Stmt {
+    return Stmt {
+        kind: 5,
+        var_decl: make_empty_var_decl(),
+        const_decl: make_empty_const_decl(),
+        assign_stmt: make_empty_assign_stmt(),
+        block: make_empty_block_info(),
+        if_stmt: if_stmt,
+        while_stmt: make_empty_while_stmt(),
+        return_stmt: make_empty_return_stmt(),
+        span: if_stmt.span
+    };
+}
+
+export fn make_while_only_stmt(while_stmt: WhileStmt): Stmt {
+    return Stmt {
+        kind: 6,
+        var_decl: make_empty_var_decl(),
+        const_decl: make_empty_const_decl(),
+        assign_stmt: make_empty_assign_stmt(),
+        block: make_empty_block_info(),
+        if_stmt: make_empty_if_stmt(),
+        while_stmt: while_stmt,
+        return_stmt: make_empty_return_stmt(),
+        span: while_stmt.span
+    };
+}
+
+export fn make_break_stmt(start: int, end: int): Stmt {
+    return Stmt {
+        kind: 7,
+        var_decl: make_empty_var_decl(),
+        const_decl: make_empty_const_decl(),
+        assign_stmt: make_empty_assign_stmt(),
+        block: make_empty_block_info(),
+        if_stmt: make_empty_if_stmt(),
+        while_stmt: make_empty_while_stmt(),
+        return_stmt: make_empty_return_stmt(),
+        span: span::make(start, end)
+    };
+}
+
+export fn make_continue_stmt(start: int, end: int): Stmt {
+    return Stmt {
+        kind: 8,
+        var_decl: make_empty_var_decl(),
+        const_decl: make_empty_const_decl(),
+        assign_stmt: make_empty_assign_stmt(),
+        block: make_empty_block_info(),
+        if_stmt: make_empty_if_stmt(),
+        while_stmt: make_empty_while_stmt(),
+        return_stmt: make_empty_return_stmt(),
+        span: span::make(start, end)
+    };
+}
+
+export fn make_return_only_stmt(return_stmt: ReturnStmt): Stmt {
+    return Stmt {
+        kind: 9,
+        var_decl: make_empty_var_decl(),
+        const_decl: make_empty_const_decl(),
+        assign_stmt: make_empty_assign_stmt(),
+        block: make_empty_block_info(),
+        if_stmt: make_empty_if_stmt(),
+        while_stmt: make_empty_while_stmt(),
+        return_stmt: return_stmt,
+        span: return_stmt.span
+    };
+}
+
+export fn make_empty_item(): Item {
+    return Item {
+        kind: 0,
+        function_info: make_empty_function_info(),
+        span: span::make(0, 0)
+    };
+}
+
+export fn make_function_item(function_info: FunctionInfo): Item {
+    return Item {
+        kind: 1,
+        function_info: function_info,
+        span: function_info.span
+    };
+}
+
+export fn make_empty_file_info(): FileInfo {
+    return FileInfo {
+        item_count: 0,
+        first_item: make_empty_item(),
+        second_item: make_empty_item(),
+        span: span::make(0, 0)
+    };
+}
+
+export fn make_file_info(
+    item_count: int,
+    first_item: Item,
+    second_item: Item,
+    start: int,
+    end: int
+): FileInfo {
+    return FileInfo {
+        item_count: item_count,
+        first_item: first_item,
+        second_item: second_item,
+        span: span::make(start, end)
+    };
+}

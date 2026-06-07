@@ -1,0 +1,23 @@
+enum Kind {
+    A,
+    B
+}
+
+struct Wrapper {
+    kind: Kind;
+}
+
+fn main(): int {
+    var value = Wrapper {
+        kind: Kind::A
+    };
+
+    match value.kind {
+        Kind::A => {
+            return 0;
+        },
+        Kind::B => {
+            return 1;
+        }
+    };
+}

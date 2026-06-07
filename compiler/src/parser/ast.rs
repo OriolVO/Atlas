@@ -150,6 +150,8 @@ pub enum Stmt {
     Return(Option<Expr>, Span),
     If(IfStmt),
     While(WhileStmt),
+    Break(Span),
+    Continue(Span),
     Block(Block),
     StructDecl(StructDecl),
 }

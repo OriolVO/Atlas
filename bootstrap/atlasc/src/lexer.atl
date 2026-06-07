@@ -1,0 +1,261 @@
+import array;
+import error;
+import token;
+
+fn is_space(ch: char): bool {
+    return ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r';
+}
+
+fn is_digit(ch: char): bool {
+    return ch >= '0' and ch <= '9';
+}
+
+fn is_alpha(ch: char): bool {
+    return (ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z') or ch == '_';
+}
+
+fn is_alnum(ch: char): bool {
+    return is_alpha(ch) or is_digit(ch);
+}
+
+fn slice_equals(source: []char, start: int, end: int, text: []char): bool {
+    if end - start != text.len {
+        return false;
+    }
+    var i = 0;
+    while i < text.len {
+        if source[start + i] != text[i] {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn parse_suffix(source: []char, start: int, end: int, has_suffix: @bool, suffix: @int): bool {
+    (*has_suffix) = true;
+    if slice_equals(source, start, end, "i8") or slice_equals(source, start, end, "int8") { (*suffix) = 1; return true; }
+    if slice_equals(source, start, end, "i16") or slice_equals(source, start, end, "int16") { (*suffix) = 2; return true; }
+    if slice_equals(source, start, end, "i32") or slice_equals(source, start, end, "int32") { (*suffix) = 3; return true; }
+    if slice_equals(source, start, end, "i64") or slice_equals(source, start, end, "int64") { (*suffix) = 4; return true; }
+    if slice_equals(source, start, end, "u8") or slice_equals(source, start, end, "uint8") { (*suffix) = 5; return true; }
+    if slice_equals(source, start, end, "u16") or slice_equals(source, start, end, "uint16") { (*suffix) = 6; return true; }
+    if slice_equals(source, start, end, "u32") or slice_equals(source, start, end, "uint32") { (*suffix) = 7; return true; }
+    if slice_equals(source, start, end, "u64") or slice_equals(source, start, end, "uint64") { (*suffix) = 8; return true; }
+    return false;
+}
+
+fn push_keyword_or_identifier(source: []char, start: int, end: int, tokens: @array::Array<token::Token>) {
+    if slice_equals(source, start, end, "var") { tokens.push(token::make(7, start, end)); return; }
+    if slice_equals(source, start, end, "const") { tokens.push(token::make(8, start, end)); return; }
+    if slice_equals(source, start, end, "fn") { tokens.push(token::make(9, start, end)); return; }
+    if slice_equals(source, start, end, "struct") { tokens.push(token::make(10, start, end)); return; }
+    if slice_equals(source, start, end, "class") { tokens.push(token::make(11, start, end)); return; }
+    if slice_equals(source, start, end, "enum") { tokens.push(token::make(12, start, end)); return; }
+    if slice_equals(source, start, end, "choice") { tokens.push(token::make(13, start, end)); return; }
+    if slice_equals(source, start, end, "match") { tokens.push(token::make(14, start, end)); return; }
+    if slice_equals(source, start, end, "if") { tokens.push(token::make(15, start, end)); return; }
+    if slice_equals(source, start, end, "else") { tokens.push(token::make(16, start, end)); return; }
+    if slice_equals(source, start, end, "while") { tokens.push(token::make(17, start, end)); return; }
+    if slice_equals(source, start, end, "break") { tokens.push(token::make(77, start, end)); return; }
+    if slice_equals(source, start, end, "continue") { tokens.push(token::make(78, start, end)); return; }
+    if slice_equals(source, start, end, "return") { tokens.push(token::make(18, start, end)); return; }
+    if slice_equals(source, start, end, "import") { tokens.push(token::make(19, start, end)); return; }
+    if slice_equals(source, start, end, "export") { tokens.push(token::make(20, start, end)); return; }
+    if slice_equals(source, start, end, "public") { tokens.push(token::make(21, start, end)); return; }
+    if slice_equals(source, start, end, "private") { tokens.push(token::make(22, start, end)); return; }
+    if slice_equals(source, start, end, "where") { tokens.push(token::make(23, start, end)); return; }
+    if slice_equals(source, start, end, "as") { tokens.push(token::make(24, start, end)); return; }
+    if slice_equals(source, start, end, "and") { tokens.push(token::make(25, start, end)); return; }
+    if slice_equals(source, start, end, "or") { tokens.push(token::make(26, start, end)); return; }
+    if slice_equals(source, start, end, "not") { tokens.push(token::make(27, start, end)); return; }
+    if slice_equals(source, start, end, "extern") { tokens.push(token::make(28, start, end)); return; }
+    if slice_equals(source, start, end, "self") { tokens.push(token::make(29, start, end)); return; }
+    if slice_equals(source, start, end, "null") { tokens.push(token::make(30, start, end)); return; }
+    if slice_equals(source, start, end, "true") { tokens.push(token::make_bool(true, start, end)); return; }
+    if slice_equals(source, start, end, "false") { tokens.push(token::make_bool(false, start, end)); return; }
+    if slice_equals(source, start, end, "int") { tokens.push(token::make(31, start, end)); return; }
+    if slice_equals(source, start, end, "uint") { tokens.push(token::make(32, start, end)); return; }
+    if slice_equals(source, start, end, "int8") { tokens.push(token::make(33, start, end)); return; }
+    if slice_equals(source, start, end, "int16") { tokens.push(token::make(34, start, end)); return; }
+    if slice_equals(source, start, end, "int32") { tokens.push(token::make(35, start, end)); return; }
+    if slice_equals(source, start, end, "int64") { tokens.push(token::make(36, start, end)); return; }
+    if slice_equals(source, start, end, "uint8") { tokens.push(token::make(37, start, end)); return; }
+    if slice_equals(source, start, end, "uint16") { tokens.push(token::make(38, start, end)); return; }
+    if slice_equals(source, start, end, "uint32") { tokens.push(token::make(39, start, end)); return; }
+    if slice_equals(source, start, end, "uint64") { tokens.push(token::make(40, start, end)); return; }
+    if slice_equals(source, start, end, "float") { tokens.push(token::make(41, start, end)); return; }
+    if slice_equals(source, start, end, "float32") { tokens.push(token::make(42, start, end)); return; }
+    if slice_equals(source, start, end, "float64") { tokens.push(token::make(43, start, end)); return; }
+    if slice_equals(source, start, end, "bool") { tokens.push(token::make(44, start, end)); return; }
+    if slice_equals(source, start, end, "char") { tokens.push(token::make(45, start, end)); return; }
+    tokens.push(token::make(6, start, end));
+}
+
+export fn tokenize(source: []char, tokens: @array::Array<token::Token>, errors: @array::Array<error::LexError>) {
+    var i = 0;
+    while i < source.len {
+        var ch = source[i];
+        if is_space(ch) {
+            i = i + 1;
+        } else if ch == '/' and i + 1 < source.len and source[i + 1] == '/' {
+            i = i + 2;
+            while i < source.len and source[i] != '\n' {
+                i = i + 1;
+            }
+        } else if ch == '/' and i + 1 < source.len and source[i + 1] == '*' {
+            var start = i;
+            i = i + 2;
+            var depth = 1;
+            while i < source.len and depth > 0 {
+                if source[i] == '/' and i + 1 < source.len and source[i + 1] == '*' {
+                    depth = depth + 1;
+                    i = i + 2;
+                } else if source[i] == '*' and i + 1 < source.len and source[i + 1] == '/' {
+                    depth = depth - 1;
+                    i = i + 2;
+                } else {
+                    i = i + 1;
+                }
+            }
+            if depth > 0 {
+                errors.push(error::make(4, start, source.len));
+            }
+        } else if is_digit(ch) {
+            var start = i;
+            var value = 0;
+            while i < source.len and is_digit(source[i]) {
+                value = value * 10 + (cast<int>(source[i]) - cast<int>('0'));
+                i = i + 1;
+            }
+            if i < source.len and source[i] == '.' and i + 1 < source.len and is_digit(source[i + 1]) {
+                i = i + 1;
+                while i < source.len and is_digit(source[i]) {
+                    i = i + 1;
+                }
+                tokens.push(token::make(2, start, i));
+            } else {
+                var has_suffix = false;
+                var suffix = 4;
+                var suffix_start = i;
+                while i < source.len and is_alnum(source[i]) {
+                    i = i + 1;
+                }
+                if i > suffix_start and !parse_suffix(source, suffix_start, i, @has_suffix, @suffix) {
+                    errors.push(error::make(1, start, i));
+                } else {
+                    tokens.push(token::make_int(value, has_suffix, suffix, start, i));
+                }
+            }
+        } else if is_alpha(ch) {
+            var start = i;
+            i = i + 1;
+            while i < source.len and is_alnum(source[i]) {
+                i = i + 1;
+            }
+            push_keyword_or_identifier(source, start, i, tokens);
+        } else if ch == '\'' {
+            var start = i;
+            if i + 2 < source.len and source[i + 2] == '\'' and source[i + 1] != '\\' {
+                tokens.push(token::make_char(source[i + 1], start, i + 3));
+                i = i + 3;
+            } else if i + 3 < source.len and source[i + 1] == '\\' and source[i + 3] == '\'' {
+                var value = '\0';
+                var ok = true;
+                if source[i + 2] == 'n' { value = '\n'; }
+                else if source[i + 2] == 't' { value = '\t'; }
+                else if source[i + 2] == 'r' { value = '\r'; }
+                else if source[i + 2] == '0' { value = '\0'; }
+                else if source[i + 2] == '\\' { value = '\\'; }
+                else if source[i + 2] == '\'' { value = '\''; }
+                else { ok = false; }
+
+                if ok {
+                    tokens.push(token::make_char(value, start, i + 4));
+                } else {
+                    errors.push(error::make(2, start, i + 4));
+                }
+                i = i + 4;
+            } else {
+                errors.push(error::make(2, start, start + 1));
+                i = i + 1;
+            }
+        } else if ch == '"' {
+            var start = i;
+            i = i + 1;
+            var terminated = false;
+            var done = false;
+            while i < source.len and !done {
+                if source[i] == '"' {
+                    terminated = true;
+                    i = i + 1;
+                    done = true;
+                } else if source[i] == '\\' and i + 1 < source.len {
+                    i = i + 2;
+                } else if source[i] == '\n' {
+                    done = true;
+                } else {
+                    i = i + 1;
+                }
+            }
+            if terminated {
+                tokens.push(token::make(5, start, i));
+            } else {
+                errors.push(error::make(3, start, i));
+            }
+        } else if ch == '=' and i + 1 < source.len and source[i + 1] == '=' {
+            tokens.push(token::make(51, i, i + 2));
+            i = i + 2;
+        } else if ch == '!' and i + 1 < source.len and source[i + 1] == '=' {
+            tokens.push(token::make(52, i, i + 2));
+            i = i + 2;
+        } else if ch == '<' and i + 1 < source.len and source[i + 1] == '=' {
+            tokens.push(token::make(53, i, i + 2));
+            i = i + 2;
+        } else if ch == '>' and i + 1 < source.len and source[i + 1] == '=' {
+            tokens.push(token::make(54, i, i + 2));
+            i = i + 2;
+        } else if ch == '&' and i + 1 < source.len and source[i + 1] == '&' {
+            tokens.push(token::make(59, i, i + 2));
+            i = i + 2;
+        } else if ch == '|' and i + 1 < source.len and source[i + 1] == '|' {
+            tokens.push(token::make(60, i, i + 2));
+            i = i + 2;
+        } else if ch == ':' and i + 1 < source.len and source[i + 1] == ':' {
+            tokens.push(token::make(63, i, i + 2));
+            i = i + 2;
+        } else if ch == '=' and i + 1 < source.len and source[i + 1] == '>' {
+            tokens.push(token::make(69, i, i + 2));
+            i = i + 2;
+        } else if ch == '.' and i + 2 < source.len and source[i + 1] == '.' and source[i + 2] == '.' {
+            tokens.push(token::make(67, i, i + 3));
+            i = i + 3;
+        } else if ch == '+' { tokens.push(token::make(46, i, i + 1)); i = i + 1; }
+        else if ch == '-' { tokens.push(token::make(47, i, i + 1)); i = i + 1; }
+        else if ch == '*' { tokens.push(token::make(48, i, i + 1)); i = i + 1; }
+        else if ch == '/' { tokens.push(token::make(49, i, i + 1)); i = i + 1; }
+        else if ch == '%' { tokens.push(token::make(50, i, i + 1)); i = i + 1; }
+        else if ch == '<' { tokens.push(token::make(55, i, i + 1)); i = i + 1; }
+        else if ch == '>' { tokens.push(token::make(56, i, i + 1)); i = i + 1; }
+        else if ch == '=' { tokens.push(token::make(57, i, i + 1)); i = i + 1; }
+        else if ch == '!' { tokens.push(token::make(58, i, i + 1)); i = i + 1; }
+        else if ch == '@' { tokens.push(token::make(61, i, i + 1)); i = i + 1; }
+        else if ch == '?' { tokens.push(token::make(62, i, i + 1)); i = i + 1; }
+        else if ch == ':' { tokens.push(token::make(64, i, i + 1)); i = i + 1; }
+        else if ch == ';' { tokens.push(token::make(65, i, i + 1)); i = i + 1; }
+        else if ch == ',' { tokens.push(token::make(66, i, i + 1)); i = i + 1; }
+        else if ch == '.' { tokens.push(token::make(68, i, i + 1)); i = i + 1; }
+        else if ch == '(' { tokens.push(token::make(70, i, i + 1)); i = i + 1; }
+        else if ch == ')' { tokens.push(token::make(71, i, i + 1)); i = i + 1; }
+        else if ch == '{' { tokens.push(token::make(72, i, i + 1)); i = i + 1; }
+        else if ch == '}' { tokens.push(token::make(73, i, i + 1)); i = i + 1; }
+        else if ch == '[' { tokens.push(token::make(74, i, i + 1)); i = i + 1; }
+        else if ch == ']' { tokens.push(token::make(75, i, i + 1)); i = i + 1; }
+        else {
+            errors.push(error::make(5, i, i + 1));
+            i = i + 1;
+        }
+    }
+
+    tokens.push(token::make(76, source.len, source.len));
+}

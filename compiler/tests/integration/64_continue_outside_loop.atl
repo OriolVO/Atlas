@@ -1,0 +1,6 @@
+// Type Error: 'continue' can only be used inside a loop
+
+fn main(): int {
+    continue;
+    return 0;
+}

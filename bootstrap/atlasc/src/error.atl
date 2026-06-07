@@ -1,0 +1,13 @@
+import span;
+
+export struct LexError {
+    kind: int;
+    span: span::Span;
+}
+
+export fn make(kind: int, start: int, end: int): LexError {
+    return LexError {
+        kind: kind,
+        span: span::make(start, end)
+    };
+}
