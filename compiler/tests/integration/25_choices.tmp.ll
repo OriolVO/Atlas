@@ -3,10 +3,12 @@ source_filename = "input.atl"
 target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-unknown-linux-gnu"
 
+declare i32 @"snprintf"(i8*, i64, i8*, ...)
+
 %choice.main.OptionInt = type { i32, [8 x i8] }
 
 
-define i64 @main.get_val(%choice.main.OptionInt %o) {
+define i64 @"main.get_val"(%choice.main.OptionInt %o) {
 entry:
     %tmp0 = alloca %choice.main.OptionInt
     store %choice.main.OptionInt %o, %choice.main.OptionInt* %tmp0
@@ -34,7 +36,7 @@ match_end.0:
     ret i64 0
 }
 
-define i32 @main() {
+define i32 @"main"() {
 entry:
     %tmp12 = alloca %choice.main.OptionInt
     %tmp13 = getelementptr inbounds %choice.main.OptionInt, %choice.main.OptionInt* %tmp12, i32 0, i32 0
@@ -47,7 +49,7 @@ entry:
     %tmp17 = alloca %choice.main.OptionInt
     store %choice.main.OptionInt %tmp16, %choice.main.OptionInt* %tmp17
     %tmp18 = load %choice.main.OptionInt, %choice.main.OptionInt* %tmp17
-    %tmp19 = call i64 @main.get_val(%choice.main.OptionInt %tmp18)
+    %tmp19 = call i64 @"main.get_val"(%choice.main.OptionInt %tmp18)
     %tmp20 = trunc i64 %tmp19 to i32
     ret i32 %tmp20
 }

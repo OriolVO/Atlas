@@ -3,16 +3,19 @@ source_filename = "input.atl"
 target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-unknown-linux-gnu"
 
-define i32 @main() {
+declare i32 @"snprintf"(i8*, i64, i8*, ...)
+
+define i32 @"main"() {
 entry:
     %tmp0 = alloca i64
     store i64 10, i64* %tmp0
     %tmp1 = alloca i64
     store i64 32, i64* %tmp1
     %tmp2 = load i64, i64* %tmp0
-    %tmp3 = load i64, i64* %tmp1
-    %tmp4 = add i64 %tmp2, %tmp3
-    %tmp5 = trunc i64 %tmp4 to i32
-    ret i32 %tmp5
+    %tmp3 = load i64, i64* %tmp0
+    %tmp4 = load i64, i64* %tmp1
+    %tmp5 = add i64 %tmp3, %tmp4
+    %tmp6 = trunc i64 %tmp5 to i32
+    ret i32 %tmp6
 }
 

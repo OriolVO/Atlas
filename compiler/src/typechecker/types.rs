@@ -104,9 +104,10 @@ pub struct TypedAST {
     pub classes: HashMap<String, ClassType>,
     pub enums: HashMap<String, EnumType>,
     pub choices: HashMap<String, ChoiceType>,
+    pub generated_classes: Vec<ClassDecl>,
+    pub generated_functions: Vec<FunctionDecl>,
     pub mangled_calls: HashMap<Span, String>,
     pub overloaded_operators: HashMap<ExprId, String>,
-    pub precompiled_ir: Option<String>,
 }
 
 pub fn resolve_type(

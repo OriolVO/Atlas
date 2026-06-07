@@ -18,10 +18,6 @@ impl Codegen {
     }
 
     pub fn generate(&self, ast: &SourceFile) -> Result<String, AtlasError> {
-        if let Some(ir) = self.typed_ast.precompiled_ir.clone() {
-            return Ok(ir);
-        }
-
         NativeCodegen::new(self.typed_ast.clone()).generate(ast)
     }
 }

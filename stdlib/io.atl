@@ -77,7 +77,8 @@ where T (
     fn format(self): String;
 )
 {
-    // Temporarily a no-op while generic return member typing is unstable.
+    var s = val.format();
+    print_str(s.c_str());
 }
 
 export fn println<T>(val: T)
@@ -85,5 +86,6 @@ where T (
     fn format(self): String;
 )
 {
-    // Temporarily a no-op while generic return member typing is unstable.
+    var s = val.format();
+    println_str(s.c_str());
 }

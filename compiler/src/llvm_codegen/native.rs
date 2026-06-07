@@ -11,10 +11,12 @@ pub struct NativeCodegen {
     temp_counter: usize,
     label_counter: usize,
     str_counter: usize,
+    helper_counter: usize,
     scopes: Vec<HashMap<String, (String, AtlasType)>>,
     cleanup_scopes: Vec<Vec<(String, AtlasType)>>,
     block_terminated: bool,
     current_fn_is_main: bool,
+    current_fn_return_ty: Option<AtlasType>,
 }
 
 impl NativeCodegen {
@@ -26,10 +28,12 @@ impl NativeCodegen {
             temp_counter: 0,
             label_counter: 0,
             str_counter: 0,
+            helper_counter: 0,
             scopes: Vec::new(),
             cleanup_scopes: Vec::new(),
             block_terminated: false,
             current_fn_is_main: false,
+            current_fn_return_ty: None,
         }
     }
 
@@ -39,6 +43,8 @@ impl NativeCodegen {
         self.output.push_str("source_filename = \"input.atl\"\n");
         self.output.push_str("target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"\n");
         self.output.push_str("target triple = \"x86_64-unknown-linux-gnu\"\n\n");
+        self.output
+            .push_str("declare i32 @\"snprintf\"(i8*, i64, i8*, ...)\n\n");
 
         self.emit_aggregate_types()?;
 
@@ -62,11 +68,23 @@ impl NativeCodegen {
             }
         }
 
+        for decl in &self.typed_ast.generated_classes.clone() {
+            if self.typed_ast.classes.contains_key(&decl.name.0) {
+                self.emit_class_decl(decl)?;
+            }
+        }
+
         for item in &ast.items {
             if let Item::FunctionDecl(decl, _) = item {
                 if self.typed_ast.fn_sigs.contains_key(&decl.name.0) {
                     self.emit_function(decl)?;
                 }
+            }
+        }
+
+        for decl in &self.typed_ast.generated_functions.clone() {
+            if self.typed_ast.fn_sigs.contains_key(&decl.name.0) {
+                self.emit_function(decl)?;
             }
         }
 
@@ -135,9 +153,9 @@ impl NativeCodegen {
             params.push(map_type_expr(&param.ty.0, &self.typed_ast.structs, &self.typed_ast.classes, &self.typed_ast.enums, &self.typed_ast.choices)?);
         }
         self.output.push_str(&format!(
-            "declare {} @{}({})\n",
+            "declare {} {}({})\n",
             ret_ty,
-            decl.name.0,
+            llvm_symbol(&decl.name.0),
             params.join(", ")
         ));
         Ok(())
@@ -167,7 +185,7 @@ impl NativeCodegen {
                 continue;
             }
             emitted.insert(method.decl.name.0.clone());
-            self.emit_named_function(&qualified, &method.decl)?;
+            self.emit_named_function(&qualified, &method.decl, Some(&class_name))?;
         }
 
         if !emitted.contains("init") {
@@ -183,16 +201,29 @@ impl NativeCodegen {
     }
 
     fn emit_function(&mut self, decl: &crate::parser::FunctionDecl) -> Result<(), AtlasError> {
-        self.emit_named_function(&decl.name.0, decl)
+        self.emit_named_function(&decl.name.0, decl, None)
     }
 
     fn emit_named_function(
         &mut self,
         llvm_name: &str,
         decl: &crate::parser::FunctionDecl,
+        class_context: Option<&str>,
     ) -> Result<(), AtlasError> {
         self.current_fn_is_main = decl.name.0 == "main";
         self.block_terminated = false;
+        self.current_fn_return_ty = decl
+            .ret_ty
+            .as_ref()
+            .map(|ret| resolve_type_in_context(
+                &ret.0,
+                class_context,
+                &self.typed_ast.structs,
+                &self.typed_ast.classes,
+                &self.typed_ast.enums,
+                &self.typed_ast.choices,
+            ))
+            .transpose()?;
 
         let ret_ty = if self.current_fn_is_main {
             "i32".to_string()
@@ -207,22 +238,36 @@ impl NativeCodegen {
         for param in &decl.params {
             params.push(format!(
                 "{} %{}",
-                map_type_expr(&param.ty.0, &self.typed_ast.structs, &self.typed_ast.classes, &self.typed_ast.enums, &self.typed_ast.choices)?,
+                map_type_in_context(
+                    &param.ty.0,
+                    class_context,
+                    &self.typed_ast.structs,
+                    &self.typed_ast.classes,
+                    &self.typed_ast.enums,
+                    &self.typed_ast.choices,
+                )?,
                 param.name.0
             ));
         }
 
         self.output.push_str(&format!(
-            "define {} @{}({}) {{\nentry:\n",
+            "define {} {}({}) {{\nentry:\n",
             ret_ty,
-            llvm_name,
+            llvm_symbol(llvm_name),
             params.join(", ")
         ));
 
         self.scopes.push(HashMap::new());
         self.cleanup_scopes.push(Vec::new());
         for param in &decl.params {
-            let ty = resolve_simple_type(&param.ty.0, &self.typed_ast.structs, &self.typed_ast.classes, &self.typed_ast.enums, &self.typed_ast.choices)?;
+            let ty = resolve_type_in_context(
+                &param.ty.0,
+                class_context,
+                &self.typed_ast.structs,
+                &self.typed_ast.classes,
+                &self.typed_ast.enums,
+                &self.typed_ast.choices,
+            )?;
             let llvm_ty = map_type(&ty)?;
             let ptr = self.next_temp();
             self.output
@@ -254,14 +299,16 @@ impl NativeCodegen {
         self.cleanup_scopes.pop();
         self.output.push_str("}\n\n");
         self.current_fn_is_main = false;
+        self.current_fn_return_ty = None;
         Ok(())
     }
 
     fn emit_default_class_init(&mut self, class_name: &str) -> Result<(), AtlasError> {
         let class_ty = map_type(&AtlasType::Class(class_name.to_string()))?;
         self.output.push_str(&format!(
-            "define void @{}.init({}* %self) {{\nentry:\n    ret void\n}}\n\n",
-            class_name, class_ty
+            "define void {}({}* %self) {{\nentry:\n    ret void\n}}\n\n",
+            llvm_symbol(&format!("{}.init", class_name)),
+            class_ty
         ));
         Ok(())
     }
@@ -269,8 +316,9 @@ impl NativeCodegen {
     fn emit_default_class_destroy(&mut self, class_name: &str) -> Result<(), AtlasError> {
         let class_ty = map_type(&AtlasType::Class(class_name.to_string()))?;
         self.output.push_str(&format!(
-            "define void @{}.destroy({}* %self) {{\nentry:\n    ret void\n}}\n\n",
-            class_name, class_ty
+            "define void {}({}* %self) {{\nentry:\n    ret void\n}}\n\n",
+            llvm_symbol(&format!("{}.destroy", class_name)),
+            class_ty
         ));
         Ok(())
     }
@@ -278,8 +326,8 @@ impl NativeCodegen {
     fn emit_default_class_clone(&mut self, class_name: &str) -> Result<(), AtlasError> {
         let class_ty = map_type(&AtlasType::Class(class_name.to_string()))?;
         self.output.push_str(&format!(
-            "define {} @{}.clone({}* %self) {{\nentry:\n    %tmp0 = load {}, {}* %self\n    ret {} %tmp0\n}}\n\n",
-            class_ty, class_name, class_ty, class_ty, class_ty, class_ty
+            "define {} {}({}* %self) {{\nentry:\n    %tmp0 = load {}, {}* %self\n    ret {} %tmp0\n}}\n\n",
+            class_ty, llvm_symbol(&format!("{}.clone", class_name)), class_ty, class_ty, class_ty, class_ty
         ));
         Ok(())
     }
@@ -380,6 +428,11 @@ impl NativeCodegen {
                 self.maybe_register_cleanup(ptr, &ty);
             }
             Stmt::Assign(assign) => {
+                if let Expr::ArrayIndex { array, index, .. } = &assign.target {
+                    if self.try_emit_index_assign(array, index, &assign.value)? {
+                        return Ok(());
+                    }
+                }
                 let (ptr, ty) = self.emit_lvalue_address(&assign.target)?;
                 let (value, value_ty) = self.emit_expr(&assign.value)?;
                 if !is_assignable_to(&ty, &value_ty) {
@@ -402,7 +455,11 @@ impl NativeCodegen {
             }
             Stmt::Return(expr, _) => {
                 if let Some(expr) = expr {
-                    let (value, ty) = self.emit_expr(expr)?;
+                    let (value, ty) = if let Some(expected_ret) = self.current_fn_return_ty.clone() {
+                        self.emit_expr_coerced(expr, &expected_ret)?
+                    } else {
+                        self.emit_expr(expr)?
+                    };
                     let mut llvm_ty = map_type(&ty)?;
                     let mut actual_value = value;
                     if self.current_fn_is_main && llvm_ty == "i64" {
@@ -499,11 +556,7 @@ impl NativeCodegen {
                 self.emit_label(&end_label);
             }
             Stmt::Block(block) => self.emit_scoped_block(block)?,
-            Stmt::StructDecl(_) => {
-                return Err(AtlasError::CodegenError {
-                    message: "native codegen does not support local structs".to_string(),
-                });
-            }
+            Stmt::StructDecl(_) => {}
         }
         Ok(())
     }
@@ -557,7 +610,18 @@ impl NativeCodegen {
                     message: format!("unknown static member '{}.{}'", class_name, member_name),
                 })
             }
-            Expr::Var { .. } | Expr::ArrayIndex { .. } => {
+            Expr::Var { .. } => {
+                let (ptr, ty) = self.emit_lvalue_address(expr)?;
+                let reg = self.next_temp();
+                let llvm_ty = map_type(&ty)?;
+                self.output
+                    .push_str(&format!("    {} = load {}, {}* {}\n", reg, llvm_ty, llvm_ty, ptr));
+                Ok((reg, ty))
+            }
+            Expr::ArrayIndex { array, index, .. } => {
+                if let Some(result) = self.try_emit_index_read(array, index)? {
+                    return Ok(result);
+                }
                 let (ptr, ty) = self.emit_lvalue_address(expr)?;
                 let reg = self.next_temp();
                 let llvm_ty = map_type(&ty)?;
@@ -631,6 +695,9 @@ impl NativeCodegen {
                 }
             },
             Expr::Binary { op, lhs, rhs, .. } => {
+                if let Some(result) = self.try_emit_overloaded_binary(op, lhs, rhs)? {
+                    return Ok(result);
+                }
                 let (lhs_val, lhs_ty, rhs_val, rhs_ty) =
                     self.emit_binary_operands(lhs, rhs)?;
                 if lhs_ty != rhs_ty {
@@ -647,13 +714,47 @@ impl NativeCodegen {
                     lhs_ty,
                 )
             }
-            Expr::Call { callee, args, .. } => {
+            Expr::Call { callee, args, span } => {
+                if let Some(struct_ty) = self.typed_ast.structs.get(callee).cloned() {
+                    if struct_ty.fields.len() != args.len() {
+                        return Err(AtlasError::CodegenError {
+                            message: format!("wrong argument count for struct constructor '{}'", callee),
+                        });
+                    }
+                    let llvm_struct_ty = map_type(&AtlasType::Struct(callee.clone()))?;
+                    let mut value = "undef".to_string();
+                    for (index, (arg, (_, field_ty))) in args.iter().zip(struct_ty.fields.iter()).enumerate() {
+                        let (field_value, _) = self.emit_expr_coerced(arg, field_ty)?;
+                        let next_value = self.next_temp();
+                        self.output.push_str(&format!(
+                            "    {} = insertvalue {} {}, {} {}, {}\n",
+                            next_value,
+                            llvm_struct_ty,
+                            value,
+                            map_type(field_ty)?,
+                            field_value,
+                            index
+                        ));
+                        value = next_value;
+                    }
+                    return Ok((value, AtlasType::Struct(callee.clone())));
+                }
+                let resolved_callee = self
+                    .typed_ast
+                    .mangled_calls
+                    .get(span)
+                    .cloned()
+                    .unwrap_or_else(|| callee.clone());
                 if self.typed_ast.classes.contains_key(callee) {
                     let class_ty = AtlasType::Class(callee.clone());
                     let llvm_class_ty = map_type(&class_ty)?;
                     let tmp_ptr = self.next_temp();
                     self.output
                         .push_str(&format!("    {} = alloca {}\n", tmp_ptr, llvm_class_ty));
+                    self.output.push_str(&format!(
+                        "    store {} zeroinitializer, {}* {}\n",
+                        llvm_class_ty, llvm_class_ty, tmp_ptr
+                    ));
                     if let Some(method) = self
                         .typed_ast
                         .classes
@@ -667,8 +768,8 @@ impl NativeCodegen {
                             rendered_args.push(format!("{} {}", map_type(expected_ty)?, value));
                         }
                         self.output.push_str(&format!(
-                            "    call void @{}.init({})\n",
-                            callee,
+                            "    call void {}({})\n",
+                            llvm_symbol(&format!("{}.init", callee)),
                             rendered_args.join(", ")
                         ));
                     }
@@ -680,36 +781,36 @@ impl NativeCodegen {
                 let sig = self
                     .typed_ast
                     .fn_sigs
-                    .get(callee)
+                    .get(&resolved_callee)
                     .cloned()
                     .ok_or_else(|| AtlasError::CodegenError {
-                        message: format!("unknown function '{}'", callee),
+                        message: format!("unknown function '{}'", resolved_callee),
                     })?;
                 let mut rendered_args = Vec::new();
                 for (arg, (_, expected_ty)) in args.iter().zip(sig.params.iter()) {
                     let (value, actual_ty) = self.emit_expr_coerced(arg, expected_ty)?;
                     if !is_assignable_to(expected_ty, &actual_ty) {
                         return Err(AtlasError::CodegenError {
-                            message: format!("call argument type mismatch for '{}'", callee),
+                            message: format!("call argument type mismatch for '{}'", resolved_callee),
                         });
                     }
                     rendered_args.push(format!("{} {}", map_type(expected_ty)?, value));
                 }
                 if sig.ret_ty == AtlasType::Void {
                     self.output.push_str(&format!(
-                        "    call {} @{}({})\n",
+                        "    call {} {}({})\n",
                         map_type(&sig.ret_ty)?,
-                        callee,
+                        llvm_symbol(&resolved_callee),
                         rendered_args.join(", ")
                     ));
                     Ok(("0".to_string(), AtlasType::Void))
                 } else {
                     let reg = self.next_temp();
                     self.output.push_str(&format!(
-                        "    {} = call {} @{}({})\n",
+                        "    {} = call {} {}({})\n",
                         reg,
                         map_type(&sig.ret_ty)?,
-                        callee,
+                        llvm_symbol(&resolved_callee),
                         rendered_args.join(", ")
                     ));
                     Ok((reg, sig.ret_ty.clone()))
@@ -721,6 +822,9 @@ impl NativeCodegen {
                 args,
                 ..
             } => {
+                if let Some(result) = self.try_emit_primitive_method_call(object, method_name, args)? {
+                    return Ok(result);
+                }
                 let (self_arg, class_name) = self.emit_method_receiver(object)?;
                 let method = self
                     .typed_ast
@@ -739,20 +843,18 @@ impl NativeCodegen {
                 }
                 if method.sig.ret_ty == AtlasType::Void {
                     self.output.push_str(&format!(
-                        "    call void @{}.{}({})\n",
-                        class_name,
-                        method_name,
+                        "    call void {}({})\n",
+                        llvm_symbol(&format!("{}.{}", class_name, method_name)),
                         rendered_args.join(", ")
                     ));
                     Ok(("0".to_string(), AtlasType::Void))
                 } else {
                     let reg = self.next_temp();
                     self.output.push_str(&format!(
-                        "    {} = call {} @{}.{}({})\n",
+                        "    {} = call {} {}({})\n",
                         reg,
                         map_type(&method.sig.ret_ty)?,
-                        class_name,
-                        method_name,
+                        llvm_symbol(&format!("{}.{}", class_name, method_name)),
                         rendered_args.join(", ")
                     ));
                     Ok((reg, method.sig.ret_ty.clone()))
@@ -764,7 +866,16 @@ impl NativeCodegen {
                 args,
                 ..
             } => {
-                if let Some(choice_ty) = self.typed_ast.choices.get(class_name).cloned() {
+                if let Some(target_choice_name) = self
+                    .typed_ast
+                    .choices
+                    .get(class_name)
+                    .map(|_| class_name.clone())
+                    .or_else(|| self.infer_choice_constructor_target(class_name))
+                {
+                    let choice_ty = self.typed_ast.choices.get(&target_choice_name).cloned().ok_or_else(|| AtlasError::CodegenError {
+                        message: format!("unknown choice '{}'", target_choice_name),
+                    })?;
                     let Some((index, variant)) = choice_ty
                         .variants
                         .iter()
@@ -788,12 +899,12 @@ impl NativeCodegen {
                         }
                     };
                     let reg = self.emit_choice_constructor(
-                        class_name,
+                        &target_choice_name,
                         index,
                         payload_value.as_deref(),
                         payload_ty.as_ref(),
                     )?;
-                    return Ok((reg, AtlasType::Choice(class_name.clone())));
+                    return Ok((reg, AtlasType::Choice(target_choice_name)));
                 }
                 let method = self
                     .typed_ast
@@ -811,18 +922,18 @@ impl NativeCodegen {
                 }
                 if method.sig.ret_ty == AtlasType::Void {
                     self.output.push_str(&format!(
-                        "    call void @{}.{}({})\n",
-                        class_name, method_name, rendered_args.join(", ")
+                        "    call void {}({})\n",
+                        llvm_symbol(&format!("{}.{}", class_name, method_name)),
+                        rendered_args.join(", ")
                     ));
                     Ok(("0".to_string(), AtlasType::Void))
                 } else {
                     let reg = self.next_temp();
                     self.output.push_str(&format!(
-                        "    {} = call {} @{}.{}({})\n",
+                        "    {} = call {} {}({})\n",
                         reg,
                         map_type(&method.sig.ret_ty)?,
-                        class_name,
-                        method_name,
+                        llvm_symbol(&format!("{}.{}", class_name, method_name)),
                         rendered_args.join(", ")
                     ));
                     Ok((reg, method.sig.ret_ty.clone()))
@@ -893,6 +1004,117 @@ impl NativeCodegen {
                     let _ = self.emit_expr(expr)?;
                 }
                 Ok(("0".to_string(), AtlasType::Void))
+            }
+            Expr::ErrorPropagate { expr, .. } => {
+                let (choice_value, choice_ty) = self.emit_expr(expr)?;
+                let AtlasType::Choice(choice_name) = choice_ty.clone() else {
+                    return Err(AtlasError::CodegenError {
+                        message: "error propagation requires a Result-like choice value".to_string(),
+                    });
+                };
+                let Some(AtlasType::Choice(current_return_choice)) = self.current_fn_return_ty.clone() else {
+                    return Err(AtlasError::CodegenError {
+                        message: "error propagation requires the enclosing function to return a choice".to_string(),
+                    });
+                };
+                if current_return_choice != choice_name {
+                    return Err(AtlasError::CodegenError {
+                        message: "error propagation requires the enclosing function to return the same choice type".to_string(),
+                    });
+                }
+                let choice_def = self.typed_ast.choices.get(&choice_name).cloned().ok_or_else(|| AtlasError::CodegenError {
+                    message: format!("unknown choice '{}'", choice_name),
+                })?;
+                let ok_index = choice_def
+                    .variants
+                    .iter()
+                    .position(|variant| variant.name == "Ok")
+                    .ok_or_else(|| AtlasError::CodegenError {
+                        message: format!("choice '{}' has no Ok variant", choice_name),
+                    })?;
+                let error_index = choice_def
+                    .variants
+                    .iter()
+                    .position(|variant| variant.name == "Error")
+                    .ok_or_else(|| AtlasError::CodegenError {
+                        message: format!("choice '{}' has no Error variant", choice_name),
+                    })?;
+                let ok_payload_ty = choice_def.variants[ok_index].payload.clone().ok_or_else(|| AtlasError::CodegenError {
+                    message: format!("choice '{}' Ok variant has no payload", choice_name),
+                })?;
+                let payload_array_size = self.choice_payload_size(&choice_def)?;
+                let llvm_choice_ty = map_type(&choice_ty)?;
+                let choice_ptr = self.next_temp();
+                self.output.push_str(&format!("    {} = alloca {}\n", choice_ptr, llvm_choice_ty));
+                self.output.push_str(&format!(
+                    "    store {} {}, {}* {}\n",
+                    llvm_choice_ty, choice_value, llvm_choice_ty, choice_ptr
+                ));
+                let tag_ptr = self.next_temp();
+                self.output.push_str(&format!(
+                    "    {} = getelementptr inbounds {}, {}* {}, i32 0, i32 0\n",
+                    tag_ptr, llvm_choice_ty, llvm_choice_ty, choice_ptr
+                ));
+                let tag = self.next_temp();
+                self.output.push_str(&format!("    {} = load i32, i32* {}\n", tag, tag_ptr));
+                let is_error = self.next_temp();
+                self.output.push_str(&format!(
+                    "    {} = icmp eq i32 {}, {}\n",
+                    is_error, tag, error_index
+                ));
+                let err_label = self.next_label("err_prop_err");
+                let ok_label = self.next_label("err_prop_ok");
+                let cont_label = self.next_label("err_prop_cont");
+                let payload_ptr = self.next_temp();
+                let llvm_ok_ty = map_type(&ok_payload_ty)?;
+                self.output.push_str(&format!("    {} = alloca {}\n", payload_ptr, llvm_ok_ty));
+                self.output.push_str(&format!(
+                    "    br i1 {}, label %{}, label %{}\n",
+                    is_error, err_label, ok_label
+                ));
+                self.block_terminated = true;
+
+                self.emit_label(&err_label);
+                let ret_choice = self.next_temp();
+                self.output.push_str(&format!(
+                    "    {} = load {}, {}* {}\n",
+                    ret_choice, llvm_choice_ty, llvm_choice_ty, choice_ptr
+                ));
+                self.emit_all_scope_cleanups()?;
+                self.output.push_str(&format!("    ret {} {}\n", llvm_choice_ty, ret_choice));
+                self.block_terminated = true;
+
+                self.emit_label(&ok_label);
+                let payload_array_ty = format!("[{} x i8]", payload_array_size);
+                let raw_payload_ptr = self.next_temp();
+                self.output.push_str(&format!(
+                    "    {} = getelementptr inbounds {}, {}* {}, i32 0, i32 1\n",
+                    raw_payload_ptr, llvm_choice_ty, llvm_choice_ty, choice_ptr
+                ));
+                let typed_payload_ptr = self.next_temp();
+                self.output.push_str(&format!(
+                    "    {} = bitcast {}* {} to {}*\n",
+                    typed_payload_ptr, payload_array_ty, raw_payload_ptr, llvm_ok_ty
+                ));
+                let payload_value = self.next_temp();
+                self.output.push_str(&format!(
+                    "    {} = load {}, {}* {}\n",
+                    payload_value, llvm_ok_ty, llvm_ok_ty, typed_payload_ptr
+                ));
+                self.output.push_str(&format!(
+                    "    store {} {}, {}* {}\n",
+                    llvm_ok_ty, payload_value, llvm_ok_ty, payload_ptr
+                ));
+                self.output.push_str(&format!("    br label %{}\n", cont_label));
+                self.block_terminated = true;
+
+                self.emit_label(&cont_label);
+                let ok_value = self.next_temp();
+                self.output.push_str(&format!(
+                    "    {} = load {}, {}* {}\n",
+                    ok_value, llvm_ok_ty, llvm_ok_ty, payload_ptr
+                ));
+                Ok((ok_value, ok_payload_ty))
             }
             Expr::Match { .. } => Ok(("0".to_string(), AtlasType::Void)),
             _ => Err(AtlasError::CodegenError {
@@ -1135,7 +1357,7 @@ impl NativeCodegen {
                 let choice_ty = self.typed_ast.choices.get(choice_name).ok_or_else(|| AtlasError::CodegenError {
                     message: format!("unknown choice '{}'", choice_name),
                 })?;
-                choice_ty.variants.iter().position(|variant| path.len() == 2 && path[0] == *choice_name && path[1] == variant.name).ok_or_else(|| AtlasError::CodegenError {
+                choice_ty.variants.iter().position(|variant| path.len() == 2 && self.choice_name_matches_pattern(choice_name, &path[0]) && path[1] == variant.name).ok_or_else(|| AtlasError::CodegenError {
                     message: format!("unknown choice variant pattern '{}::{:?}'", choice_name, path),
                 })
             }
@@ -1162,7 +1384,7 @@ impl NativeCodegen {
                 let variant = choice_ty
                     .variants
                     .iter()
-                    .find(|variant| path.len() == 2 && path[0] == *choice_name && path[1] == variant.name)
+                    .find(|variant| path.len() == 2 && self.choice_name_matches_pattern(choice_name, &path[0]) && path[1] == variant.name)
                     .ok_or_else(|| AtlasError::CodegenError {
                         message: format!("unknown choice variant pattern '{}::{:?}'", choice_name, path),
                     })?;
@@ -1203,6 +1425,19 @@ impl NativeCodegen {
             value, llvm_payload_ty, llvm_payload_ty, typed_payload_ptr
         ));
         Ok(Some((bind_name, payload_ty, value)))
+    }
+
+    fn infer_choice_constructor_target(&self, base_name: &str) -> Option<String> {
+        match self.current_fn_return_ty.as_ref() {
+            Some(AtlasType::Choice(choice_name)) if self.choice_name_matches_pattern(choice_name, base_name) => {
+                Some(choice_name.clone())
+            }
+            _ => None,
+        }
+    }
+
+    fn choice_name_matches_pattern(&self, choice_name: &str, pattern_base: &str) -> bool {
+        choice_name == pattern_base || choice_name.starts_with(&format!("{}_", pattern_base))
     }
 
     fn emit_lvalue_address(&mut self, expr: &Expr) -> Result<(String, AtlasType), AtlasError> {
@@ -1422,8 +1657,8 @@ impl NativeCodegen {
     fn emit_destroy_for_ptr(&mut self, ptr: &str, ty: &AtlasType) -> Result<(), AtlasError> {
         if let AtlasType::Class(class_name) = ty {
             self.output.push_str(&format!(
-                "    call void @{}.destroy({}* {})\n",
-                class_name,
+                "    call void {}({}* {})\n",
+                llvm_symbol(&format!("{}.destroy", class_name)),
                 map_type(ty)?,
                 ptr
             ));
@@ -1448,6 +1683,389 @@ impl NativeCodegen {
         Err(AtlasError::CodegenError {
             message: "method receiver must be a class value or class pointer".to_string(),
         })
+    }
+
+    fn try_emit_overloaded_binary(
+        &mut self,
+        op: &BinOp,
+        lhs: &Expr,
+        rhs: &Expr,
+    ) -> Result<Option<(String, AtlasType)>, AtlasError> {
+        let Some(method_name) = binary_operator_method_name(op) else {
+            return Ok(None);
+        };
+        let (self_arg, class_name) = match self.emit_method_receiver(lhs) {
+            Ok(result) => result,
+            Err(_) => return Ok(None),
+        };
+        let Some(method) = self
+            .typed_ast
+            .classes
+            .get(&class_name)
+            .and_then(|class_ty| class_ty.methods.get(method_name))
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        let expected_rhs_ty = method
+            .sig
+            .params
+            .get(1)
+            .map(|(_, ty)| ty)
+            .ok_or_else(|| AtlasError::CodegenError {
+                message: format!("invalid signature for '{}.{}'", class_name, method_name),
+            })?;
+        let (rhs_value, _) = self.emit_expr_coerced(rhs, expected_rhs_ty)?;
+        let rendered_args = vec![
+            format!("{}* {}", map_type(&AtlasType::Class(class_name.clone()))?, self_arg),
+            format!("{} {}", map_type(expected_rhs_ty)?, rhs_value),
+        ];
+        if method.sig.ret_ty == AtlasType::Void {
+            self.output.push_str(&format!(
+                "    call void {}({})\n",
+                llvm_symbol(&format!("{}.{}", class_name, method_name)),
+                rendered_args.join(", ")
+            ));
+            Ok(Some(("0".to_string(), AtlasType::Void)))
+        } else {
+            let reg = self.next_temp();
+            self.output.push_str(&format!(
+                "    {} = call {} {}({})\n",
+                reg,
+                map_type(&method.sig.ret_ty)?,
+                llvm_symbol(&format!("{}.{}", class_name, method_name)),
+                rendered_args.join(", ")
+            ));
+            Ok(Some((reg, method.sig.ret_ty.clone())))
+        }
+    }
+
+    fn try_emit_primitive_method_call(
+        &mut self,
+        object: &Expr,
+        method_name: &str,
+        args: &[Expr],
+    ) -> Result<Option<(String, AtlasType)>, AtlasError> {
+        let (value, object_ty) = self.emit_expr(object)?;
+        if !matches!(object_ty, AtlasType::Int | AtlasType::Bool | AtlasType::Char) {
+            return Ok(None);
+        }
+
+        match method_name {
+            "hash" => Ok(Some(self.emit_primitive_hash(value, object_ty)?)),
+            "equals" => {
+                if args.len() != 1 {
+                    return Err(AtlasError::CodegenError {
+                        message: "primitive equals expects one argument".to_string(),
+                    });
+                }
+                let (rhs, rhs_ty) = self.emit_expr_coerced(&args[0], &object_ty)?;
+                if rhs_ty != object_ty {
+                    return Err(AtlasError::CodegenError {
+                        message: "primitive equals argument type mismatch".to_string(),
+                    });
+                }
+                Ok(Some(self.emit_primitive_equals(value, object_ty, rhs)?))
+            }
+            "format" => {
+                if !args.is_empty() {
+                    return Err(AtlasError::CodegenError {
+                        message: "primitive format expects no arguments".to_string(),
+                    });
+                }
+                Ok(Some(self.emit_primitive_format(value, object_ty)?))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn emit_primitive_hash(
+        &mut self,
+        value: String,
+        ty: AtlasType,
+    ) -> Result<(String, AtlasType), AtlasError> {
+        match ty {
+            AtlasType::Int => Ok((value, AtlasType::Int)),
+            AtlasType::Bool => {
+                let reg = self.next_temp();
+                self.output
+                    .push_str(&format!("    {} = zext i1 {} to i64\n", reg, value));
+                Ok((reg, AtlasType::Int))
+            }
+            AtlasType::Char => {
+                let reg = self.next_temp();
+                self.output
+                    .push_str(&format!("    {} = zext i8 {} to i64\n", reg, value));
+                Ok((reg, AtlasType::Int))
+            }
+            _ => Err(AtlasError::CodegenError {
+                message: "unsupported primitive hash receiver".to_string(),
+            }),
+        }
+    }
+
+    fn emit_primitive_equals(
+        &mut self,
+        lhs: String,
+        ty: AtlasType,
+        rhs: String,
+    ) -> Result<(String, AtlasType), AtlasError> {
+        let reg = self.next_temp();
+        self.output.push_str(&format!(
+            "    {} = {} {} {}, {}\n",
+            reg,
+            compare_opcode(&ty)?,
+            map_type(&ty)?,
+            lhs,
+            rhs
+        ));
+        Ok((reg, AtlasType::Bool))
+    }
+
+    fn emit_primitive_format(
+        &mut self,
+        value: String,
+        ty: AtlasType,
+    ) -> Result<(String, AtlasType), AtlasError> {
+        match ty {
+            AtlasType::Bool => {
+                let true_val = self.emit_string_from_literal_value("true")?;
+                let false_val = self.emit_string_from_literal_value("false")?;
+                let reg = self.next_temp();
+                let llvm_ty = map_type(&AtlasType::Class("string.String".to_string()))?;
+                self.output.push_str(&format!(
+                    "    {} = select i1 {}, {} {}, {} {}\n",
+                    reg, value, llvm_ty, true_val, llvm_ty, false_val
+                ));
+                Ok((reg, AtlasType::Class("string.String".to_string())))
+            }
+            AtlasType::Char => self.emit_string_from_char_value(value),
+            AtlasType::Int => self.emit_string_from_int_value(value),
+            _ => Err(AtlasError::CodegenError {
+                message: "unsupported primitive format receiver".to_string(),
+            }),
+        }
+    }
+
+    fn emit_string_from_char_value(&mut self, char_value: String) -> Result<(String, AtlasType), AtlasError> {
+        let malloc_ptr = self.next_temp();
+        self.output
+            .push_str(&format!("    {} = call i8* {}(i64 2)\n", malloc_ptr, llvm_symbol("malloc")));
+        let char_slot = self.next_temp();
+        self.output.push_str(&format!(
+            "    {} = getelementptr inbounds i8, i8* {}, i64 0\n",
+            char_slot, malloc_ptr
+        ));
+        self.output
+            .push_str(&format!("    store i8 {}, i8* {}\n", char_value, char_slot));
+        let nul_slot = self.next_temp();
+        self.output.push_str(&format!(
+            "    {} = getelementptr inbounds i8, i8* {}, i64 1\n",
+            nul_slot, malloc_ptr
+        ));
+        self.output.push_str(&format!("    store i8 0, i8* {}\n", nul_slot));
+        self.emit_string_value(malloc_ptr, "1".to_string())
+    }
+
+    fn emit_string_from_int_value(&mut self, int_value: String) -> Result<(String, AtlasType), AtlasError> {
+        let buf = self.next_temp();
+        self.output.push_str(&format!("    {} = alloca [32 x i8]\n", buf));
+        let buf_ptr = self.next_temp();
+        self.output.push_str(&format!(
+            "    {} = getelementptr inbounds [32 x i8], [32 x i8]* {}, i64 0, i64 0\n",
+            buf_ptr, buf
+        ));
+        let fmt_ptr = self.next_global_cstring("%lld");
+        let len_i32 = self.next_temp();
+        self.output.push_str(&format!(
+            "    {} = call i32 {}(i8* {}, i64 32, i8* {}, i64 {})\n",
+            len_i32,
+            llvm_symbol("snprintf"),
+            buf_ptr,
+            fmt_ptr,
+            int_value
+        ));
+        let len_i64 = self.next_temp();
+        self.output
+            .push_str(&format!("    {} = sext i32 {} to i64\n", len_i64, len_i32));
+        let alloc_len = self.next_temp();
+        self.output
+            .push_str(&format!("    {} = add i64 {}, 1\n", alloc_len, len_i64));
+        let malloc_ptr = self.next_temp();
+        self.output.push_str(&format!(
+            "    {} = call i8* {}(i64 {})\n",
+            malloc_ptr,
+            llvm_symbol("malloc"),
+            alloc_len
+        ));
+        let _ = self.next_temp();
+        self.output.push_str(&format!(
+            "    call i32 {}(i8* {}, i64 {}, i8* {}, i64 {})\n",
+            llvm_symbol("snprintf"),
+            malloc_ptr,
+            alloc_len,
+            fmt_ptr,
+            int_value
+        ));
+        self.emit_string_value(malloc_ptr, len_i64)
+    }
+
+    fn emit_string_from_literal_value(&mut self, value: &str) -> Result<String, AtlasError> {
+        let global_name = format!("@.strlit.{}", self.helper_counter);
+        self.helper_counter += 1;
+        let bytes = value.as_bytes();
+        let llvm_bytes = escape_llvm_c_string(bytes);
+        let total_len = bytes.len() + 1;
+        self.globals.push_str(&format!(
+            "{} = private unnamed_addr constant [{} x i8] c\"{}\\00\"\n",
+            global_name, total_len, llvm_bytes
+        ));
+        let malloc_ptr = self.next_temp();
+        self.output.push_str(&format!(
+            "    {} = call i8* {}(i64 {})\n",
+            malloc_ptr,
+            llvm_symbol("malloc"),
+            total_len
+        ));
+        let src_ptr = self.next_temp();
+        self.output.push_str(&format!(
+            "    {} = getelementptr inbounds [{} x i8], [{} x i8]* {}, i64 0, i64 0\n",
+            src_ptr, total_len, total_len, global_name
+        ));
+        self.output.push_str(&format!(
+            "    call i8* {}(i8* {}, i8* {}, i64 {})\n",
+            llvm_symbol("memcpy"),
+            malloc_ptr,
+            src_ptr,
+            total_len
+        ));
+        let (string_value, _) = self.emit_string_value(malloc_ptr, bytes.len().to_string())?;
+        Ok(string_value)
+    }
+
+    fn emit_string_value(&mut self, data_ptr: String, len_value: String) -> Result<(String, AtlasType), AtlasError> {
+        let string_ty = AtlasType::Class("string.String".to_string());
+        let llvm_ty = map_type(&string_ty)?;
+        let with_ptr = self.next_temp();
+        self.output.push_str(&format!(
+            "    {} = insertvalue {} zeroinitializer, i8* {}, 0\n",
+            with_ptr, llvm_ty, data_ptr
+        ));
+        let with_len = self.next_temp();
+        self.output.push_str(&format!(
+            "    {} = insertvalue {} {}, i64 {}, 1\n",
+            with_len, llvm_ty, with_ptr, len_value
+        ));
+        Ok((with_len, string_ty))
+    }
+
+    fn next_global_cstring(&mut self, value: &str) -> String {
+        let global_name = format!("@.fmt.{}", self.helper_counter);
+        self.helper_counter += 1;
+        let bytes = value.as_bytes();
+        let llvm_bytes = escape_llvm_c_string(bytes);
+        let total_len = bytes.len() + 1;
+        self.globals.push_str(&format!(
+            "{} = private unnamed_addr constant [{} x i8] c\"{}\\00\"\n",
+            global_name, total_len, llvm_bytes
+        ));
+        let ptr = self.next_temp();
+        self.output.push_str(&format!(
+            "    {} = getelementptr inbounds [{} x i8], [{} x i8]* {}, i64 0, i64 0\n",
+            ptr, total_len, total_len, global_name
+        ));
+        ptr
+    }
+
+    fn try_emit_index_read(
+        &mut self,
+        array: &Expr,
+        index: &Expr,
+    ) -> Result<Option<(String, AtlasType)>, AtlasError> {
+        let (self_arg, class_name) = match self.emit_method_receiver(array) {
+            Ok(result) => result,
+            Err(_) => return Ok(None),
+        };
+        let Some(method) = self
+            .typed_ast
+            .classes
+            .get(&class_name)
+            .and_then(|class_ty| class_ty.methods.get("operator_index"))
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        let expected_index_ty = method
+            .sig
+            .params
+            .get(1)
+            .map(|(_, ty)| ty)
+            .ok_or_else(|| AtlasError::CodegenError {
+                message: format!("invalid signature for '{}.operator[]'", class_name),
+            })?;
+        let (index_value, _) = self.emit_expr_coerced(index, expected_index_ty)?;
+        let rendered_args = vec![
+            format!("{}* {}", map_type(&AtlasType::Class(class_name.clone()))?, self_arg),
+            format!("{} {}", map_type(expected_index_ty)?, index_value),
+        ];
+        if method.sig.ret_ty == AtlasType::Void {
+            self.output.push_str(&format!(
+                "    call void {}({})\n",
+                llvm_symbol(&format!("{}.operator_index", class_name)),
+                rendered_args.join(", ")
+            ));
+            Ok(Some(("0".to_string(), AtlasType::Void)))
+        } else {
+            let reg = self.next_temp();
+            self.output.push_str(&format!(
+                "    {} = call {} {}({})\n",
+                reg,
+                map_type(&method.sig.ret_ty)?,
+                llvm_symbol(&format!("{}.operator_index", class_name)),
+                rendered_args.join(", ")
+            ));
+            Ok(Some((reg, method.sig.ret_ty.clone())))
+        }
+    }
+
+    fn try_emit_index_assign(
+        &mut self,
+        array: &Expr,
+        index: &Expr,
+        value: &Expr,
+    ) -> Result<bool, AtlasError> {
+        let (self_arg, class_name) = match self.emit_method_receiver(array) {
+            Ok(result) => result,
+            Err(_) => return Ok(false),
+        };
+        let Some(method) = self
+            .typed_ast
+            .classes
+            .get(&class_name)
+            .and_then(|class_ty| class_ty.methods.get("operator_index_set"))
+            .cloned()
+        else {
+            return Ok(false);
+        };
+        let expected_index_ty = &method.sig.params.get(1).ok_or_else(|| AtlasError::CodegenError {
+            message: format!("invalid signature for '{}.operator[]='", class_name),
+        })?.1;
+        let expected_value_ty = &method.sig.params.get(2).ok_or_else(|| AtlasError::CodegenError {
+            message: format!("invalid signature for '{}.operator[]='", class_name),
+        })?.1;
+        let (index_value, _) = self.emit_expr_coerced(index, expected_index_ty)?;
+        let (item_value, _) = self.emit_expr_coerced(value, expected_value_ty)?;
+        self.output.push_str(&format!(
+            "    call void {}({}* {}, {} {}, {} {})\n",
+            llvm_symbol(&format!("{}.operator_index_set", class_name)),
+            map_type(&AtlasType::Class(class_name.clone()))?,
+            self_arg,
+            map_type(expected_index_ty)?,
+            index_value,
+            map_type(expected_value_ty)?,
+            item_value
+        ));
+        Ok(true)
     }
 
     fn next_temp(&mut self) -> String {
@@ -1494,11 +2112,13 @@ impl NativeCodegen {
                     "    {} = {} {} {} to {}\n",
                     reg, op, source_llvm, value, target_llvm
                 ));
-            } else {
+            } else if target_bits < source_bits {
                 self.output.push_str(&format!(
                     "    {} = trunc {} {} to {}\n",
                     reg, source_llvm, value, target_llvm
                 ));
+            } else {
+                return Ok((value, target_ty));
             }
             return Ok((reg, target_ty));
         }
@@ -1596,6 +2216,11 @@ impl NativeCodegen {
         expr: &Expr,
         expected_ty: &AtlasType,
     ) -> Result<(String, AtlasType), AtlasError> {
+        if let Expr::Call { callee, args, .. } = expr {
+            if let Some(value) = self.try_emit_constructor_with_expected(callee, args, expected_ty)? {
+                return Ok(value);
+            }
+        }
         if let Expr::StringLit { value, .. } = expr {
             if matches!(expected_ty, AtlasType::Slice(element) if **element == AtlasType::Char) {
                 return self.emit_string_literal_slice(value);
@@ -1618,10 +2243,10 @@ impl NativeCodegen {
                         let (slice_value, _) = self.emit_string_literal_slice(value)?;
                         let reg = self.next_temp();
                         self.output.push_str(&format!(
-                            "    {} = call {} @{}.from({} {})\n",
+                            "    {} = call {} {}({} {})\n",
                             reg,
                             map_type(expected_ty)?,
-                            class_name,
+                            llvm_symbol(&format!("{}.from", class_name)),
                             map_type(&method.sig.params[0].1)?,
                             slice_value
                         ));
@@ -1634,6 +2259,21 @@ impl NativeCodegen {
         if matches!(expr, Expr::Null { .. }) {
             if matches!(expected_ty, AtlasType::Pointer { nullable: true, .. }) {
                 return Ok(("null".to_string(), expected_ty.clone()));
+            }
+        }
+
+        if let (
+            AtlasType::Pointer {
+                target,
+                nullable: false,
+            },
+            Expr::Var { .. } | Expr::Group { .. } | Expr::MemberAccess { .. } | Expr::ArrayIndex { .. } | Expr::Unary { .. },
+        ) = (expected_ty, expr)
+        {
+            if let Ok((ptr, pointee_ty)) = self.emit_lvalue_address(expr) {
+                if target.as_ref() == &pointee_ty {
+                    return Ok((ptr, expected_ty.clone()));
+                }
             }
         }
 
@@ -1671,6 +2311,47 @@ impl NativeCodegen {
             }
         }
         Ok((value, actual_ty))
+    }
+
+    fn try_emit_constructor_with_expected(
+        &mut self,
+        callee: &str,
+        args: &[Expr],
+        expected_ty: &AtlasType,
+    ) -> Result<Option<(String, AtlasType)>, AtlasError> {
+        let AtlasType::Class(expected_class) = expected_ty else {
+            return Ok(None);
+        };
+        if expected_class != callee && !expected_class.starts_with(&format!("{}_", callee)) {
+            return Ok(None);
+        }
+        let Some(class_ty) = self.typed_ast.classes.get(expected_class).cloned() else {
+            return Ok(None);
+        };
+        let llvm_class_ty = map_type(expected_ty)?;
+        let tmp_ptr = self.next_temp();
+        self.output
+            .push_str(&format!("    {} = alloca {}\n", tmp_ptr, llvm_class_ty));
+        self.output.push_str(&format!(
+            "    store {} zeroinitializer, {}* {}\n",
+            llvm_class_ty, llvm_class_ty, tmp_ptr
+        ));
+        if let Some(method) = class_ty.methods.get("init").cloned() {
+            let mut rendered_args = vec![format!("{}* {}", llvm_class_ty, tmp_ptr)];
+            for (arg, (_, expected_arg_ty)) in args.iter().zip(method.sig.params.iter().skip(1)) {
+                let (value, _) = self.emit_expr_coerced(arg, expected_arg_ty)?;
+                rendered_args.push(format!("{} {}", map_type(expected_arg_ty)?, value));
+            }
+            self.output.push_str(&format!(
+                "    call void {}({})\n",
+                llvm_symbol(&format!("{}.init", expected_class)),
+                rendered_args.join(", ")
+            ));
+        }
+        let reg = self.next_temp();
+        self.output
+            .push_str(&format!("    {} = load {}, {}* {}\n", reg, llvm_class_ty, llvm_class_ty, tmp_ptr));
+        Ok(Some((reg, expected_ty.clone())))
     }
 
     fn emit_binary_operands(
@@ -1824,6 +2505,24 @@ fn map_type_expr(
     map_type(&resolve_simple_type(ty, structs, classes, enums, choices)?)
 }
 
+fn map_type_in_context(
+    ty: &crate::parser::TypeExpr,
+    class_context: Option<&str>,
+    structs: &HashMap<String, StructType>,
+    classes: &HashMap<String, ClassType>,
+    enums: &HashMap<String, crate::typechecker::EnumType>,
+    choices: &HashMap<String, ChoiceType>,
+) -> Result<String, AtlasError> {
+    map_type(&resolve_type_in_context(
+        ty,
+        class_context,
+        structs,
+        classes,
+        enums,
+        choices,
+    )?)
+}
+
 fn resolve_simple_type(
     ty: &crate::parser::TypeExpr,
     structs: &HashMap<String, StructType>,
@@ -1883,6 +2582,8 @@ fn resolve_simple_type(
             let mangled = mangle_type_name(base, &resolved_args);
             if choices.contains_key(&mangled) {
                 Ok(AtlasType::Choice(mangled))
+            } else if classes.contains_key(&mangled) {
+                Ok(AtlasType::Class(mangled))
             } else {
                 Err(AtlasError::CodegenError {
                     message: format!("native codegen does not support generic type '{}'", base),
@@ -1890,6 +2591,28 @@ fn resolve_simple_type(
             }
         }
     }
+}
+
+fn resolve_type_in_context(
+    ty: &crate::parser::TypeExpr,
+    class_context: Option<&str>,
+    structs: &HashMap<String, StructType>,
+    classes: &HashMap<String, ClassType>,
+    enums: &HashMap<String, crate::typechecker::EnumType>,
+    choices: &HashMap<String, ChoiceType>,
+) -> Result<AtlasType, AtlasError> {
+    if matches!(ty, crate::parser::TypeExpr::Named(name) if name == "self") {
+        let Some(class_name) = class_context else {
+            return Err(AtlasError::CodegenError {
+                message: "encountered 'self' outside class method context".to_string(),
+            });
+        };
+        return Ok(AtlasType::Pointer {
+            target: Box::new(AtlasType::Class(class_name.to_string())),
+            nullable: false,
+        });
+    }
+    resolve_simple_type(ty, structs, classes, enums, choices)
 }
 
 fn is_float(ty: &AtlasType) -> bool {
@@ -1998,20 +2721,30 @@ fn size_of_type(
                 message: format!("unknown struct '{}'", name),
             })?;
             let mut total = 0;
+            let mut max_align = 1;
             for (_, field_ty) in &struct_ty.fields {
-                total += size_of_type(field_ty, structs, classes, choices)?;
+                let field_align = align_of_type(field_ty, structs, classes, choices)?;
+                let field_size = size_of_type(field_ty, structs, classes, choices)?;
+                total = align_to(total, field_align);
+                total += field_size;
+                max_align = max_align.max(field_align);
             }
-            Ok(total)
+            Ok(align_to(total, max_align))
         }
         AtlasType::Class(name) => {
             let class_ty = classes.get(name).ok_or_else(|| AtlasError::CodegenError {
                 message: format!("unknown class '{}'", name),
             })?;
             let mut total = 0;
+            let mut max_align = 1;
             for field in &class_ty.fields {
-                total += size_of_type(&field.ty, structs, classes, choices)?;
+                let field_align = align_of_type(&field.ty, structs, classes, choices)?;
+                let field_size = size_of_type(&field.ty, structs, classes, choices)?;
+                total = align_to(total, field_align);
+                total += field_size;
+                max_align = max_align.max(field_align);
             }
-            Ok(total)
+            Ok(align_to(total, max_align))
         }
         AtlasType::Choice(name) => {
             let choice_ty = choices.get(name).ok_or_else(|| AtlasError::CodegenError {
@@ -2023,11 +2756,65 @@ fn size_of_type(
                     max_size = max_size.max(size_of_type(payload_ty, structs, classes, choices)?);
                 }
             }
-            Ok(4 + max_size.max(1))
+            Ok(align_to(4 + max_size.max(1), 4))
         }
         _ => Err(AtlasError::CodegenError {
             message: format!("native sizeof does not support type '{:?}'", ty),
         }),
+    }
+}
+
+fn align_of_type(
+    ty: &AtlasType,
+    structs: &HashMap<String, StructType>,
+    classes: &HashMap<String, ClassType>,
+    choices: &HashMap<String, ChoiceType>,
+) -> Result<usize, AtlasError> {
+    match ty {
+        AtlasType::Bool | AtlasType::Int8 | AtlasType::Uint8 | AtlasType::Char => Ok(1),
+        AtlasType::Int16 | AtlasType::Uint16 => Ok(2),
+        AtlasType::Int32 | AtlasType::Uint32 | AtlasType::Float32 | AtlasType::Enum(_) => Ok(4),
+        AtlasType::Int
+        | AtlasType::Uint
+        | AtlasType::Int64
+        | AtlasType::Uint64
+        | AtlasType::Float
+        | AtlasType::Float64
+        | AtlasType::Pointer { .. }
+        | AtlasType::Slice(_) => Ok(8),
+        AtlasType::Array { element, .. } => align_of_type(element, structs, classes, choices),
+        AtlasType::Struct(name) => {
+            let struct_ty = structs.get(name).ok_or_else(|| AtlasError::CodegenError {
+                message: format!("unknown struct '{}'", name),
+            })?;
+            let mut max_align = 1;
+            for (_, field_ty) in &struct_ty.fields {
+                max_align = max_align.max(align_of_type(field_ty, structs, classes, choices)?);
+            }
+            Ok(max_align)
+        }
+        AtlasType::Class(name) => {
+            let class_ty = classes.get(name).ok_or_else(|| AtlasError::CodegenError {
+                message: format!("unknown class '{}'", name),
+            })?;
+            let mut max_align = 1;
+            for field in &class_ty.fields {
+                max_align = max_align.max(align_of_type(&field.ty, structs, classes, choices)?);
+            }
+            Ok(max_align)
+        }
+        AtlasType::Choice(_) => Ok(4),
+        _ => Err(AtlasError::CodegenError {
+            message: format!("native sizeof alignment does not support type '{:?}'", ty),
+        }),
+    }
+}
+
+fn align_to(size: usize, align: usize) -> usize {
+    if align <= 1 {
+        size
+    } else {
+        (size + align - 1) / align * align
     }
 }
 
@@ -2042,6 +2829,36 @@ fn escape_llvm_c_string(bytes: &[u8]) -> String {
         }
     }
     out
+}
+
+fn llvm_symbol(name: &str) -> String {
+    format!("@\"{}\"", name.replace('\\', "\\5C").replace('"', "\\22"))
+}
+
+fn compare_opcode(ty: &AtlasType) -> Result<&'static str, AtlasError> {
+    match ty {
+        AtlasType::Int | AtlasType::Bool | AtlasType::Char => Ok("icmp eq"),
+        _ => Err(AtlasError::CodegenError {
+            message: format!("unsupported primitive comparison type '{:?}'", ty),
+        }),
+    }
+}
+
+fn binary_operator_method_name(op: &BinOp) -> Option<&'static str> {
+    match op {
+        BinOp::Add => Some("operator_add"),
+        BinOp::Sub => Some("operator_sub"),
+        BinOp::Mul => Some("operator_mul"),
+        BinOp::Div => Some("operator_div"),
+        BinOp::Mod => Some("operator_rem"),
+        BinOp::Eq => Some("operator_eq"),
+        BinOp::NotEq => Some("operator_neq"),
+        BinOp::Lt => Some("operator_lt"),
+        BinOp::Gt => Some("operator_gt"),
+        BinOp::LtEq => Some("operator_lte"),
+        BinOp::GtEq => Some("operator_gte"),
+        _ => None,
+    }
 }
 
 fn mangle_type_name(base: &str, args: &[AtlasType]) -> String {

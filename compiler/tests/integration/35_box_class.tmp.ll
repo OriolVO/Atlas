@@ -1,402 +1,457 @@
-; Atlas compiler v0.1.0 — auto-generated LLVM IR
+; Atlas compiler v0.1.0 — native backend slice
 source_filename = "input.atl"
 target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-unknown-linux-gnu"
 
-%class.string.String = type { i8*, i64 }
+declare i32 @"snprintf"(i8*, i64, i8*, ...)
+
 %class.memory.Box_string.String = type { %class.string.String* }
+%class.string.String = type { i8*, i64 }
 
-@.str.0 = private unnamed_addr constant [6 x i8] c"Hello\00", align 1
+declare i8* @"malloc"(i64)
+declare void @"free"(i8*)
+declare i8* @"memcpy"(i8*, i8*, i64)
 
-declare i8* @malloc(i64)
-declare void @free(i8*)
-declare i8* @memcpy(i8*, i8*, i64)
 define void @"string.String.init"(%class.string.String* %self) {
 entry:
-    %self.addr = alloca %class.string.String*
-    store %class.string.String* %self, %class.string.String** %self.addr
-    %tmp0 = call i8* @"malloc"(i64 1)
-    %tmp1 = load %class.string.String*, %class.string.String** %self.addr
-    %tmp2 = getelementptr %class.string.String, %class.string.String* %tmp1, i32 0, i32 0
-    store i8* %tmp0, i8** %tmp2
-    %tmp3 = load %class.string.String*, %class.string.String** %self.addr
-    %tmp4 = getelementptr %class.string.String, %class.string.String* %tmp3, i32 0, i32 0
-    %tmp5 = load i8*, i8** %tmp4
-    %tmp6 = getelementptr i8, i8* %tmp5, i64 0
-    store i8 0, i8* %tmp6
-    %tmp7 = load %class.string.String*, %class.string.String** %self.addr
-    %tmp8 = getelementptr %class.string.String, %class.string.String* %tmp7, i32 0, i32 1
-    store i64 0, i64* %tmp8
+    %tmp0 = alloca %class.string.String*
+    store %class.string.String* %self, %class.string.String** %tmp0
+    %tmp1 = load %class.string.String*, %class.string.String** %tmp0
+    %tmp2 = getelementptr inbounds %class.string.String, %class.string.String* %tmp1, i32 0, i32 0
+    %tmp3 = call i8* @"malloc"(i64 1)
+    store i8* %tmp3, i8** %tmp2
+    %tmp4 = load %class.string.String*, %class.string.String** %tmp0
+    %tmp5 = getelementptr inbounds %class.string.String, %class.string.String* %tmp4, i32 0, i32 0
+    %tmp6 = load %class.string.String*, %class.string.String** %tmp0
+    %tmp7 = load %class.string.String, %class.string.String* %tmp6
+    %tmp8 = load %class.string.String*, %class.string.String** %tmp0
+    %tmp9 = getelementptr inbounds %class.string.String, %class.string.String* %tmp8, i32 0, i32 0
+    %tmp10 = load i8*, i8** %tmp9
+    %tmp11 = load %class.string.String*, %class.string.String** %tmp0
+    %tmp12 = getelementptr inbounds %class.string.String, %class.string.String* %tmp11, i32 0, i32 0
+    %tmp13 = load %class.string.String*, %class.string.String** %tmp0
+    %tmp14 = load %class.string.String, %class.string.String* %tmp13
+    %tmp15 = load %class.string.String*, %class.string.String** %tmp0
+    %tmp16 = getelementptr inbounds %class.string.String, %class.string.String* %tmp15, i32 0, i32 0
+    %tmp17 = load i8*, i8** %tmp16
+    %tmp18 = getelementptr inbounds i8, i8* %tmp17, i64 0
+    store i8 0, i8* %tmp18
+    %tmp19 = load %class.string.String*, %class.string.String** %tmp0
+    %tmp20 = getelementptr inbounds %class.string.String, %class.string.String* %tmp19, i32 0, i32 1
+    store i64 0, i64* %tmp20
     ret void
 }
 
 define void @"string.String.destroy"(%class.string.String* %self) {
 entry:
-    %self.addr = alloca %class.string.String*
-    store %class.string.String* %self, %class.string.String** %self.addr
-    %tmp0 = load %class.string.String*, %class.string.String** %self.addr
-    %tmp1 = getelementptr %class.string.String, %class.string.String* %tmp0, i32 0, i32 0
-    %tmp2 = load i8*, i8** %tmp1
-    call void @"free"(i8* %tmp2)
+    %tmp21 = alloca %class.string.String*
+    store %class.string.String* %self, %class.string.String** %tmp21
+    %tmp22 = load %class.string.String*, %class.string.String** %tmp21
+    %tmp23 = getelementptr inbounds %class.string.String, %class.string.String* %tmp22, i32 0, i32 0
+    %tmp24 = load %class.string.String*, %class.string.String** %tmp21
+    %tmp25 = load %class.string.String, %class.string.String* %tmp24
+    %tmp26 = load %class.string.String*, %class.string.String** %tmp21
+    %tmp27 = getelementptr inbounds %class.string.String, %class.string.String* %tmp26, i32 0, i32 0
+    %tmp28 = load i8*, i8** %tmp27
+    call void @"free"(i8* %tmp28)
     ret void
 }
 
 define i64 @"string.String.length"(%class.string.String* %self) {
 entry:
-    %self.addr = alloca %class.string.String*
-    store %class.string.String* %self, %class.string.String** %self.addr
-    %tmp0 = load %class.string.String*, %class.string.String** %self.addr
-    %tmp1 = getelementptr %class.string.String, %class.string.String* %tmp0, i32 0, i32 1
-    %tmp2 = load i64, i64* %tmp1
-    ret i64 %tmp2
+    %tmp29 = alloca %class.string.String*
+    store %class.string.String* %self, %class.string.String** %tmp29
+    %tmp30 = load %class.string.String*, %class.string.String** %tmp29
+    %tmp31 = load %class.string.String, %class.string.String* %tmp30
+    %tmp32 = load %class.string.String*, %class.string.String** %tmp29
+    %tmp33 = getelementptr inbounds %class.string.String, %class.string.String* %tmp32, i32 0, i32 1
+    %tmp34 = load i64, i64* %tmp33
+    ret i64 %tmp34
 }
 
 define i8* @"string.String.c_str"(%class.string.String* %self) {
 entry:
-    %self.addr = alloca %class.string.String*
-    store %class.string.String* %self, %class.string.String** %self.addr
-    %tmp0 = load %class.string.String*, %class.string.String** %self.addr
-    %tmp1 = getelementptr %class.string.String, %class.string.String* %tmp0, i32 0, i32 0
-    %tmp2 = load i8*, i8** %tmp1
-    ret i8* %tmp2
+    %tmp35 = alloca %class.string.String*
+    store %class.string.String* %self, %class.string.String** %tmp35
+    %tmp36 = load %class.string.String*, %class.string.String** %tmp35
+    %tmp37 = getelementptr inbounds %class.string.String, %class.string.String* %tmp36, i32 0, i32 0
+    %tmp38 = load %class.string.String*, %class.string.String** %tmp35
+    %tmp39 = load %class.string.String, %class.string.String* %tmp38
+    %tmp40 = load %class.string.String*, %class.string.String** %tmp35
+    %tmp41 = getelementptr inbounds %class.string.String, %class.string.String* %tmp40, i32 0, i32 0
+    %tmp42 = load i8*, i8** %tmp41
+    ret i8* %tmp42
 }
 
 define %class.string.String @"string.String.from"({ i8*, i64 } %chars) {
 entry:
-    %chars.addr = alloca { i8*, i64 }
-    %s.addr.0 = alloca %class.string.String
-    %tmp0 = alloca %class.string.String
-    %n.addr.1 = alloca i64
-    %i.addr.2 = alloca i64
-    store { i8*, i64 } %chars, { i8*, i64 }* %chars.addr
-    call void @"string.String.init"(%class.string.String* %tmp0)
-    %tmp1 = load %class.string.String, %class.string.String* %tmp0
-    store %class.string.String %tmp1, %class.string.String* %s.addr.0
-    %tmp2 = getelementptr %class.string.String, %class.string.String* %s.addr.0, i32 0, i32 0
-    %tmp3 = load i8*, i8** %tmp2
-    call void @"free"(i8* %tmp3)
-    %tmp4 = getelementptr { i8*, i64 }, { i8*, i64 }* %chars.addr, i32 0, i32 1
-    %tmp5 = load i64, i64* %tmp4
-    store i64 %tmp5, i64* %n.addr.1
-    %tmp6 = load i64, i64* %n.addr.1
-    %tmp7 = getelementptr %class.string.String, %class.string.String* %s.addr.0, i32 0, i32 1
-    store i64 %tmp6, i64* %tmp7
-    %tmp8 = load i64, i64* %n.addr.1
-    %tmp9 = add i64 %tmp8, 1
-    %tmp10 = call i8* @"malloc"(i64 %tmp9)
-    %tmp11 = getelementptr %class.string.String, %class.string.String* %s.addr.0, i32 0, i32 0
-    store i8* %tmp10, i8** %tmp11
-    store i64 0, i64* %i.addr.2
-    br label %while.cond.0
-while.cond.0:
-    %tmp12 = load i64, i64* %i.addr.2
-    %tmp13 = load i64, i64* %n.addr.1
-    %tmp14 = icmp slt i64 %tmp12, %tmp13
-    br i1 %tmp14, label %while.body.0, label %while.end.0
-while.body.0:
-    %tmp15 = load i64, i64* %i.addr.2
-    %tmp16 = getelementptr { i8*, i64 }, { i8*, i64 }* %chars.addr, i32 0, i32 0
-    %tmp17 = load i8*, i8** %tmp16
-    %tmp18 = getelementptr i8, i8* %tmp17, i64 %tmp15
-    %tmp19 = load i8, i8* %tmp18
-    %tmp20 = load i64, i64* %i.addr.2
-    %tmp21 = getelementptr %class.string.String, %class.string.String* %s.addr.0, i32 0, i32 0
-    %tmp22 = load i8*, i8** %tmp21
-    %tmp23 = getelementptr i8, i8* %tmp22, i64 %tmp20
-    store i8 %tmp19, i8* %tmp23
-    %tmp24 = load i64, i64* %i.addr.2
-    %tmp25 = add i64 %tmp24, 1
-    store i64 %tmp25, i64* %i.addr.2
-    br label %while.cond.0
-while.end.0:
-    %tmp26 = load i64, i64* %n.addr.1
-    %tmp27 = getelementptr %class.string.String, %class.string.String* %s.addr.0, i32 0, i32 0
-    %tmp28 = load i8*, i8** %tmp27
-    %tmp29 = getelementptr i8, i8* %tmp28, i64 %tmp26
-    store i8 0, i8* %tmp29
-    %tmp30 = load %class.string.String, %class.string.String* %s.addr.0
-    ret %class.string.String %tmp30
+    %tmp43 = alloca { i8*, i64 }
+    store { i8*, i64 } %chars, { i8*, i64 }* %tmp43
+    %tmp44 = alloca %class.string.String
+    store %class.string.String zeroinitializer, %class.string.String* %tmp44
+    call void @"string.String.init"(%class.string.String* %tmp44)
+    %tmp45 = load %class.string.String, %class.string.String* %tmp44
+    %tmp46 = alloca %class.string.String
+    store %class.string.String %tmp45, %class.string.String* %tmp46
+    %tmp47 = getelementptr inbounds %class.string.String, %class.string.String* %tmp46, i32 0, i32 0
+    %tmp48 = load %class.string.String, %class.string.String* %tmp46
+    %tmp49 = getelementptr inbounds %class.string.String, %class.string.String* %tmp46, i32 0, i32 0
+    %tmp50 = load i8*, i8** %tmp49
+    call void @"free"(i8* %tmp50)
+    %tmp51 = load { i8*, i64 }, { i8*, i64 }* %tmp43
+    %tmp52 = extractvalue { i8*, i64 } %tmp51, 1
+    %tmp53 = alloca i64
+    store i64 %tmp52, i64* %tmp53
+    %tmp54 = getelementptr inbounds %class.string.String, %class.string.String* %tmp46, i32 0, i32 1
+    %tmp55 = load i64, i64* %tmp53
+    store i64 %tmp55, i64* %tmp54
+    %tmp56 = getelementptr inbounds %class.string.String, %class.string.String* %tmp46, i32 0, i32 0
+    %tmp57 = load i64, i64* %tmp53
+    %tmp58 = load i64, i64* %tmp53
+    %tmp59 = add i64 %tmp58, 1
+    %tmp60 = call i8* @"malloc"(i64 %tmp59)
+    store i8* %tmp60, i8** %tmp56
+    %tmp61 = alloca i64
+    store i64 0, i64* %tmp61
+    br label %while_cond.0
+while_cond.0:
+    %tmp62 = load i64, i64* %tmp61
+    %tmp63 = load i64, i64* %tmp61
+    %tmp64 = load i64, i64* %tmp53
+    %tmp65 = icmp slt i64 %tmp63, %tmp64
+    br i1 %tmp65, label %while_body.1, label %while_end.2
+while_body.1:
+    %tmp66 = getelementptr inbounds %class.string.String, %class.string.String* %tmp46, i32 0, i32 0
+    %tmp67 = load %class.string.String, %class.string.String* %tmp46
+    %tmp68 = getelementptr inbounds %class.string.String, %class.string.String* %tmp46, i32 0, i32 0
+    %tmp69 = load i8*, i8** %tmp68
+    %tmp70 = load i64, i64* %tmp61
+    %tmp71 = getelementptr inbounds %class.string.String, %class.string.String* %tmp46, i32 0, i32 0
+    %tmp72 = load %class.string.String, %class.string.String* %tmp46
+    %tmp73 = getelementptr inbounds %class.string.String, %class.string.String* %tmp46, i32 0, i32 0
+    %tmp74 = load i8*, i8** %tmp73
+    %tmp75 = getelementptr inbounds i8, i8* %tmp74, i64 %tmp70
+    %tmp76 = load { i8*, i64 }, { i8*, i64 }* %tmp43
+    %tmp77 = load i64, i64* %tmp61
+    %tmp78 = load { i8*, i64 }, { i8*, i64 }* %tmp43
+    %tmp79 = load { i8*, i64 }, { i8*, i64 }* %tmp43
+    %tmp80 = extractvalue { i8*, i64 } %tmp79, 0
+    %tmp81 = getelementptr inbounds i8, i8* %tmp80, i64 %tmp77
+    %tmp82 = load i8, i8* %tmp81
+    store i8 %tmp82, i8* %tmp75
+    %tmp83 = load i64, i64* %tmp61
+    %tmp84 = load i64, i64* %tmp61
+    %tmp85 = add i64 %tmp84, 1
+    store i64 %tmp85, i64* %tmp61
+    br label %while_cond.0
+while_end.2:
+    %tmp86 = getelementptr inbounds %class.string.String, %class.string.String* %tmp46, i32 0, i32 0
+    %tmp87 = load %class.string.String, %class.string.String* %tmp46
+    %tmp88 = getelementptr inbounds %class.string.String, %class.string.String* %tmp46, i32 0, i32 0
+    %tmp89 = load i8*, i8** %tmp88
+    %tmp90 = load i64, i64* %tmp53
+    %tmp91 = getelementptr inbounds %class.string.String, %class.string.String* %tmp46, i32 0, i32 0
+    %tmp92 = load %class.string.String, %class.string.String* %tmp46
+    %tmp93 = getelementptr inbounds %class.string.String, %class.string.String* %tmp46, i32 0, i32 0
+    %tmp94 = load i8*, i8** %tmp93
+    %tmp95 = getelementptr inbounds i8, i8* %tmp94, i64 %tmp90
+    store i8 0, i8* %tmp95
+    %tmp96 = load %class.string.String, %class.string.String* %tmp46
+    ret %class.string.String %tmp96
 }
 
 define i64 @"string.String.hash"(%class.string.String* %self) {
 entry:
-    %self.addr = alloca %class.string.String*
-    %h.addr.3 = alloca i64
-    %i.addr.4 = alloca i64
-    store %class.string.String* %self, %class.string.String** %self.addr
-    store i64 0, i64* %h.addr.3
-    store i64 0, i64* %i.addr.4
-    br label %while.cond.1
-while.cond.1:
-    %tmp0 = load i64, i64* %i.addr.4
-    %tmp1 = load %class.string.String*, %class.string.String** %self.addr
-    %tmp2 = getelementptr %class.string.String, %class.string.String* %tmp1, i32 0, i32 1
-    %tmp3 = load i64, i64* %tmp2
-    %tmp4 = icmp slt i64 %tmp0, %tmp3
-    br i1 %tmp4, label %while.body.1, label %while.end.1
-while.body.1:
-    %tmp5 = load i64, i64* %h.addr.3
-    %tmp6 = mul i64 %tmp5, 31
-    %tmp7 = load i64, i64* %i.addr.4
-    %tmp8 = load %class.string.String*, %class.string.String** %self.addr
-    %tmp9 = getelementptr %class.string.String, %class.string.String* %tmp8, i32 0, i32 0
-    %tmp10 = load i8*, i8** %tmp9
-    %tmp11 = getelementptr i8, i8* %tmp10, i64 %tmp7
-    %tmp12 = load i8, i8* %tmp11
-    %tmp13 = sext i8 %tmp12 to i64
-    %tmp14 = add i64 %tmp6, %tmp13
-    store i64 %tmp14, i64* %h.addr.3
-    %tmp15 = load i64, i64* %i.addr.4
-    %tmp16 = add i64 %tmp15, 1
-    store i64 %tmp16, i64* %i.addr.4
-    br label %while.cond.1
-while.end.1:
-    %tmp17 = load i64, i64* %h.addr.3
-    ret i64 %tmp17
+    %tmp97 = alloca %class.string.String*
+    store %class.string.String* %self, %class.string.String** %tmp97
+    %tmp98 = alloca i64
+    store i64 0, i64* %tmp98
+    %tmp99 = alloca i64
+    store i64 0, i64* %tmp99
+    br label %while_cond.3
+while_cond.3:
+    %tmp100 = load i64, i64* %tmp99
+    %tmp101 = load i64, i64* %tmp99
+    %tmp102 = load %class.string.String*, %class.string.String** %tmp97
+    %tmp103 = load %class.string.String, %class.string.String* %tmp102
+    %tmp104 = load %class.string.String*, %class.string.String** %tmp97
+    %tmp105 = getelementptr inbounds %class.string.String, %class.string.String* %tmp104, i32 0, i32 1
+    %tmp106 = load i64, i64* %tmp105
+    %tmp107 = icmp slt i64 %tmp101, %tmp106
+    br i1 %tmp107, label %while_body.4, label %while_end.5
+while_body.4:
+    %tmp108 = load i64, i64* %tmp98
+    %tmp109 = load i64, i64* %tmp98
+    %tmp110 = mul i64 %tmp109, 31
+    %tmp111 = load i64, i64* %tmp98
+    %tmp112 = load i64, i64* %tmp98
+    %tmp113 = mul i64 %tmp112, 31
+    %tmp114 = load %class.string.String*, %class.string.String** %tmp97
+    %tmp115 = getelementptr inbounds %class.string.String, %class.string.String* %tmp114, i32 0, i32 0
+    %tmp116 = load %class.string.String*, %class.string.String** %tmp97
+    %tmp117 = load %class.string.String, %class.string.String* %tmp116
+    %tmp118 = load %class.string.String*, %class.string.String** %tmp97
+    %tmp119 = getelementptr inbounds %class.string.String, %class.string.String* %tmp118, i32 0, i32 0
+    %tmp120 = load i8*, i8** %tmp119
+    %tmp121 = load i64, i64* %tmp99
+    %tmp122 = load %class.string.String*, %class.string.String** %tmp97
+    %tmp123 = getelementptr inbounds %class.string.String, %class.string.String* %tmp122, i32 0, i32 0
+    %tmp124 = load %class.string.String*, %class.string.String** %tmp97
+    %tmp125 = load %class.string.String, %class.string.String* %tmp124
+    %tmp126 = load %class.string.String*, %class.string.String** %tmp97
+    %tmp127 = getelementptr inbounds %class.string.String, %class.string.String* %tmp126, i32 0, i32 0
+    %tmp128 = load i8*, i8** %tmp127
+    %tmp129 = getelementptr inbounds i8, i8* %tmp128, i64 %tmp121
+    %tmp130 = load i8, i8* %tmp129
+    %tmp131 = zext i8 %tmp130 to i64
+    %tmp132 = add i64 %tmp113, %tmp131
+    store i64 %tmp132, i64* %tmp98
+    %tmp133 = load i64, i64* %tmp99
+    %tmp134 = load i64, i64* %tmp99
+    %tmp135 = add i64 %tmp134, 1
+    store i64 %tmp135, i64* %tmp99
+    br label %while_cond.3
+while_end.5:
+    %tmp136 = load i64, i64* %tmp98
+    ret i64 %tmp136
 }
 
 define i1 @"string.String.equals"(%class.string.String* %self, %class.string.String* %other) {
 entry:
-    %self.addr = alloca %class.string.String*
-    %other.addr = alloca %class.string.String*
-    %i.addr.5 = alloca i64
-    store %class.string.String* %self, %class.string.String** %self.addr
-    store %class.string.String* %other, %class.string.String** %other.addr
-    %tmp0 = load %class.string.String*, %class.string.String** %self.addr
-    %tmp1 = getelementptr %class.string.String, %class.string.String* %tmp0, i32 0, i32 1
-    %tmp2 = load i64, i64* %tmp1
-    %tmp3 = load %class.string.String*, %class.string.String** %other.addr
-    %tmp4 = getelementptr %class.string.String, %class.string.String* %tmp3, i32 0, i32 1
-    %tmp5 = load i64, i64* %tmp4
-    %tmp6 = icmp ne i64 %tmp2, %tmp5
-    br i1 %tmp6, label %if.then.2, label %if.end.2
-if.then.2:
+    %tmp137 = alloca %class.string.String*
+    store %class.string.String* %self, %class.string.String** %tmp137
+    %tmp138 = alloca %class.string.String*
+    store %class.string.String* %other, %class.string.String** %tmp138
+    %tmp139 = load %class.string.String*, %class.string.String** %tmp137
+    %tmp140 = getelementptr inbounds %class.string.String, %class.string.String* %tmp139, i32 0, i32 1
+    %tmp141 = load %class.string.String*, %class.string.String** %tmp137
+    %tmp142 = load %class.string.String, %class.string.String* %tmp141
+    %tmp143 = load %class.string.String*, %class.string.String** %tmp137
+    %tmp144 = getelementptr inbounds %class.string.String, %class.string.String* %tmp143, i32 0, i32 1
+    %tmp145 = load i64, i64* %tmp144
+    %tmp146 = load %class.string.String*, %class.string.String** %tmp137
+    %tmp147 = load %class.string.String, %class.string.String* %tmp146
+    %tmp148 = load %class.string.String*, %class.string.String** %tmp137
+    %tmp149 = getelementptr inbounds %class.string.String, %class.string.String* %tmp148, i32 0, i32 1
+    %tmp150 = load i64, i64* %tmp149
+    %tmp151 = load %class.string.String*, %class.string.String** %tmp138
+    %tmp152 = load %class.string.String, %class.string.String* %tmp151
+    %tmp153 = load %class.string.String*, %class.string.String** %tmp138
+    %tmp154 = getelementptr inbounds %class.string.String, %class.string.String* %tmp153, i32 0, i32 1
+    %tmp155 = load i64, i64* %tmp154
+    %tmp156 = icmp ne i64 %tmp150, %tmp155
+    br i1 %tmp156, label %if_then.6, label %if_else.7
+if_then.6:
     ret i1 0
-if.end.2:
-    store i64 0, i64* %i.addr.5
-    br label %while.cond.3
-while.cond.3:
-    %tmp7 = load i64, i64* %i.addr.5
-    %tmp8 = load %class.string.String*, %class.string.String** %self.addr
-    %tmp9 = getelementptr %class.string.String, %class.string.String* %tmp8, i32 0, i32 1
-    %tmp10 = load i64, i64* %tmp9
-    %tmp11 = icmp slt i64 %tmp7, %tmp10
-    br i1 %tmp11, label %while.body.3, label %while.end.3
-while.body.3:
-    %tmp12 = load i64, i64* %i.addr.5
-    %tmp13 = load %class.string.String*, %class.string.String** %self.addr
-    %tmp14 = getelementptr %class.string.String, %class.string.String* %tmp13, i32 0, i32 0
-    %tmp15 = load i8*, i8** %tmp14
-    %tmp16 = getelementptr i8, i8* %tmp15, i64 %tmp12
-    %tmp17 = load i8, i8* %tmp16
-    %tmp18 = load i64, i64* %i.addr.5
-    %tmp19 = load %class.string.String*, %class.string.String** %other.addr
-    %tmp20 = getelementptr %class.string.String, %class.string.String* %tmp19, i32 0, i32 0
-    %tmp21 = load i8*, i8** %tmp20
-    %tmp22 = getelementptr i8, i8* %tmp21, i64 %tmp18
-    %tmp23 = load i8, i8* %tmp22
-    %tmp24 = icmp ne i8 %tmp17, %tmp23
-    br i1 %tmp24, label %if.then.4, label %if.end.4
-if.then.4:
+if_else.7:
+    br label %if_end.8
+if_end.8:
+    %tmp157 = alloca i64
+    store i64 0, i64* %tmp157
+    br label %while_cond.9
+while_cond.9:
+    %tmp158 = load i64, i64* %tmp157
+    %tmp159 = load i64, i64* %tmp157
+    %tmp160 = load %class.string.String*, %class.string.String** %tmp137
+    %tmp161 = load %class.string.String, %class.string.String* %tmp160
+    %tmp162 = load %class.string.String*, %class.string.String** %tmp137
+    %tmp163 = getelementptr inbounds %class.string.String, %class.string.String* %tmp162, i32 0, i32 1
+    %tmp164 = load i64, i64* %tmp163
+    %tmp165 = icmp slt i64 %tmp159, %tmp164
+    br i1 %tmp165, label %while_body.10, label %while_end.11
+while_body.10:
+    %tmp166 = load i64, i64* %tmp157
+    %tmp167 = load %class.string.String*, %class.string.String** %tmp137
+    %tmp168 = getelementptr inbounds %class.string.String, %class.string.String* %tmp167, i32 0, i32 0
+    %tmp169 = load %class.string.String*, %class.string.String** %tmp137
+    %tmp170 = load %class.string.String, %class.string.String* %tmp169
+    %tmp171 = load %class.string.String*, %class.string.String** %tmp137
+    %tmp172 = getelementptr inbounds %class.string.String, %class.string.String* %tmp171, i32 0, i32 0
+    %tmp173 = load i8*, i8** %tmp172
+    %tmp174 = getelementptr inbounds i8, i8* %tmp173, i64 %tmp166
+    %tmp175 = load %class.string.String*, %class.string.String** %tmp137
+    %tmp176 = getelementptr inbounds %class.string.String, %class.string.String* %tmp175, i32 0, i32 0
+    %tmp177 = load %class.string.String*, %class.string.String** %tmp137
+    %tmp178 = load %class.string.String, %class.string.String* %tmp177
+    %tmp179 = load %class.string.String*, %class.string.String** %tmp137
+    %tmp180 = getelementptr inbounds %class.string.String, %class.string.String* %tmp179, i32 0, i32 0
+    %tmp181 = load i8*, i8** %tmp180
+    %tmp182 = load i64, i64* %tmp157
+    %tmp183 = load %class.string.String*, %class.string.String** %tmp137
+    %tmp184 = getelementptr inbounds %class.string.String, %class.string.String* %tmp183, i32 0, i32 0
+    %tmp185 = load %class.string.String*, %class.string.String** %tmp137
+    %tmp186 = load %class.string.String, %class.string.String* %tmp185
+    %tmp187 = load %class.string.String*, %class.string.String** %tmp137
+    %tmp188 = getelementptr inbounds %class.string.String, %class.string.String* %tmp187, i32 0, i32 0
+    %tmp189 = load i8*, i8** %tmp188
+    %tmp190 = getelementptr inbounds i8, i8* %tmp189, i64 %tmp182
+    %tmp191 = load i8, i8* %tmp190
+    %tmp192 = load %class.string.String*, %class.string.String** %tmp137
+    %tmp193 = getelementptr inbounds %class.string.String, %class.string.String* %tmp192, i32 0, i32 0
+    %tmp194 = load %class.string.String*, %class.string.String** %tmp137
+    %tmp195 = load %class.string.String, %class.string.String* %tmp194
+    %tmp196 = load %class.string.String*, %class.string.String** %tmp137
+    %tmp197 = getelementptr inbounds %class.string.String, %class.string.String* %tmp196, i32 0, i32 0
+    %tmp198 = load i8*, i8** %tmp197
+    %tmp199 = load i64, i64* %tmp157
+    %tmp200 = load %class.string.String*, %class.string.String** %tmp137
+    %tmp201 = getelementptr inbounds %class.string.String, %class.string.String* %tmp200, i32 0, i32 0
+    %tmp202 = load %class.string.String*, %class.string.String** %tmp137
+    %tmp203 = load %class.string.String, %class.string.String* %tmp202
+    %tmp204 = load %class.string.String*, %class.string.String** %tmp137
+    %tmp205 = getelementptr inbounds %class.string.String, %class.string.String* %tmp204, i32 0, i32 0
+    %tmp206 = load i8*, i8** %tmp205
+    %tmp207 = getelementptr inbounds i8, i8* %tmp206, i64 %tmp199
+    %tmp208 = load i8, i8* %tmp207
+    %tmp209 = load %class.string.String*, %class.string.String** %tmp138
+    %tmp210 = getelementptr inbounds %class.string.String, %class.string.String* %tmp209, i32 0, i32 0
+    %tmp211 = load %class.string.String*, %class.string.String** %tmp138
+    %tmp212 = load %class.string.String, %class.string.String* %tmp211
+    %tmp213 = load %class.string.String*, %class.string.String** %tmp138
+    %tmp214 = getelementptr inbounds %class.string.String, %class.string.String* %tmp213, i32 0, i32 0
+    %tmp215 = load i8*, i8** %tmp214
+    %tmp216 = load i64, i64* %tmp157
+    %tmp217 = load %class.string.String*, %class.string.String** %tmp138
+    %tmp218 = getelementptr inbounds %class.string.String, %class.string.String* %tmp217, i32 0, i32 0
+    %tmp219 = load %class.string.String*, %class.string.String** %tmp138
+    %tmp220 = load %class.string.String, %class.string.String* %tmp219
+    %tmp221 = load %class.string.String*, %class.string.String** %tmp138
+    %tmp222 = getelementptr inbounds %class.string.String, %class.string.String* %tmp221, i32 0, i32 0
+    %tmp223 = load i8*, i8** %tmp222
+    %tmp224 = getelementptr inbounds i8, i8* %tmp223, i64 %tmp216
+    %tmp225 = load i8, i8* %tmp224
+    %tmp226 = icmp ne i8 %tmp208, %tmp225
+    br i1 %tmp226, label %if_then.12, label %if_else.13
+if_then.12:
     ret i1 0
-if.end.4:
-    %tmp25 = load i64, i64* %i.addr.5
-    %tmp26 = add i64 %tmp25, 1
-    store i64 %tmp26, i64* %i.addr.5
-    br label %while.cond.3
-while.end.3:
+if_else.13:
+    br label %if_end.14
+if_end.14:
+    %tmp227 = load i64, i64* %tmp157
+    %tmp228 = load i64, i64* %tmp157
+    %tmp229 = add i64 %tmp228, 1
+    store i64 %tmp229, i64* %tmp157
+    br label %while_cond.9
+while_end.11:
     ret i1 1
 }
 
-define i64 @main() {
+define %class.string.String @"string.String.clone"(%class.string.String* %self) {
 entry:
-    %s.addr.6 = alloca %class.string.String
-    %slice.alloca.7 = alloca { i8*, i64 }
-    %tmp5 = alloca %class.string.String
-    %b.addr.8 = alloca %class.memory.Box_string.String
-    %tmp8 = alloca %class.memory.Box_string.String
-    %tmp0 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.0, i64 0, i64 0
-    %tmp1 = getelementptr { i8*, i64 }, { i8*, i64 }* %slice.alloca.7, i32 0, i32 0
-    store i8* %tmp0, i8** %tmp1
-    %tmp2 = getelementptr { i8*, i64 }, { i8*, i64 }* %slice.alloca.7, i32 0, i32 1
-    store i64 5, i64* %tmp2
-    %tmp3 = load { i8*, i64 }, { i8*, i64 }* %slice.alloca.7
-    %tmp4 = call %class.string.String @"string.String.from"({ i8*, i64 } %tmp3)
-    store %class.string.String %tmp4, %class.string.String* %tmp5
-    %tmp6 = load %class.string.String, %class.string.String* %tmp5
-    store %class.string.String %tmp6, %class.string.String* %s.addr.6
-    %tmp7 = call %class.memory.Box_string.String @"memory.new_box_string.String"(%class.string.String* %s.addr.6)
-    store %class.memory.Box_string.String %tmp7, %class.memory.Box_string.String* %tmp8
-    %tmp9 = load %class.memory.Box_string.String, %class.memory.Box_string.String* %tmp8
-    store %class.memory.Box_string.String %tmp9, %class.memory.Box_string.String* %b.addr.8
-    call void @"memory.Box_string.String.destroy"(%class.memory.Box_string.String* %b.addr.8)
-    call void @"string.String.destroy"(%class.string.String* %s.addr.6)
-    ret i64 0
+    %tmp0 = load %class.string.String, %class.string.String* %self
+    ret %class.string.String %tmp0
 }
 
 define void @"memory.Box_string.String.destroy"(%class.memory.Box_string.String* %self) {
 entry:
-    %self.addr = alloca %class.memory.Box_string.String*
-    store %class.memory.Box_string.String* %self, %class.memory.Box_string.String** %self.addr
-    %tmp0 = load %class.memory.Box_string.String*, %class.memory.Box_string.String** %self.addr
-    %tmp1 = getelementptr %class.memory.Box_string.String, %class.memory.Box_string.String* %tmp0, i32 0, i32 0
-    %tmp2 = load %class.string.String*, %class.string.String** %tmp1
-    call void @"string.String.destroy"(%class.string.String* %tmp2)
-    %tmp3 = load %class.memory.Box_string.String*, %class.memory.Box_string.String** %self.addr
-    %tmp4 = getelementptr %class.memory.Box_string.String, %class.memory.Box_string.String* %tmp3, i32 0, i32 0
-    %tmp5 = load %class.string.String*, %class.string.String** %tmp4
-    %tmp6 = bitcast %class.string.String* %tmp5 to i8*
-    call void @"free"(i8* %tmp6)
+    %tmp230 = alloca %class.memory.Box_string.String*
+    store %class.memory.Box_string.String* %self, %class.memory.Box_string.String** %tmp230
+    %tmp231 = load %class.memory.Box_string.String*, %class.memory.Box_string.String** %tmp230
+    %tmp232 = load %class.memory.Box_string.String, %class.memory.Box_string.String* %tmp231
+    %tmp233 = load %class.memory.Box_string.String*, %class.memory.Box_string.String** %tmp230
+    %tmp234 = getelementptr inbounds %class.memory.Box_string.String, %class.memory.Box_string.String* %tmp233, i32 0, i32 0
+    %tmp235 = load %class.string.String*, %class.string.String** %tmp234
+    call void @"string.String.destroy"(%class.string.String* %tmp235)
+    %tmp236 = load %class.memory.Box_string.String*, %class.memory.Box_string.String** %tmp230
+    %tmp237 = load %class.memory.Box_string.String, %class.memory.Box_string.String* %tmp236
+    %tmp238 = load %class.memory.Box_string.String*, %class.memory.Box_string.String** %tmp230
+    %tmp239 = getelementptr inbounds %class.memory.Box_string.String, %class.memory.Box_string.String* %tmp238, i32 0, i32 0
+    %tmp240 = load %class.string.String*, %class.string.String** %tmp239
+    %tmp241 = bitcast %class.string.String* %tmp240 to i8*
+    call void @"free"(i8* %tmp241)
     ret void
 }
 
 define %class.string.String @"memory.Box_string.String.get_val"(%class.memory.Box_string.String* %self) {
 entry:
-    %self.addr = alloca %class.memory.Box_string.String*
-    store %class.memory.Box_string.String* %self, %class.memory.Box_string.String** %self.addr
-    %tmp0 = load %class.memory.Box_string.String*, %class.memory.Box_string.String** %self.addr
-    %tmp1 = getelementptr %class.memory.Box_string.String, %class.memory.Box_string.String* %tmp0, i32 0, i32 0
-    %tmp2 = load %class.string.String*, %class.string.String** %tmp1
-    %tmp3 = load %class.string.String, %class.string.String* %tmp2
-    ret %class.string.String %tmp3
+    %tmp242 = alloca %class.memory.Box_string.String*
+    store %class.memory.Box_string.String* %self, %class.memory.Box_string.String** %tmp242
+    %tmp243 = load %class.memory.Box_string.String*, %class.memory.Box_string.String** %tmp242
+    %tmp244 = load %class.memory.Box_string.String, %class.memory.Box_string.String* %tmp243
+    %tmp245 = load %class.memory.Box_string.String*, %class.memory.Box_string.String** %tmp242
+    %tmp246 = getelementptr inbounds %class.memory.Box_string.String, %class.memory.Box_string.String* %tmp245, i32 0, i32 0
+    %tmp247 = load %class.string.String*, %class.string.String** %tmp246
+    %tmp248 = load %class.string.String, %class.string.String* %tmp247
+    ret %class.string.String %tmp248
+}
+
+define void @"memory.Box_string.String.init"(%class.memory.Box_string.String* %self) {
+entry:
+    ret void
+}
+
+define %class.memory.Box_string.String @"memory.Box_string.String.clone"(%class.memory.Box_string.String* %self) {
+entry:
+    %tmp0 = load %class.memory.Box_string.String, %class.memory.Box_string.String* %self
+    ret %class.memory.Box_string.String %tmp0
+}
+
+define i32 @"main"() {
+entry:
+    %tmp249 = getelementptr inbounds [6 x i8], [6 x i8]* @.str.0, i64 0, i64 0
+    %tmp250 = insertvalue { i8*, i64 } undef, i8* %tmp249, 0
+    %tmp251 = insertvalue { i8*, i64 } %tmp250, i64 5, 1
+    %tmp252 = call %class.string.String @"string.String.from"({ i8*, i64 } %tmp251)
+    %tmp253 = alloca %class.string.String
+    store %class.string.String %tmp252, %class.string.String* %tmp253
+    %tmp254 = call %class.memory.Box_string.String @"memory.new_box_string.String"(%class.string.String* %tmp253)
+    %tmp255 = alloca %class.memory.Box_string.String
+    store %class.memory.Box_string.String %tmp254, %class.memory.Box_string.String* %tmp255
+    %tmp256 = trunc i64 0 to i32
+    call void @"memory.Box_string.String.destroy"(%class.memory.Box_string.String* %tmp255)
+    call void @"string.String.destroy"(%class.string.String* %tmp253)
+    ret i32 %tmp256
 }
 
 define %class.memory.Box_string.String @"memory.new_box_string.String"(%class.string.String* %val) {
 entry:
-    %val.addr = alloca %class.string.String*
-    %b.addr.9 = alloca %class.memory.Box_string.String
-    %tmp0 = alloca %class.memory.Box_string.String
-    %raw.addr.10 = alloca i8*
-    %i.addr.11 = alloca i64
-    store %class.string.String* %val, %class.string.String** %val.addr
-    %tmp1 = load %class.memory.Box_string.String, %class.memory.Box_string.String* %tmp0
-    store %class.memory.Box_string.String %tmp1, %class.memory.Box_string.String* %b.addr.9
-    %tmp2 = getelementptr %class.string.String, %class.string.String* null, i32 1
-    %tmp3 = ptrtoint %class.string.String* %tmp2 to i64
-    %tmp4 = call i8* @"malloc"(i64 %tmp3)
-    store i8* %tmp4, i8** %raw.addr.10
-    %tmp5 = load i8*, i8** %raw.addr.10
-    %tmp6 = bitcast i8* %tmp5 to %class.string.String*
-    %tmp7 = getelementptr %class.memory.Box_string.String, %class.memory.Box_string.String* %b.addr.9, i32 0, i32 0
-    store %class.string.String* %tmp6, %class.string.String** %tmp7
-    %tmp8 = getelementptr %class.memory.Box_string.String, %class.memory.Box_string.String* %b.addr.9, i32 0, i32 0
-    %tmp9 = load %class.string.String*, %class.string.String** %tmp8
-    %tmp10 = bitcast %class.string.String* %tmp9 to i8*
-    %tmp11 = load %class.string.String*, %class.string.String** %val.addr
-    %tmp12 = bitcast %class.string.String* %tmp11 to i8*
-    %tmp13 = getelementptr %class.string.String, %class.string.String* null, i32 1
-    %tmp14 = ptrtoint %class.string.String* %tmp13 to i64
-    %tmp15 = call i8* @"memcpy"(i8* %tmp10, i8* %tmp12, i64 %tmp14)
-    store i64 0, i64* %i.addr.11
-    br label %while.cond.5
-while.cond.5:
-    %tmp16 = load i64, i64* %i.addr.11
-    %tmp17 = getelementptr %class.string.String, %class.string.String* null, i32 1
-    %tmp18 = ptrtoint %class.string.String* %tmp17 to i64
-    %tmp19 = icmp slt i64 %tmp16, %tmp18
-    br i1 %tmp19, label %while.body.5, label %while.end.5
-while.body.5:
-    %tmp20 = load i64, i64* %i.addr.11
-    %tmp21 = load %class.string.String*, %class.string.String** %val.addr
-    %tmp22 = bitcast %class.string.String* %tmp21 to i8*
-    %tmp23 = getelementptr i8, i8* %tmp22, i64 %tmp20
-    store i8 0, i8* %tmp23
-    %tmp24 = load i64, i64* %i.addr.11
-    %tmp25 = add i64 %tmp24, 1
-    store i64 %tmp25, i64* %i.addr.11
-    br label %while.cond.5
-while.end.5:
-    %tmp26 = load %class.memory.Box_string.String, %class.memory.Box_string.String* %b.addr.9
-    ret %class.memory.Box_string.String %tmp26
+    %tmp257 = alloca %class.string.String*
+    store %class.string.String* %val, %class.string.String** %tmp257
+    %tmp258 = alloca %class.memory.Box_string.String
+    store %class.memory.Box_string.String zeroinitializer, %class.memory.Box_string.String* %tmp258
+    call void @"memory.Box_string.String.init"(%class.memory.Box_string.String* %tmp258)
+    %tmp259 = load %class.memory.Box_string.String, %class.memory.Box_string.String* %tmp258
+    %tmp260 = alloca %class.memory.Box_string.String
+    store %class.memory.Box_string.String %tmp259, %class.memory.Box_string.String* %tmp260
+    %tmp261 = call i8* @"malloc"(i64 16)
+    %tmp262 = alloca i8*
+    store i8* %tmp261, i8** %tmp262
+    %tmp263 = getelementptr inbounds %class.memory.Box_string.String, %class.memory.Box_string.String* %tmp260, i32 0, i32 0
+    %tmp264 = load i8*, i8** %tmp262
+    %tmp265 = bitcast i8* %tmp264 to %class.string.String*
+    store %class.string.String* %tmp265, %class.string.String** %tmp263
+    %tmp266 = load %class.memory.Box_string.String, %class.memory.Box_string.String* %tmp260
+    %tmp267 = getelementptr inbounds %class.memory.Box_string.String, %class.memory.Box_string.String* %tmp260, i32 0, i32 0
+    %tmp268 = load %class.string.String*, %class.string.String** %tmp267
+    %tmp269 = bitcast %class.string.String* %tmp268 to i8*
+    %tmp270 = load %class.string.String*, %class.string.String** %tmp257
+    %tmp271 = bitcast %class.string.String* %tmp270 to i8*
+    %tmp272 = call i8* @"memcpy"(i8* %tmp269, i8* %tmp271, i64 16)
+    %tmp273 = alloca i64
+    store i64 0, i64* %tmp273
+    br label %while_cond.15
+while_cond.15:
+    %tmp274 = load i64, i64* %tmp273
+    %tmp275 = load i64, i64* %tmp273
+    %tmp276 = icmp slt i64 %tmp275, 16
+    br i1 %tmp276, label %while_body.16, label %while_end.17
+while_body.16:
+    %tmp277 = load %class.string.String*, %class.string.String** %tmp257
+    %tmp278 = bitcast %class.string.String* %tmp277 to i8*
+    %tmp279 = load i64, i64* %tmp273
+    %tmp280 = load %class.string.String*, %class.string.String** %tmp257
+    %tmp281 = bitcast %class.string.String* %tmp280 to i8*
+    %tmp282 = getelementptr inbounds i8, i8* %tmp281, i64 %tmp279
+    store i8 0, i8* %tmp282
+    %tmp283 = load i64, i64* %tmp273
+    %tmp284 = load i64, i64* %tmp273
+    %tmp285 = add i64 %tmp284, 1
+    store i64 %tmp285, i64* %tmp273
+    br label %while_cond.15
+while_end.17:
+    %tmp286 = load %class.memory.Box_string.String, %class.memory.Box_string.String* %tmp260
+    ret %class.memory.Box_string.String %tmp286
 }
 
 
-declare i32 @sprintf(i8*, i8*, ...)
-
-@.int_fmt = private unnamed_addr constant [3 x i8] c"%d\00"
-define %class.string.String @primitive_int_format(i64 %val) {
-entry:
-    %buf = call i8* @malloc(i64 32)
-    %fmt = getelementptr [3 x i8], [3 x i8]* @.int_fmt, i32 0, i32 0
-    %len32 = call i32 (i8*, i8*, ...) @sprintf(i8* %buf, i8* %fmt, i64 %val)
-    %len = sext i32 %len32 to i64
-    %s.addr = alloca %class.string.String
-    %s.data = getelementptr %class.string.String, %class.string.String* %s.addr, i32 0, i32 0
-    store i8* %buf, i8** %s.data
-    %s.len = getelementptr %class.string.String, %class.string.String* %s.addr, i32 0, i32 1
-    store i64 %len, i64** %s.len
-    %res = load %class.string.String, %class.string.String* %s.addr
-    ret %class.string.String %res
-}
-
-define i64 @primitive_int_hash(i64 %val) {
-entry:
-    ret i64 %val
-}
-
-define i1 @primitive_int_equals(i64 %val, i64 %other) {
-entry:
-    %cmp = icmp eq i64 %val, %other
-    ret i1 %cmp
-}
-
-@.char_fmt = private unnamed_addr constant [3 x i8] c"%c\00"
-define %class.string.String @primitive_char_format(i8 %val) {
-entry:
-    %buf = call i8* @malloc(i64 2)
-    %fmt = getelementptr [3 x i8], [3 x i8]* @.char_fmt, i32 0, i32 0
-    %val32 = sext i8 %val to i32
-    %len32 = call i32 (i8*, i8*, ...) @sprintf(i8* %buf, i8* %fmt, i32 %val32)
-    %len = sext i32 %len32 to i64
-    %s.addr = alloca %class.string.String
-    %s.data = getelementptr %class.string.String, %class.string.String* %s.addr, i32 0, i32 0
-    store i8* %buf, i8** %s.data
-    %s.len = getelementptr %class.string.String, %class.string.String* %s.addr, i32 0, i32 1
-    store i64 %len, i64** %s.len
-    %res = load %class.string.String, %class.string.String* %s.addr
-    ret %class.string.String %res
-}
-
-define i64 @primitive_char_hash(i8 %val) {
-entry:
-    %ext = sext i8 %val to i64
-    ret i64 %ext
-}
-
-define i1 @primitive_char_equals(i8 %val, i8 %other) {
-entry:
-    %cmp = icmp eq i8 %val, %other
-    ret i1 %cmp
-}
-
-@.true_str = private unnamed_addr constant [5 x i8] c"true\00"
-@.false_str = private unnamed_addr constant [6 x i8] c"false\00"
-@.str_fmt = private unnamed_addr constant [3 x i8] c"%s\00"
-define %class.string.String @primitive_bool_format(i1 %val) {
-entry:
-    %buf = call i8* @malloc(i64 6)
-    %fmt = getelementptr [3 x i8], [3 x i8]* @.str_fmt, i32 0, i32 0
-    %str = select i1 %val, i8* getelementptr ([5 x i8], [5 x i8]* @.true_str, i32 0, i32 0), i8* getelementptr ([6 x i8], [6 x i8]* @.false_str, i32 0, i32 0)
-    %len32 = call i32 (i8*, i8*, ...) @sprintf(i8* %buf, i8* %fmt, i8* %str)
-    %len = sext i32 %len32 to i64
-    %s.addr = alloca %class.string.String
-    %s.data = getelementptr %class.string.String, %class.string.String* %s.addr, i32 0, i32 0
-    store i8* %buf, i8** %s.data
-    %s.len = getelementptr %class.string.String, %class.string.String* %s.addr, i32 0, i32 1
-    store i64 %len, i64** %s.len
-    %res = load %class.string.String, %class.string.String* %s.addr
-    ret %class.string.String %res
-}
-
-define i64 @primitive_bool_hash(i1 %val) {
-entry:
-    %ext = zext i1 %val to i64
-    ret i64 %ext
-}
-
-define i1 @primitive_bool_equals(i1 %val, i1 %other) {
-entry:
-    %cmp = icmp eq i1 %val, %other
-    ret i1 %cmp
-}
-
+@.str.0 = private unnamed_addr constant [6 x i8] c"Hello\00"
