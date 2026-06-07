@@ -1,0 +1,11 @@
+// Output: 7 11
+
+import string;
+
+extern "C" fn printf(format: @char, ...): int32;
+
+fn main(): int {
+    var fmt = string::String::from("%ld %ld");
+    printf(fmt.c_str(), 7, 11);
+    return 0;
+}

@@ -113,7 +113,7 @@ impl<'src> Parser<'src> {
         self.expect(&Token::Fn)?;
         let name = self.expect_identifier()?;
         self.expect(&Token::LParen)?;
-        let params = self.parse_param_list();
+        let (params, is_variadic) = self.parse_extern_param_list()?;
         self.expect(&Token::RParen)?;
 
         let ret_ty = if self.peek() == &Token::Colon {
@@ -129,9 +129,41 @@ impl<'src> Parser<'src> {
             abi,
             name,
             params,
+            is_variadic,
             ret_ty,
             span: Span::new(start_span.start, semi_span.end),
         })
+    }
+
+    fn parse_extern_param_list(&mut self) -> Option<(Vec<Param>, bool)> {
+        let mut params = Vec::new();
+        let mut is_variadic = false;
+
+        if self.peek() == &Token::RParen {
+            return Some((params, false));
+        }
+
+        if self.peek() == &Token::Ellipsis {
+            self.advance();
+            return Some((params, true));
+        }
+
+        loop {
+            params.push(self.parse_param()?);
+
+            if self.peek() != &Token::Comma {
+                break;
+            }
+            self.advance();
+
+            if self.peek() == &Token::Ellipsis {
+                self.advance();
+                is_variadic = true;
+                break;
+            }
+        }
+
+        Some((params, is_variadic))
     }
 
     fn parse_struct_decl(&mut self) -> Option<StructDecl> {

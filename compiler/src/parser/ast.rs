@@ -403,6 +403,7 @@ pub struct ExternFnDecl {
     pub abi: String,
     pub name: Spanned<String>,
     pub params: Vec<Param>,
+    pub is_variadic: bool,
     pub ret_ty: Option<Spanned<TypeExpr>>,
     pub span: Span,
 }

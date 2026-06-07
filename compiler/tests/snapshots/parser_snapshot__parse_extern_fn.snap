@@ -22,6 +22,7 @@ Ok(SourceFile(
           )),
         ),
       ],
+      is_variadic: false,
       ret_ty: Some((Named("int32"), Span(
         start: 33,
         end: 38,

@@ -168,6 +168,18 @@ fn parse_extern_fn() {
 }
 
 #[test]
+fn parse_variadic_extern_fn() {
+    let res = parse_file_helper("extern \"C\" fn printf(format: @char, ...): int32;");
+    insta::assert_ron_snapshot!(res);
+}
+
+#[test]
+fn parse_ellipsis_outside_extern_is_error() {
+    let res = parse_file_helper("fn bad(...): int { return 0; }");
+    insta::assert_ron_snapshot!(res);
+}
+
+#[test]
 fn parse_generic_class() {
     let res = parse_file_helper("class Array<T> { public data: @T; public len: int; }");
     insta::assert_ron_snapshot!(res);
@@ -178,4 +190,3 @@ fn parse_generic_fn_with_where() {
     let res = parse_file_helper("fn print<T>(value: T) where T ( fn format(self): String; ) { }");
     insta::assert_ron_snapshot!(res);
 }
-

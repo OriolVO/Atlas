@@ -1,0 +1,43 @@
+---
+source: compiler/tests/parser_snapshot.rs
+expression: res
+---
+Ok(SourceFile(
+  items: [
+    ExternFnDecl(ExternFnDecl(
+      abi: "C",
+      name: ("printf", Span(
+        start: 14,
+        end: 20,
+      )),
+      params: [
+        Param(
+          name: ("format", Span(
+            start: 21,
+            end: 27,
+          )),
+          ty: (Pointer(
+            target: Named("char"),
+            nullable: false,
+            span: Span(
+              start: 29,
+              end: 34,
+            ),
+          ), Span(
+            start: 29,
+            end: 34,
+          )),
+        ),
+      ],
+      is_variadic: true,
+      ret_ty: Some((Named("int32"), Span(
+        start: 42,
+        end: 47,
+      ))),
+      span: Span(
+        start: 0,
+        end: 48,
+      ),
+    ), false),
+  ],
+))

@@ -94,6 +94,7 @@ pub struct ClassMethodType {
 pub struct FnSignature {
     pub params: Vec<(String, AtlasType)>,
     pub ret_ty: AtlasType,
+    pub is_variadic: bool,
 }
 
 #[derive(Debug, Clone)]

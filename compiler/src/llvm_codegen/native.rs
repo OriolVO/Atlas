@@ -152,11 +152,20 @@ impl NativeCodegen {
         for param in &decl.params {
             params.push(map_type_expr(&param.ty.0, &self.typed_ast.structs, &self.typed_ast.classes, &self.typed_ast.enums, &self.typed_ast.choices)?);
         }
+        let signature = if decl.is_variadic {
+            if params.is_empty() {
+                "...".to_string()
+            } else {
+                format!("{}, ...", params.join(", "))
+            }
+        } else {
+            params.join(", ")
+        };
         self.output.push_str(&format!(
             "declare {} {}({})\n",
             ret_ty,
             llvm_symbol(&decl.name.0),
-            params.join(", ")
+            signature
         ));
         Ok(())
     }
@@ -803,6 +812,12 @@ impl NativeCodegen {
                         });
                     }
                     rendered_args.push(format!("{} {}", map_type(expected_ty)?, value));
+                }
+                if sig.is_variadic {
+                    for arg in args.iter().skip(sig.params.len()) {
+                        let (value, actual_ty) = self.emit_expr(arg)?;
+                        rendered_args.push(format!("{} {}", map_type(&actual_ty)?, value));
+                    }
                 }
                 if sig.ret_ty == AtlasType::Void {
                     self.output.push_str(&format!(

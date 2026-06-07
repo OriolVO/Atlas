@@ -159,6 +159,8 @@ pub enum Token {
     Semicolon,
     #[token(",")]
     Comma,
+    #[token("...")]
+    Ellipsis,
     #[token(".")]
     Dot,
     #[token("=>")]

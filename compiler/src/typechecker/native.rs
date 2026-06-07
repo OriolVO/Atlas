@@ -352,7 +352,7 @@ impl Checker {
                 .unwrap_or(Some(AtlasType::Void));
             if supported {
                 if let Some(ret_ty) = ret_ty {
-                    let sig = FnSignature { params: params.clone(), ret_ty: ret_ty.clone() };
+                    let sig = FnSignature { params: params.clone(), ret_ty: ret_ty.clone(), is_variadic: false };
                     self.fn_sigs.insert(
                         format!("{}.{}", class_name, method.decl.name.0),
                         sig.clone(),
@@ -498,7 +498,7 @@ impl Checker {
                         .unwrap_or(Some(AtlasType::Void));
                     if supported {
                         if let Some(ret_ty) = ret_ty {
-                            self.fn_sigs.insert(decl.name.0.clone(), FnSignature { params, ret_ty });
+                            self.fn_sigs.insert(decl.name.0.clone(), FnSignature { params, ret_ty, is_variadic: false });
                         } else if !skip_unsupported {
                             self.errors.push(AtlasError::TypeError {
                                 span: decl.body.span,
@@ -531,7 +531,10 @@ impl Checker {
                         .unwrap_or(Some(AtlasType::Void));
                     if supported {
                         if let Some(ret_ty) = ret_ty {
-                            self.fn_sigs.insert(decl.name.0.clone(), FnSignature { params, ret_ty });
+                            self.fn_sigs.insert(
+                                decl.name.0.clone(),
+                                FnSignature { params, ret_ty, is_variadic: decl.is_variadic },
+                            );
                         }
                     }
                 }
@@ -561,7 +564,7 @@ impl Checker {
                             .unwrap_or(Some(AtlasType::Void));
                         if supported {
                             if let Some(ret_ty) = ret_ty {
-                                let sig = FnSignature { params: params.clone(), ret_ty: ret_ty.clone() };
+                                let sig = FnSignature { params: params.clone(), ret_ty: ret_ty.clone(), is_variadic: false };
                                 self.fn_sigs.insert(
                                     format!("{}.{}", class_name, method.decl.name.0),
                                     sig.clone(),
@@ -1216,7 +1219,7 @@ impl Checker {
                     });
                     return Ok(AtlasType::Void);
                 };
-                if sig.params.len() != args.len() {
+                if args.len() < sig.params.len() || (!sig.is_variadic && sig.params.len() != args.len()) {
                     self.errors.push(AtlasError::TypeError {
                         span: *span,
                         message: format!("wrong argument count for '{}'", callee),
@@ -1235,6 +1238,11 @@ impl Checker {
                             ),
                             hint: None,
                         });
+                    }
+                }
+                if sig.is_variadic {
+                    for arg in args.iter().skip(sig.params.len()) {
+                        let _ = self.check_expr(arg, locals)?;
                     }
                 }
                 Ok(sig.ret_ty)
@@ -1796,6 +1804,7 @@ impl Checker {
                         ("index".to_string(), AtlasType::Void),
                     ],
                     ret_ty: AtlasType::Void,
+                    is_variadic: false,
                 },
                 visibility: crate::parser::Visibility::Public,
             });
@@ -1867,6 +1876,7 @@ impl Checker {
                             ("value".to_string(), AtlasType::Void),
                         ],
                         ret_ty: AtlasType::Void,
+                        is_variadic: false,
                     },
                     visibility: crate::parser::Visibility::Public,
                 },
@@ -1970,7 +1980,7 @@ impl Checker {
                 message: format!("wrong argument count for '{}'", template.name.0),
                 hint: None,
             });
-            return Ok(FnSignature { params: Vec::new(), ret_ty: AtlasType::Void });
+            return Ok(FnSignature { params: Vec::new(), ret_ty: AtlasType::Void, is_variadic: false });
         }
 
         let generic_names: HashSet<String> = template.generic_params.iter().map(|param| param.0.clone()).collect();
@@ -1983,7 +1993,7 @@ impl Checker {
                     message: format!("could not infer generic arguments for '{}'", template.name.0),
                     hint: None,
                 });
-                return Ok(FnSignature { params: Vec::new(), ret_ty: AtlasType::Void });
+                return Ok(FnSignature { params: Vec::new(), ret_ty: AtlasType::Void, is_variadic: false });
             }
         }
 
@@ -1994,12 +2004,12 @@ impl Checker {
                     message: format!("generic argument '{}' could not be inferred for '{}'", generic_name, template.name.0),
                     hint: None,
                 });
-                return Ok(FnSignature { params: Vec::new(), ret_ty: AtlasType::Void });
+                return Ok(FnSignature { params: Vec::new(), ret_ty: AtlasType::Void, is_variadic: false });
             }
         }
 
         if !self.check_where_clauses(template, &bindings, call_span)? {
-            return Ok(FnSignature { params: Vec::new(), ret_ty: AtlasType::Void });
+            return Ok(FnSignature { params: Vec::new(), ret_ty: AtlasType::Void, is_variadic: false });
         }
 
         let ordered_args: Vec<AtlasType> = template
@@ -2037,7 +2047,7 @@ impl Checker {
             .as_ref()
             .map(|ret| self.resolve_type_expr(&ret.0))
             .unwrap_or(Some(AtlasType::Void))?;
-        Some(FnSignature { params, ret_ty })
+        Some(FnSignature { params, ret_ty, is_variadic: false })
     }
 
     fn resolve_method_type_expr(&mut self, class_name: &str, ty: &TypeExpr) -> Option<AtlasType> {
@@ -2817,6 +2827,7 @@ fn default_class_method(class_name: &str, method_name: &str, ret_ty: AtlasType) 
                 },
             )],
             ret_ty,
+            is_variadic: false,
         },
         visibility: crate::parser::Visibility::Public,
     }

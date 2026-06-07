@@ -71,7 +71,7 @@ export fn println_str(s: @char) {
     puts(s);
 }
 
-// Generic print that relies on compiler intercept
+// Generic print built on the standard format() constraint.
 export fn print<T>(val: T)
 where T (
     fn format(self): String;

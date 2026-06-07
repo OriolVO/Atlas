@@ -1,0 +1,30 @@
+---
+source: compiler/tests/parser_snapshot.rs
+expression: res
+---
+Err([
+  ParseError(
+    span: Span(
+      start: 7,
+      end: 10,
+    ),
+    message: "expected identifier, found \'Ellipsis\'",
+    hint: None,
+  ),
+  ParseError(
+    span: Span(
+      start: 7,
+      end: 10,
+    ),
+    message: "expected \'RParen\', found \'Ellipsis\'",
+    hint: None,
+  ),
+  ParseError(
+    span: Span(
+      start: 29,
+      end: 30,
+    ),
+    message: "expected top-level item (e.g. fn, struct, class, import, extern), found \'RBrace\'",
+    hint: Some("Functions, structs, classes, imports, and extern declarations are valid top-level items"),
+  ),
+])
