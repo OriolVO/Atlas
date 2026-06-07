@@ -1033,8 +1033,8 @@ impl NativeCodegen {
                                 field_name, struct_name
                             ),
                         })?;
-                    let (field_value, actual_ty) = self.emit_expr(expr)?;
-                    if &actual_ty != field_ty {
+                    let (field_value, actual_ty) = self.emit_expr_coerced(expr, field_ty)?;
+                    if !same_runtime_type(&actual_ty, field_ty) {
                         return Err(AtlasError::CodegenError {
                             message: format!(
                                 "field '{}' type mismatch in struct initializer",
@@ -1591,7 +1591,46 @@ impl NativeCodegen {
                 message: format!("unknown variable '{}'", name),
             }),
             Expr::MemberAccess { object, member, .. } => {
-                let (base_ptr, base_ty) = self.emit_lvalue_address(object)?;
+                let (mut base_ptr, base_ty) = match self.emit_lvalue_address(object) {
+                    Ok(result) => result,
+                    Err(_) => {
+                        let (base_value, base_ty) = self.emit_expr(object)?;
+                        match &base_ty {
+                            AtlasType::Struct(_) | AtlasType::Class(_) => {
+                                let llvm_base_ty = map_type(&base_ty)?;
+                                let temp_ptr = self.next_temp();
+                                self.output.push_str(&format!(
+                                    "    {} = alloca {}\n",
+                                    temp_ptr, llvm_base_ty
+                                ));
+                                self.output.push_str(&format!(
+                                    "    store {} {}, {}* {}\n",
+                                    llvm_base_ty, base_value, llvm_base_ty, temp_ptr
+                                ));
+                                (temp_ptr, base_ty)
+                            }
+                            _ => {
+                                return Err(AtlasError::CodegenError {
+                                    message: format!(
+                                        "member access '.{}' requires a struct or class value, found '{:?}'",
+                                        member, base_ty
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                };
+                if let AtlasType::Pointer { target, .. } = &base_ty {
+                    if matches!(target.as_ref(), AtlasType::Struct(_) | AtlasType::Class(_)) {
+                        let loaded_ptr = self.next_temp();
+                        let llvm_ptr_ty = map_type(&base_ty)?;
+                        self.output.push_str(&format!(
+                            "    {} = load {}, {}* {}\n",
+                            loaded_ptr, llvm_ptr_ty, llvm_ptr_ty, base_ptr
+                        ));
+                        base_ptr = loaded_ptr;
+                    }
+                }
                 let (agg_prefix, agg_name, field_index, field_ty) = match base_ty {
                     AtlasType::Struct(struct_name) => {
                         let (field_index, field_ty) = self.struct_field(&struct_name, member)?;
@@ -1601,9 +1640,30 @@ impl NativeCodegen {
                         let (field_index, field_ty) = self.class_field(&class_name, member)?;
                         ("class", class_name, field_index, field_ty)
                     }
+                    AtlasType::Pointer { target, .. } => match *target {
+                        AtlasType::Struct(struct_name) => {
+                            let (field_index, field_ty) = self.struct_field(&struct_name, member)?;
+                            ("struct", struct_name, field_index, field_ty)
+                        }
+                        AtlasType::Class(class_name) => {
+                            let (field_index, field_ty) = self.class_field(&class_name, member)?;
+                            ("class", class_name, field_index, field_ty)
+                        }
+                        other => {
+                            return Err(AtlasError::CodegenError {
+                                message: format!(
+                                    "member access '.{}' requires a struct or class value, found '{:?}'",
+                                    member, other
+                                ),
+                            });
+                        }
+                    },
                     _ => {
                         return Err(AtlasError::CodegenError {
-                            message: "member access requires a struct or class lvalue".to_string(),
+                            message: format!(
+                                "member access '.{}' requires a struct or class value, found '{:?}'",
+                                member, base_ty
+                            ),
                         });
                     }
                 };

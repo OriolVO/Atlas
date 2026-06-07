@@ -79,6 +79,14 @@ fn print_semantic_error(source: []char, err: semantic::SemanticError) {
         print_chars("SERR unknown var ");
     } else if err.kind == 5 {
         print_chars("SERR unknown fn ");
+    } else if err.kind == 6 {
+        print_chars("SERR bad return ");
+    } else if err.kind == 7 {
+        print_chars("SERR wrong arg count ");
+    } else if err.kind == 8 {
+        print_chars("SERR type mismatch ");
+    } else if err.kind == 9 {
+        print_chars("SERR bad condition ");
     } else {
         print_chars("SERR ");
     }
@@ -86,7 +94,12 @@ fn print_semantic_error(source: []char, err: semantic::SemanticError) {
     print_chars("\n");
 }
 
-fn print_expr(source: []char, expr: ast::Expr) {
+fn print_expr(source: []char, arena: ast::Arena, expr_id: int) {
+    if expr_id < 0 {
+        print_chars("?");
+        return;
+    }
+    var expr = arena.exprs[expr_id];
     if expr.kind == 1 {
         print_range(source, expr.name_span.start, expr.name_span.end);
     } else if expr.kind == 2 {
@@ -97,14 +110,21 @@ fn print_expr(source: []char, expr: ast::Expr) {
         } else {
             print_chars("false");
         }
-    } else if expr.kind == 4 or expr.kind == 5 {
+    } else if expr.kind == 7 {
+        print_chars("'");
+        io::print_char(expr.char_value);
+        print_chars("'");
+    } else if expr.kind == 8 {
+        print_range(source, expr.span.start, expr.span.end);
+    } else if expr.kind == 4 or expr.kind == 5 or expr.kind == 6 {
         print_range(source, expr.span.start, expr.span.end);
     } else {
         print_chars("?");
     }
 }
 
-fn print_stmt(source: []char, stmt: ast::Stmt) {
+fn print_stmt(source: []char, arena: ast::Arena, stmt_id: int) {
+    var stmt = arena.stmts[stmt_id];
     if stmt.kind == 1 {
         print_chars("var ");
         print_range(source, stmt.var_decl.name_span.start, stmt.var_decl.name_span.end);
@@ -114,7 +134,7 @@ fn print_stmt(source: []char, stmt: ast::Stmt) {
         }
         if stmt.var_decl.has_init {
             print_chars(" =");
-            print_expr(source, stmt.var_decl.init_expr);
+            print_expr(source, arena, stmt.var_decl.init_expr_id);
         }
         print_chars("\n");
     } else if stmt.kind == 2 {
@@ -125,33 +145,36 @@ fn print_stmt(source: []char, stmt: ast::Stmt) {
             io::print(stmt.const_decl.type_token_kind);
         }
         print_chars(" =");
-        print_expr(source, stmt.const_decl.init_expr);
+        print_expr(source, arena, stmt.const_decl.init_expr_id);
         print_chars("\n");
     } else if stmt.kind == 3 {
         print_chars("assign ");
         print_range(source, stmt.assign_stmt.target_name_span.start, stmt.assign_stmt.target_name_span.end);
         print_chars(" =");
-        print_expr(source, stmt.assign_stmt.value_expr);
+        print_expr(source, arena, stmt.assign_stmt.value_expr_id);
         print_chars("\n");
     } else if stmt.kind == 4 {
+        var block = arena.blocks[stmt.block_id];
         print_chars("block ");
-        io::print(stmt.block.stmt_count);
+        io::print(block.stmt_ref_len);
         print_chars("\n");
     } else if stmt.kind == 5 {
+        var if_stmt = stmt.if_stmt;
         print_chars("if ");
-        print_expr(source, stmt.if_stmt.condition);
+        print_expr(source, arena, if_stmt.condition_expr_id);
         print_chars(" then ");
-        io::print(stmt.if_stmt.then_block.stmt_count);
-        if stmt.if_stmt.has_else_block {
+        io::print(arena.blocks[if_stmt.then_block_id].stmt_ref_len);
+        if if_stmt.has_else_block {
             print_chars(" else ");
-            io::print(stmt.if_stmt.else_block.stmt_count);
+            io::print(arena.blocks[if_stmt.else_block_id].stmt_ref_len);
         }
         print_chars("\n");
     } else if stmt.kind == 6 {
+        var while_stmt = stmt.while_stmt;
         print_chars("while ");
-        print_expr(source, stmt.while_stmt.condition);
+        print_expr(source, arena, while_stmt.condition_expr_id);
         print_chars(" do ");
-        io::print(stmt.while_stmt.body.stmt_count);
+        io::print(arena.blocks[while_stmt.body_block_id].stmt_ref_len);
         print_chars("\n");
     } else if stmt.kind == 7 {
         print_chars("break\n");
@@ -161,8 +184,12 @@ fn print_stmt(source: []char, stmt: ast::Stmt) {
         print_chars("return");
         if stmt.return_stmt.has_value {
             print_chars(" ");
-            print_expr(source, stmt.return_stmt.value_expr);
+            print_expr(source, arena, stmt.return_stmt.value_expr_id);
         }
+        print_chars("\n");
+    } else if stmt.kind == 10 {
+        print_chars("expr ");
+        print_expr(source, arena, stmt.expr_id);
         print_chars("\n");
     } else {
         print_chars("stmt?\n");
@@ -177,45 +204,43 @@ fn print_param(source: []char, param: ast::ParamInfo) {
     }
 }
 
-fn print_item(source: []char, item: ast::Item) {
+fn print_item(source: []char, arena: ast::Arena, item_id: int) {
+    var item = arena.items[item_id];
     if item.kind == 1 {
+        var function_info = arena.functions[item.function_id];
         print_chars("fn ");
-        print_range(source, item.function_info.name_span.start, item.function_info.name_span.end);
+        print_range(source, function_info.name_span.start, function_info.name_span.end);
         print_chars("(");
-        if item.function_info.param_count > 0 {
-            print_param(source, item.function_info.first_param);
-        }
-        if item.function_info.param_count > 1 {
-            print_chars(", ");
-            print_param(source, item.function_info.second_param);
-        }
-        if item.function_info.param_count > 2 {
-            print_chars(", ...");
+        var i = 0;
+        while i < function_info.param_len {
+            if i > 0 {
+                print_chars(", ");
+            }
+            print_param(source, arena.params[function_info.param_start + i]);
+            i = i + 1;
         }
         print_chars(")");
-        if item.function_info.has_return_type {
+        if function_info.has_return_type {
             print_chars(":");
-            io::print(item.function_info.return_type_kind);
+            io::print(function_info.return_type_kind);
         }
         print_chars(" body ");
-        io::print(item.function_info.body.stmt_count);
+        io::print(arena.blocks[function_info.body_block_id].stmt_ref_len);
         print_chars("\n");
     } else {
         print_chars("item?\n");
     }
 }
 
-fn print_file_info(source: []char, file_info: ast::FileInfo) {
+fn print_file_info(source: []char, arena: ast::Arena, file_info: ast::FileInfo) {
     print_chars("file ");
-    io::print(file_info.item_count);
+    io::print(file_info.item_len);
     print_chars("\n");
-    if file_info.item_count > 0 {
+    var i = 0;
+    while i < file_info.item_len {
         print_chars("  ");
-        print_item(source, file_info.first_item);
-    }
-    if file_info.item_count > 1 {
-        print_chars("  ");
-        print_item(source, file_info.second_item);
+        print_item(source, arena, file_info.item_start + i);
+        i = i + 1;
     }
 }
 
@@ -223,17 +248,14 @@ fn run_lexer_case(name: []char, sample: []char) {
     print_chars("== lex ");
     print_chars(name);
     print_chars("\n");
-
     var tokens: array::Array<token::Token> = array::Array();
     var errors: array::Array<error::LexError> = array::Array();
     lexer::tokenize(sample, @tokens, @errors);
-
     var i = 0;
     while i < tokens.len {
         print_token(tokens[i]);
         i = i + 1;
     }
-
     i = 0;
     while i < errors.len {
         print_error(errors[i]);
@@ -243,20 +265,19 @@ fn run_lexer_case(name: []char, sample: []char) {
 
 fn run_parser_case(sample: []char) {
     print_chars("== parse\n");
+    var arena = ast::make_empty_arena();
     var tokens: array::Array<token::Token> = array::Array();
     var lex_errors: array::Array<error::LexError> = array::Array();
     var parse_errors: array::Array<ast::ParseError> = array::Array();
-    var stmt = ast::make_empty_stmt();
+    var stmt_id = -1;
     var index = 0;
-
     lexer::tokenize(sample, @tokens, @lex_errors);
     if lex_errors.len > 0 {
         print_chars("lexer failed\n");
         return;
     }
-
-    if parser::parse_first_stmt(tokens.data, tokens.len, @index, @stmt, @parse_errors) {
-        print_stmt(sample, stmt);
+    if parser::parse_first_stmt(@arena, tokens.data, tokens.len, @index, @stmt_id, @parse_errors) {
+        print_stmt(sample, arena, stmt_id);
     } else {
         var i = 0;
         while i < parse_errors.len {
@@ -268,20 +289,19 @@ fn run_parser_case(sample: []char) {
 
 fn run_item_parser_case(sample: []char) {
     print_chars("== item\n");
+    var arena = ast::make_empty_arena();
     var tokens: array::Array<token::Token> = array::Array();
     var lex_errors: array::Array<error::LexError> = array::Array();
     var parse_errors: array::Array<ast::ParseError> = array::Array();
-    var item = ast::make_empty_item();
+    var item_id = -1;
     var index = 0;
-
     lexer::tokenize(sample, @tokens, @lex_errors);
     if lex_errors.len > 0 {
         print_chars("lexer failed\n");
         return;
     }
-
-    if parser::parse_first_item(tokens.data, tokens.len, @index, @item, @parse_errors) {
-        print_item(sample, item);
+    if parser::parse_first_item(@arena, tokens.data, tokens.len, @index, @item_id, @parse_errors) {
+        print_item(sample, arena, item_id);
     } else {
         var i = 0;
         while i < parse_errors.len {
@@ -293,19 +313,18 @@ fn run_item_parser_case(sample: []char) {
 
 fn run_file_parser_case(sample: []char) {
     print_chars("== file\n");
+    var arena = ast::make_empty_arena();
     var tokens: array::Array<token::Token> = array::Array();
     var lex_errors: array::Array<error::LexError> = array::Array();
     var parse_errors: array::Array<ast::ParseError> = array::Array();
     var file_info = ast::make_empty_file_info();
-
     lexer::tokenize(sample, @tokens, @lex_errors);
     if lex_errors.len > 0 {
         print_chars("lexer failed\n");
         return;
     }
-
-    if parser::parse_file(tokens.data, tokens.len, @file_info, @parse_errors) {
-        print_file_info(sample, file_info);
+    if parser::parse_file(@arena, tokens.data, tokens.len, @file_info, @parse_errors) {
+        print_file_info(sample, arena, file_info);
     } else {
         var i = 0;
         while i < parse_errors.len {
@@ -317,18 +336,27 @@ fn run_file_parser_case(sample: []char) {
 
 fn run_semantic_case(sample: []char) {
     print_chars("== semantic\n");
+    var arena = ast::make_empty_arena();
     var tokens: array::Array<token::Token> = array::Array();
     var lex_errors: array::Array<error::LexError> = array::Array();
+    var parse_errors: array::Array<ast::ParseError> = array::Array();
     var semantic_errors: array::Array<semantic::SemanticError> = array::Array();
     var summary = semantic::make_empty_summary();
-
+    var file_info = ast::make_empty_file_info();
     lexer::tokenize(sample, @tokens, @lex_errors);
     if lex_errors.len > 0 {
         print_chars("lexer failed\n");
         return;
     }
-
-    semantic::analyze_tokens(sample, tokens.data, tokens.len, @summary, @semantic_errors);
+    if !parser::parse_file(@arena, tokens.data, tokens.len, @file_info, @parse_errors) {
+        var p = 0;
+        while p < parse_errors.len {
+            print_parse_error(parse_errors[p]);
+            p = p + 1;
+        }
+        return;
+    }
+    semantic::analyze_file(sample, arena, file_info, @summary, @semantic_errors);
     print_chars("fns ");
     io::print(summary.function_count);
     print_chars(" dup_fn ");
@@ -341,8 +369,15 @@ fn run_semantic_case(sample: []char) {
     io::print(summary.unknown_variable_count);
     print_chars(" unknown_fn ");
     io::print(summary.unknown_function_count);
+    print_chars(" bad_return ");
+    io::print(summary.bad_return_count);
+    print_chars(" wrong_arg ");
+    io::print(summary.wrong_arg_count_count);
+    print_chars(" type_mismatch ");
+    io::print(summary.type_mismatch_count);
+    print_chars(" bad_condition ");
+    io::print(summary.bad_condition_count);
     print_chars("\n");
-
     var i = 0;
     while i < semantic_errors.len {
         print_semantic_error(sample, semantic_errors[i]);
@@ -354,6 +389,7 @@ fn main(): int {
     run_lexer_case("var", "var x: int = 42;");
     run_lexer_case("comment", "var y = 1; /* nested /* ok */ still */");
     run_lexer_case("string", "const s = \"hi\\n\";");
+    run_lexer_case("char", "const ch = 'x';");
     run_lexer_case("loop", "while true { break; continue; }");
     run_parser_case("var x: int = 42;");
     run_parser_case("const flag = true;");
@@ -361,14 +397,19 @@ fn main(): int {
     run_parser_case("{ var a = 1; const b = false; answer = a; }");
     run_parser_case("var y = 1 + 2 * 3;");
     run_parser_case("const ok = (1 + 2) == 3;");
+    run_parser_case("var total: int = add(1, 2) + 3;");
+    run_parser_case("const ch: char = 'x';");
+    run_parser_case("var s = \"hi\";");
     run_parser_case("if x == 1 { return 1; } else { return 2; }");
     run_parser_case("while x < 10 { x = x + 1; continue; }");
+    run_parser_case("ping(1, true);");
     run_parser_case("break;");
     run_parser_case("continue;");
     run_parser_case("return 42;");
     run_item_parser_case("fn add(a: int, b: int): int { return a + b; }");
     run_item_parser_case("fn tick() { while x < 10 { x = x + 1; } }");
     run_file_parser_case("fn add(a: int, b: int): int { return a + b; } fn tick() { while x < 10 { x = x + 1; } }");
-    run_semantic_case("fn add(a: int, a: int): int { var x = 1; { var x = 2; } var x = 3; y = missing(); return a + b; } fn add() { return 0; }");
+    run_semantic_case("fn add(a: int, a: int): int { var x = 1; { var x = 2; } var x = 3; y = missing(); var s = \"hi\"; s = 'x'; ping(1, false); return a + b; } fn ping(v: bool) { if 1 { return; } } fn add() { return true; }");
+    run_semantic_case("fn add(a: int, b: int): int { return a + b; } fn use(): int { var total: int = add(1, 2) + 3; return total; }");
     return 0;
 }

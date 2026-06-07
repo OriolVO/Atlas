@@ -417,12 +417,6 @@ impl Checker {
                     self.register_class_decl(&instantiated);
                     self.register_class_methods(&instantiated);
                     self.generated_classes.push(instantiated.clone());
-                    for method in &instantiated.methods {
-                        let qualified = format!("{}.{}", instantiated.name.0, method.decl.name.0);
-                        if self.fn_sigs.contains_key(&qualified) {
-                            let _ = self.check_qualified_function(&qualified, &method.decl);
-                        }
-                    }
                     return Some(AtlasType::Class(mangled));
                 }
                 if let Some(template) = self.choice_templates.get(base).cloned() {
@@ -822,6 +816,17 @@ impl Checker {
                     }
                 }
                 _ => {}
+            }
+        }
+
+        let generated_classes = self.generated_classes.clone();
+        for decl in &generated_classes {
+            for method in &decl.methods {
+                let qualified = format!("{}.{}", decl.name.0, method.decl.name.0);
+                if !self.fn_sigs.contains_key(&qualified) {
+                    continue;
+                }
+                self.check_qualified_function(&qualified, &method.decl)?;
             }
         }
 
@@ -1745,7 +1750,7 @@ impl Checker {
                         });
                         continue;
                     };
-                    let actual_ty = self.check_expr(expr, locals)?;
+                    let actual_ty = self.check_expr_with_expected(expr, expected_ty, locals)?;
                     self.check_forbidden_class_copy(expected_ty, &actual_ty, expr, expr.span(), "struct fields cannot copy class values by value; use '.clone()' or a pointer");
                     if !is_assignable_to(expected_ty, &actual_ty) {
                         self.errors.push(AtlasError::TypeError {
