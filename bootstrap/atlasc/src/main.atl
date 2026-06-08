@@ -87,11 +87,39 @@ fn print_semantic_error(source: []char, err: semantic::SemanticError) {
         print_chars("SERR type mismatch ");
     } else if err.kind == 9 {
         print_chars("SERR bad condition ");
+    } else if err.kind == 10 {
+        print_chars("SERR unknown type ");
+    } else if err.kind == 11 {
+        print_chars("SERR duplicate type ");
+    } else if err.kind == 12 {
+        print_chars("SERR unknown field ");
+    } else if err.kind == 13 {
+        print_chars("SERR bad member base ");
+    } else if err.kind == 14 {
+        print_chars("SERR missing field ");
+    } else if err.kind == 15 {
+        print_chars("SERR duplicate field init ");
+    } else if err.kind == 16 {
+        print_chars("SERR unknown variant ");
     } else {
         print_chars("SERR ");
     }
     print_range(source, err.span.start, err.span.end);
     print_chars("\n");
+}
+
+fn print_type_ref(source: []char, type_ref: ast::TypeRef) {
+    if type_ref.token_kind == 0 {
+        print_chars("?");
+    } else if type_ref.has_qualifier {
+        print_range(source, type_ref.qualifier_span.start, type_ref.qualifier_span.end);
+        print_chars("::");
+        print_range(source, type_ref.name_span.start, type_ref.name_span.end);
+    } else if type_ref.name_span.end > type_ref.name_span.start {
+        print_range(source, type_ref.name_span.start, type_ref.name_span.end);
+    } else {
+        io::print(type_ref.token_kind);
+    }
 }
 
 fn print_expr(source: []char, arena: ast::Arena, expr_id: int) {
@@ -116,7 +144,7 @@ fn print_expr(source: []char, arena: ast::Arena, expr_id: int) {
         print_chars("'");
     } else if expr.kind == 8 {
         print_range(source, expr.span.start, expr.span.end);
-    } else if expr.kind == 4 or expr.kind == 5 or expr.kind == 6 {
+    } else if expr.kind == 4 or expr.kind == 5 or expr.kind == 6 or expr.kind == 9 or expr.kind == 10 or expr.kind == 11 {
         print_range(source, expr.span.start, expr.span.end);
     } else {
         print_chars("?");
@@ -130,7 +158,7 @@ fn print_stmt(source: []char, arena: ast::Arena, stmt_id: int) {
         print_range(source, stmt.var_decl.name_span.start, stmt.var_decl.name_span.end);
         if stmt.var_decl.has_type_hint {
             print_chars(" :");
-            io::print(stmt.var_decl.type_token_kind);
+            print_type_ref(source, stmt.var_decl.type_ref);
         }
         if stmt.var_decl.has_init {
             print_chars(" =");
@@ -142,7 +170,7 @@ fn print_stmt(source: []char, arena: ast::Arena, stmt_id: int) {
         print_range(source, stmt.const_decl.name_span.start, stmt.const_decl.name_span.end);
         if stmt.const_decl.has_type_hint {
             print_chars(" :");
-            io::print(stmt.const_decl.type_token_kind);
+            print_type_ref(source, stmt.const_decl.type_ref);
         }
         print_chars(" =");
         print_expr(source, arena, stmt.const_decl.init_expr_id);
@@ -176,6 +204,13 @@ fn print_stmt(source: []char, arena: ast::Arena, stmt_id: int) {
         print_chars(" do ");
         io::print(arena.blocks[while_stmt.body_block_id].stmt_ref_len);
         print_chars("\n");
+    } else if stmt.kind == 11 {
+        var match_stmt = stmt.match_stmt;
+        print_chars("match ");
+        print_expr(source, arena, match_stmt.value_expr_id);
+        print_chars(" arms ");
+        io::print(match_stmt.arm_len);
+        print_chars("\n");
     } else if stmt.kind == 7 {
         print_chars("break\n");
     } else if stmt.kind == 8 {
@@ -200,7 +235,7 @@ fn print_param(source: []char, param: ast::ParamInfo) {
     print_range(source, param.name_span.start, param.name_span.end);
     if param.has_type_hint {
         print_chars(":");
-        io::print(param.type_token_kind);
+        print_type_ref(source, param.type_ref);
     }
 }
 
@@ -222,10 +257,36 @@ fn print_item(source: []char, arena: ast::Arena, item_id: int) {
         print_chars(")");
         if function_info.has_return_type {
             print_chars(":");
-            io::print(function_info.return_type_kind);
+            print_type_ref(source, function_info.return_type_ref);
         }
         print_chars(" body ");
         io::print(arena.blocks[function_info.body_block_id].stmt_ref_len);
+        print_chars("\n");
+    } else if item.kind == 2 {
+        var struct_info = arena.structs[item.struct_id];
+        print_chars("struct ");
+        print_range(source, struct_info.name_span.start, struct_info.name_span.end);
+        print_chars(" fields ");
+        io::print(struct_info.field_len);
+        print_chars("\n");
+    } else if item.kind == 3 {
+        var enum_info = arena.enums[item.enum_id];
+        print_chars("enum ");
+        print_range(source, enum_info.name_span.start, enum_info.name_span.end);
+        print_chars(" variants ");
+        io::print(enum_info.variant_len);
+        print_chars("\n");
+    } else if item.kind == 4 {
+        var choice_info = arena.choices[item.choice_id];
+        print_chars("choice ");
+        print_range(source, choice_info.name_span.start, choice_info.name_span.end);
+        print_chars(" variants ");
+        io::print(choice_info.variant_len);
+        print_chars("\n");
+    } else if item.kind == 5 {
+        var import_info = arena.imports[item.import_id];
+        print_chars("import ");
+        print_range(source, import_info.name_span.start, import_info.name_span.end);
         print_chars("\n");
     } else {
         print_chars("item?\n");
@@ -359,8 +420,16 @@ fn run_semantic_case(sample: []char) {
     semantic::analyze_file(sample, arena, file_info, @summary, @semantic_errors);
     print_chars("fns ");
     io::print(summary.function_count);
+    print_chars(" structs ");
+    io::print(summary.struct_count);
+    print_chars(" enums ");
+    io::print(summary.enum_count);
+    print_chars(" choices ");
+    io::print(summary.choice_count);
     print_chars(" dup_fn ");
     io::print(summary.duplicate_function_count);
+    print_chars(" dup_type ");
+    io::print(summary.duplicate_type_count);
     print_chars(" dup_param ");
     io::print(summary.duplicate_param_count);
     print_chars(" dup_local ");
@@ -377,6 +446,16 @@ fn run_semantic_case(sample: []char) {
     io::print(summary.type_mismatch_count);
     print_chars(" bad_condition ");
     io::print(summary.bad_condition_count);
+    print_chars(" unknown_type ");
+    io::print(summary.unknown_type_count);
+    print_chars(" unknown_field ");
+    io::print(summary.unknown_field_count);
+    print_chars(" bad_member_base ");
+    io::print(summary.bad_member_base_count);
+    print_chars(" missing_field ");
+    io::print(summary.missing_field_count);
+    print_chars(" dup_field_init ");
+    io::print(summary.duplicate_field_init_count);
     print_chars("\n");
     var i = 0;
     while i < semantic_errors.len {
@@ -400,6 +479,13 @@ fn main(): int {
     run_parser_case("var total: int = add(1, 2) + 3;");
     run_parser_case("const ch: char = 'x';");
     run_parser_case("var s = \"hi\";");
+    run_parser_case("var n = person.age;");
+    run_parser_case("var p: Person = Person(1);");
+    run_parser_case("var p: Person = Person { age: 1 };");
+    run_parser_case("var d: Direction = Direction::West;");
+    run_parser_case("var o: OptionInt = OptionInt::Some(42);");
+    run_parser_case("var t: token::Token = token::make(1, 0, 1);");
+    run_parser_case("match d { Direction::North => { return 1; } Direction::South => { return 2; } };");
     run_parser_case("if x == 1 { return 1; } else { return 2; }");
     run_parser_case("while x < 10 { x = x + 1; continue; }");
     run_parser_case("ping(1, true);");
@@ -407,9 +493,38 @@ fn main(): int {
     run_parser_case("continue;");
     run_parser_case("return 42;");
     run_item_parser_case("fn add(a: int, b: int): int { return a + b; }");
+    run_item_parser_case("fn parse(name: Name): Token { return name; }");
+    run_item_parser_case("struct Token { kind: int; lexeme: char; }");
+    run_item_parser_case("import token;");
+    run_item_parser_case("enum Direction { North, South, East, West }");
+    run_item_parser_case("choice OptionInt { Some(int), None }");
     run_item_parser_case("fn tick() { while x < 10 { x = x + 1; } }");
-    run_file_parser_case("fn add(a: int, b: int): int { return a + b; } fn tick() { while x < 10 { x = x + 1; } }");
+    run_file_parser_case("import token; struct Token { kind: int; } enum Direction { North, South } choice OptionInt { Some(int), None } fn add(a: int, b: int): int { return a + b; } fn tick() { while x < 10 { x = x + 1; } }");
     run_semantic_case("fn add(a: int, a: int): int { var x = 1; { var x = 2; } var x = 3; y = missing(); var s = \"hi\"; s = 'x'; ping(1, false); return a + b; } fn ping(v: bool) { if 1 { return; } } fn add() { return true; }");
     run_semantic_case("fn add(a: int, b: int): int { return a + b; } fn use(): int { var total: int = add(1, 2) + 3; return total; }");
+    run_semantic_case("struct Name { value: int; } fn id(name: Name): Name { return name; }");
+    run_semantic_case("struct Name { value: int; } struct Token { kind: int; } fn parse(name: Name): Token { return name; }");
+    run_semantic_case("struct Token { kind: int; } struct Token { ch: char; }");
+    run_semantic_case("struct Person { age: int; } fn age_of(person: Person): int { return person.age; }");
+    run_semantic_case("struct Person { age: int; } fn bad(person: Person): int { return person.name; }");
+    run_semantic_case("fn bad(x: int): int { return x.age; }");
+    run_semantic_case("struct Person { age: int; } fn make(): Person { return Person(1); }");
+    run_semantic_case("struct Person { age: int; } fn make(): Person { return Person(); }");
+    run_semantic_case("struct Person { age: int; } fn make(): Person { return Person(true); }");
+    run_semantic_case("struct Person { age: int; } fn make(): Person { return Person { age: 1 }; }");
+    run_semantic_case("struct Person { age: int; } fn make(): Person { return Person { age: true }; }");
+    run_semantic_case("struct Person { age: int; height: int; } fn make(): Person { return Person { age: 1 }; }");
+    run_semantic_case("struct Person { age: int; } fn make(): Person { return Person { age: 1, age: 2 }; }");
+    run_semantic_case("struct Person { age: int; } fn flow(): int { var p: Person = Person { age: 1 }; return p.age; }");
+    run_semantic_case("struct Person { age: int; } fn flow(): int { var p: Person = Person(1); return p.age; }");
+    run_semantic_case("enum Direction { North, South } fn pick(): Direction { return Direction::North; }");
+    run_semantic_case("enum Direction { North } fn bad(): Direction { return Direction::South; }");
+    run_semantic_case("choice OptionInt { Some(int), None } fn make(): OptionInt { return OptionInt::Some(42); }");
+    run_semantic_case("choice OptionInt { Some(int), None } fn make(): OptionInt { return OptionInt::Some(true); }");
+    run_semantic_case("choice OptionInt { Some(int), None } fn make(): OptionInt { return OptionInt::None(1); }");
+    run_semantic_case("enum Direction { North, South } fn code(d: Direction): int { match d { Direction::North => { return 1; } Direction::South => { return 2; } }; return 0; }");
+    run_semantic_case("enum Direction { North } fn code(d: Direction): int { match d { Direction::South => { return 1; } }; return 0; }");
+    run_semantic_case("choice OptionInt { Some(int), None } fn get(o: OptionInt): int { match o { OptionInt::Some(v) => { return v; } OptionInt::None => { return 0; } }; return 0; }");
+    run_semantic_case("choice OptionInt { Some(int), None } fn get(o: OptionInt): int { match o { OptionInt::Some => { return 1; } OptionInt::None(v) => { return v; } }; return 0; }");
     return 0;
 }

@@ -9,7 +9,11 @@ export struct SemanticError {
 
 export struct Summary {
     function_count: int;
+    struct_count: int;
+    enum_count: int;
+    choice_count: int;
     duplicate_function_count: int;
+    duplicate_type_count: int;
     duplicate_param_count: int;
     duplicate_local_count: int;
     unknown_variable_count: int;
@@ -18,6 +22,11 @@ export struct Summary {
     wrong_arg_count_count: int;
     type_mismatch_count: int;
     bad_condition_count: int;
+    unknown_type_count: int;
+    unknown_field_count: int;
+    bad_member_base_count: int;
+    missing_field_count: int;
+    duplicate_field_init_count: int;
 }
 
 fn type_unknown(): int { return 0; }
@@ -33,7 +42,11 @@ export fn make_error(kind: int, start: int, end: int): SemanticError {
 export fn make_empty_summary(): Summary {
     return Summary {
         function_count: 0,
+        struct_count: 0,
+        enum_count: 0,
+        choice_count: 0,
         duplicate_function_count: 0,
+        duplicate_type_count: 0,
         duplicate_param_count: 0,
         duplicate_local_count: 0,
         unknown_variable_count: 0,
@@ -41,8 +54,326 @@ export fn make_empty_summary(): Summary {
         bad_return_count: 0,
         wrong_arg_count_count: 0,
         type_mismatch_count: 0,
-        bad_condition_count: 0
+        bad_condition_count: 0,
+        unknown_type_count: 0,
+        unknown_field_count: 0,
+        bad_member_base_count: 0,
+        missing_field_count: 0,
+        duplicate_field_init_count: 0
     };
+}
+
+fn find_field_type(
+    source: []char,
+    arena: ast::Arena,
+    struct_ids: @int?,
+    struct_count: int,
+    struct_type: int,
+    member_name: span::Span,
+    struct_names: @span::Span?,
+    errors: @array::Array<SemanticError>,
+    summary: @Summary
+): int {
+    if struct_type < 1000 or struct_ids == null {
+        errors.push(make_error(13, member_name.start, member_name.end));
+        (*summary).bad_member_base_count = (*summary).bad_member_base_count + 1;
+        return type_unknown();
+    }
+    var struct_index = struct_type - 1000;
+    if struct_index < 0 or struct_index >= struct_count {
+        errors.push(make_error(13, member_name.start, member_name.end));
+        (*summary).bad_member_base_count = (*summary).bad_member_base_count + 1;
+        return type_unknown();
+    }
+    var struct_info = arena.structs[struct_ids[struct_index]];
+    var i = 0;
+    while i < struct_info.field_len {
+        var field = arena.struct_fields[struct_info.field_start + i];
+        if name_equals(source, field.name_span, member_name) {
+            return resolve_type_ref(source, field.type_ref, struct_names, struct_count, null, 0, null, 0, errors, summary);
+        }
+        i = i + 1;
+    }
+    errors.push(make_error(12, member_name.start, member_name.end));
+    (*summary).unknown_field_count = (*summary).unknown_field_count + 1;
+    return type_unknown();
+}
+
+fn find_struct_field_index(source: []char, arena: ast::Arena, struct_id: int, member_name: span::Span): int {
+    var struct_info = arena.structs[struct_id];
+    var i = 0;
+    while i < struct_info.field_len {
+        var field = arena.struct_fields[struct_info.field_start + i];
+        if name_equals(source, field.name_span, member_name) {
+            return i;
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+fn find_enum_index(source: []char, enum_names: @span::Span?, enum_count: int, candidate: span::Span): int {
+    return find_name_index(source, enum_names, enum_count, candidate);
+}
+
+fn find_choice_index(source: []char, choice_names: @span::Span?, choice_count: int, candidate: span::Span): int {
+    return find_name_index(source, choice_names, choice_count, candidate);
+}
+
+fn find_enum_variant_index(source: []char, arena: ast::Arena, enum_id: int, variant_name: span::Span): int {
+    var enum_info = arena.enums[enum_id];
+    var i = 0;
+    while i < enum_info.variant_len {
+        var variant = arena.enum_variants[enum_info.variant_start + i];
+        if name_equals(source, variant.name_span, variant_name) {
+            return i;
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+fn find_choice_variant_index(source: []char, arena: ast::Arena, choice_id: int, variant_name: span::Span): int {
+    var choice_info = arena.choices[choice_id];
+    var i = 0;
+    while i < choice_info.variant_len {
+        var variant = arena.choice_variants[choice_info.variant_start + i];
+        if name_equals(source, variant.name_span, variant_name) {
+            return i;
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+fn infer_struct_constructor_type(
+    source: []char,
+    arena: ast::Arena,
+    expr: ast::Expr,
+    locals: @span::Span?,
+    depths: @int?,
+    local_types: @int?,
+    local_count: int,
+    fn_names: @span::Span?,
+    fn_ids: @int?,
+    fn_count: int,
+    struct_names: @span::Span?,
+    struct_ids: @int?,
+    struct_count: int,
+    enum_names: @span::Span?,
+    enum_ids: @int?,
+    enum_count: int,
+    choice_names: @span::Span?,
+    choice_ids: @int?,
+    choice_count: int,
+    depth: int,
+    errors: @array::Array<SemanticError>,
+    summary: @Summary
+): int {
+    var struct_index = find_struct_index(source, struct_names, struct_count, expr.callee_span);
+    if struct_index < 0 or struct_ids == null {
+        return type_unknown();
+    }
+
+    var struct_info = arena.structs[struct_ids[struct_index]];
+    if expr.child_len != struct_info.field_len {
+        errors.push(make_error(7, expr.span.start, expr.span.end));
+        (*summary).wrong_arg_count_count = (*summary).wrong_arg_count_count + 1;
+    }
+
+    var i = 0;
+    while i < expr.child_len {
+        var arg_type = infer_expr_type(
+            source,
+            arena,
+            arena.expr_refs[expr.child_start + i],
+            locals,
+            depths,
+            local_types,
+            local_count,
+            fn_names,
+            fn_ids,
+            fn_count,
+            struct_names,
+            struct_ids,
+            struct_count,
+            enum_names,
+            enum_ids,
+            enum_count,
+            choice_names,
+            choice_ids,
+            choice_count,
+            depth,
+            errors,
+            summary
+        );
+        if i < struct_info.field_len {
+            var field = arena.struct_fields[struct_info.field_start + i];
+            expect_type(
+                resolve_type_ref(source, field.type_ref, struct_names, struct_count, enum_names, enum_count, choice_names, choice_count, errors, summary),
+                arg_type,
+                8,
+                expr.span,
+                errors,
+                summary
+            );
+        }
+        i = i + 1;
+    }
+
+    return 1000 + struct_index;
+}
+
+fn infer_struct_literal_type(
+    source: []char,
+    arena: ast::Arena,
+    expr: ast::Expr,
+    locals: @span::Span?,
+    depths: @int?,
+    local_types: @int?,
+    local_count: int,
+    fn_names: @span::Span?,
+    fn_ids: @int?,
+    fn_count: int,
+    struct_names: @span::Span?,
+    struct_ids: @int?,
+    struct_count: int,
+    enum_names: @span::Span?,
+    enum_ids: @int?,
+    enum_count: int,
+    choice_names: @span::Span?,
+    choice_ids: @int?,
+    choice_count: int,
+    depth: int,
+    errors: @array::Array<SemanticError>,
+    summary: @Summary
+): int {
+    var struct_index = find_struct_index(source, struct_names, struct_count, expr.callee_span);
+    if struct_index < 0 or struct_ids == null {
+        errors.push(make_error(10, expr.callee_span.start, expr.callee_span.end));
+        (*summary).unknown_type_count = (*summary).unknown_type_count + 1;
+        return type_unknown();
+    }
+
+    var struct_id = struct_ids[struct_index];
+    var struct_info = arena.structs[struct_id];
+
+    var i = 0;
+    while i < expr.child_len {
+        var field_name = arena.name_refs[expr.name_ref_start + i];
+        var prev = 0;
+        while prev < i {
+            if name_equals(source, arena.name_refs[expr.name_ref_start + prev], field_name) {
+                errors.push(make_error(15, field_name.start, field_name.end));
+                (*summary).duplicate_field_init_count = (*summary).duplicate_field_init_count + 1;
+            }
+            prev = prev + 1;
+        }
+        var value_type = infer_expr_type(
+            source,
+            arena,
+            arena.expr_refs[expr.child_start + i],
+            locals,
+            depths,
+            local_types,
+            local_count,
+            fn_names,
+            fn_ids,
+            fn_count,
+            struct_names,
+            struct_ids,
+            struct_count,
+            enum_names,
+            enum_ids,
+            enum_count,
+            choice_names,
+            choice_ids,
+            choice_count,
+            depth,
+            errors,
+            summary
+        );
+        var field_index = find_struct_field_index(source, arena, struct_id, field_name);
+        if field_index < 0 {
+            errors.push(make_error(12, field_name.start, field_name.end));
+            (*summary).unknown_field_count = (*summary).unknown_field_count + 1;
+        } else {
+            var field = arena.struct_fields[struct_info.field_start + field_index];
+            var expected_type = resolve_type_ref(source, field.type_ref, struct_names, struct_count, enum_names, enum_count, choice_names, choice_count, errors, summary);
+            expect_type(expected_type, value_type, 8, field_name, errors, summary);
+        }
+        i = i + 1;
+    }
+
+    i = 0;
+    while i < struct_info.field_len {
+        var expected_name = arena.struct_fields[struct_info.field_start + i].name_span;
+        var seen = false;
+        var provided = 0;
+        while provided < expr.child_len {
+            if name_equals(source, arena.name_refs[expr.name_ref_start + provided], expected_name) {
+                seen = true;
+            }
+            provided = provided + 1;
+        }
+        if !seen {
+            errors.push(make_error(14, expected_name.start, expected_name.end));
+            (*summary).missing_field_count = (*summary).missing_field_count + 1;
+        }
+        i = i + 1;
+    }
+
+    return 1000 + struct_index;
+}
+
+fn find_struct_index(source: []char, struct_names: @span::Span?, struct_count: int, candidate: span::Span): int {
+    return find_name_index(source, struct_names, struct_count, candidate);
+}
+
+fn resolve_type_ref(
+    source: []char,
+    type_ref: ast::TypeRef,
+    struct_names: @span::Span?,
+    struct_count: int,
+    enum_names: @span::Span?,
+    enum_count: int,
+    choice_names: @span::Span?,
+    choice_count: int,
+    errors: @array::Array<SemanticError>,
+    summary: @Summary
+): int {
+    if type_ref.token_kind == 31 {
+        return type_int();
+    }
+    if type_ref.token_kind == 44 {
+        return type_bool();
+    }
+    if type_ref.token_kind == 45 {
+        return type_char();
+    }
+    if type_ref.token_kind == 6 {
+        var struct_index = find_struct_index(source, struct_names, struct_count, type_ref.name_span);
+        if struct_index >= 0 {
+            return 1000 + struct_index;
+        }
+        var enum_index = find_enum_index(source, enum_names, enum_count, type_ref.name_span);
+        if enum_index >= 0 {
+            return 2000 + enum_index;
+        }
+        var choice_index = find_choice_index(source, choice_names, choice_count, type_ref.name_span);
+        if choice_index >= 0 {
+            return 3000 + choice_index;
+        }
+        errors.push(make_error(10, type_ref.name_span.start, type_ref.name_span.end));
+        (*summary).unknown_type_count = (*summary).unknown_type_count + 1;
+        return type_unknown();
+    }
+    if type_ref.token_kind == 0 {
+        return type_unknown();
+    }
+    errors.push(make_error(10, type_ref.name_span.start, type_ref.name_span.end));
+    (*summary).unknown_type_count = (*summary).unknown_type_count + 1;
+    return type_unknown();
 }
 
 fn name_equals(source: []char, left: span::Span, right: span::Span): bool {
@@ -147,6 +478,15 @@ fn infer_expr_type(
     fn_names: @span::Span?,
     fn_ids: @int?,
     fn_count: int,
+    struct_names: @span::Span?,
+    struct_ids: @int?,
+    struct_count: int,
+    enum_names: @span::Span?,
+    enum_ids: @int?,
+    enum_count: int,
+    choice_names: @span::Span?,
+    choice_ids: @int?,
+    choice_count: int,
     depth: int,
     errors: @array::Array<SemanticError>,
     summary: @Summary
@@ -185,6 +525,103 @@ fn infer_expr_type(
         return type_string_literal();
     }
 
+    if expr.kind == 9 {
+        if expr.child_len == 0 {
+            return type_unknown();
+        }
+        var base_type = infer_expr_type(
+            source,
+            arena,
+            arena.expr_refs[expr.child_start],
+            locals,
+            depths,
+            local_types,
+            local_count,
+            fn_names,
+            fn_ids,
+            fn_count,
+            struct_names,
+            struct_ids,
+            struct_count,
+            enum_names,
+            enum_ids,
+            enum_count,
+            choice_names,
+            choice_ids,
+            choice_count,
+            depth,
+            errors,
+            summary
+        );
+        return find_field_type(source, arena, struct_ids, struct_count, base_type, expr.name_span, struct_names, errors, summary);
+    }
+
+    if expr.kind == 10 {
+        return infer_struct_literal_type(
+            source,
+            arena,
+            expr,
+            locals,
+            depths,
+            local_types,
+            local_count,
+            fn_names,
+            fn_ids,
+            fn_count,
+            struct_names,
+            struct_ids,
+            struct_count,
+            enum_names,
+            enum_ids,
+            enum_count,
+            choice_names,
+            choice_ids,
+            choice_count,
+            depth,
+            errors,
+            summary
+        );
+    }
+
+    if expr.kind == 11 {
+        var enum_index = find_enum_index(source, enum_names, enum_count, expr.callee_span);
+        if enum_index >= 0 and enum_ids != null {
+            if expr.child_len != 0 {
+                errors.push(make_error(7, expr.span.start, expr.span.end));
+                (*summary).wrong_arg_count_count = (*summary).wrong_arg_count_count + 1;
+            }
+            if find_enum_variant_index(source, arena, enum_ids[enum_index], expr.name_span) < 0 {
+                errors.push(make_error(16, expr.name_span.start, expr.name_span.end));
+                (*summary).unknown_field_count = (*summary).unknown_field_count + 1;
+            }
+            return 2000 + enum_index;
+        }
+        var choice_index = find_choice_index(source, choice_names, choice_count, expr.callee_span);
+        if choice_index >= 0 and choice_ids != null {
+            var variant_index = find_choice_variant_index(source, arena, choice_ids[choice_index], expr.name_span);
+            if variant_index < 0 {
+                errors.push(make_error(16, expr.name_span.start, expr.name_span.end));
+                (*summary).unknown_field_count = (*summary).unknown_field_count + 1;
+                return 3000 + choice_index;
+            }
+            var choice_info = arena.choices[choice_ids[choice_index]];
+            var variant = arena.choice_variants[choice_info.variant_start + variant_index];
+            if variant.has_payload {
+                if expr.child_len != 1 {
+                    errors.push(make_error(7, expr.span.start, expr.span.end));
+                    (*summary).wrong_arg_count_count = (*summary).wrong_arg_count_count + 1;
+                } else {
+                    var payload_type = infer_expr_type(source, arena, arena.expr_refs[expr.child_start], locals, depths, local_types, local_count, fn_names, fn_ids, fn_count, struct_names, struct_ids, struct_count, enum_names, enum_ids, enum_count, choice_names, choice_ids, choice_count, depth, errors, summary);
+                    expect_type(resolve_type_ref(source, variant.payload_type_ref, struct_names, struct_count, enum_names, enum_count, choice_names, choice_count, errors, summary), payload_type, 8, expr.span, errors, summary);
+                }
+            } else if expr.child_len != 0 {
+                errors.push(make_error(7, expr.span.start, expr.span.end));
+                (*summary).wrong_arg_count_count = (*summary).wrong_arg_count_count + 1;
+            }
+            return 3000 + choice_index;
+        }
+    }
+
     if expr.kind == 4 {
         if expr.child_len == 0 {
             return type_unknown();
@@ -200,6 +637,15 @@ fn infer_expr_type(
             fn_names,
             fn_ids,
             fn_count,
+            struct_names,
+            struct_ids,
+            struct_count,
+            enum_names,
+            enum_ids,
+            enum_count,
+            choice_names,
+            choice_ids,
+            choice_count,
             depth,
             errors,
             summary
@@ -210,10 +656,10 @@ fn infer_expr_type(
         var lhs_type = type_unknown();
         var rhs_type = type_unknown();
         if expr.child_len > 0 {
-            lhs_type = infer_expr_type(source, arena, arena.expr_refs[expr.child_start], locals, depths, local_types, local_count, fn_names, fn_ids, fn_count, depth, errors, summary);
+            lhs_type = infer_expr_type(source, arena, arena.expr_refs[expr.child_start], locals, depths, local_types, local_count, fn_names, fn_ids, fn_count, struct_names, struct_ids, struct_count, enum_names, enum_ids, enum_count, choice_names, choice_ids, choice_count, depth, errors, summary);
         }
         if expr.child_len > 1 {
-            rhs_type = infer_expr_type(source, arena, arena.expr_refs[expr.child_start + 1], locals, depths, local_types, local_count, fn_names, fn_ids, fn_count, depth, errors, summary);
+            rhs_type = infer_expr_type(source, arena, arena.expr_refs[expr.child_start + 1], locals, depths, local_types, local_count, fn_names, fn_ids, fn_count, struct_names, struct_ids, struct_count, enum_names, enum_ids, enum_count, choice_names, choice_ids, choice_count, depth, errors, summary);
         }
         if expr.op_kind == 46 or expr.op_kind == 47 or expr.op_kind == 48 or expr.op_kind == 49 {
             expect_type(type_int(), lhs_type, 8, expr.span, errors, summary);
@@ -239,10 +685,37 @@ fn infer_expr_type(
         var fn_index = find_function_index(source, fn_names, fn_count, expr.callee_span);
         var i = 0;
         if fn_index < 0 or fn_ids == null {
+            var ctor_type = infer_struct_constructor_type(
+                source,
+                arena,
+                expr,
+                locals,
+                depths,
+                local_types,
+                local_count,
+                fn_names,
+                fn_ids,
+                fn_count,
+                struct_names,
+                struct_ids,
+                struct_count,
+                enum_names,
+                enum_ids,
+                enum_count,
+                choice_names,
+                choice_ids,
+                choice_count,
+                depth,
+                errors,
+                summary
+            );
+            if ctor_type != type_unknown() {
+                return ctor_type;
+            }
             errors.push(make_error(5, expr.callee_span.start, expr.callee_span.end));
             (*summary).unknown_function_count = (*summary).unknown_function_count + 1;
             while i < expr.child_len {
-                infer_expr_type(source, arena, arena.expr_refs[expr.child_start + i], locals, depths, local_types, local_count, fn_names, fn_ids, fn_count, depth, errors, summary);
+                infer_expr_type(source, arena, arena.expr_refs[expr.child_start + i], locals, depths, local_types, local_count, fn_names, fn_ids, fn_count, struct_names, struct_ids, struct_count, enum_names, enum_ids, enum_count, choice_names, choice_ids, choice_count, depth, errors, summary);
                 i = i + 1;
             }
             return type_unknown();
@@ -255,23 +728,105 @@ fn infer_expr_type(
         }
 
         while i < expr.child_len {
-            var arg_type = infer_expr_type(source, arena, arena.expr_refs[expr.child_start + i], locals, depths, local_types, local_count, fn_names, fn_ids, fn_count, depth, errors, summary);
+            var arg_type = infer_expr_type(source, arena, arena.expr_refs[expr.child_start + i], locals, depths, local_types, local_count, fn_names, fn_ids, fn_count, struct_names, struct_ids, struct_count, enum_names, enum_ids, enum_count, choice_names, choice_ids, choice_count, depth, errors, summary);
             if i < function_info.param_len {
                 var param = arena.params[function_info.param_start + i];
                 if param.has_type_hint {
-                    expect_type(param.type_token_kind, arg_type, 8, expr.span, errors, summary);
+                    expect_type(resolve_type_ref(source, param.type_ref, struct_names, struct_count, enum_names, enum_count, choice_names, choice_count, errors, summary), arg_type, 8, expr.span, errors, summary);
                 }
             }
             i = i + 1;
         }
 
         if function_info.has_return_type {
-            return function_info.return_type_kind;
+            return resolve_type_ref(source, function_info.return_type_ref, struct_names, struct_count, enum_names, enum_count, choice_names, choice_count, errors, summary);
         }
         return type_unknown();
     }
 
     return type_unknown();
+}
+
+fn analyze_match_stmt(
+    source: []char,
+    arena: ast::Arena,
+    match_stmt: ast::MatchStmt,
+    locals: @array::Array<span::Span>,
+    local_depths: @array::Array<int>,
+    local_types: @array::Array<int>,
+    fn_names: @span::Span?,
+    fn_ids: @int?,
+    fn_count: int,
+    struct_names: @span::Span?,
+    struct_ids: @int?,
+    struct_count: int,
+    enum_names: @span::Span?,
+    enum_ids: @int?,
+    enum_count: int,
+    choice_names: @span::Span?,
+    choice_ids: @int?,
+    choice_count: int,
+    depth: int,
+    has_return_type: bool,
+    return_type_kind: int,
+    errors: @array::Array<SemanticError>,
+    summary: @Summary
+) {
+    var target_type = infer_expr_type(source, arena, match_stmt.value_expr_id, locals.data, local_depths.data, local_types.data, locals.len, fn_names, fn_ids, fn_count, struct_names, struct_ids, struct_count, enum_names, enum_ids, enum_count, choice_names, choice_ids, choice_count, depth, errors, summary);
+    var arm_depth = depth + 1;
+    var i = 0;
+    while i < match_stmt.arm_len {
+        var arm = arena.match_arms[match_stmt.arm_start + i];
+        var arm_type_ref = ast::make_type_ref(6, arm.type_span.start, arm.type_span.end);
+        var arm_type = resolve_type_ref(source, arm_type_ref, struct_names, struct_count, enum_names, enum_count, choice_names, choice_count, errors, summary);
+        expect_type(target_type, arm_type, 8, arm.type_span, errors, summary);
+
+        var before_locals = (*locals).len;
+        var before_depths = (*local_depths).len;
+        var before_types = (*local_types).len;
+
+        if arm_type >= 2000 and arm_type < 3000 and enum_ids != null {
+            var enum_index = arm_type - 2000;
+            if enum_index >= 0 and enum_index < enum_count {
+                if find_enum_variant_index(source, arena, enum_ids[enum_index], arm.variant_span) < 0 {
+                    errors.push(make_error(16, arm.variant_span.start, arm.variant_span.end));
+                    (*summary).unknown_field_count = (*summary).unknown_field_count + 1;
+                }
+                if arm.has_binding {
+                    errors.push(make_error(7, arm.binding_span.start, arm.binding_span.end));
+                    (*summary).wrong_arg_count_count = (*summary).wrong_arg_count_count + 1;
+                }
+            }
+        } else if arm_type >= 3000 and choice_ids != null {
+            var choice_index = arm_type - 3000;
+            if choice_index >= 0 and choice_index < choice_count {
+                var variant_index = find_choice_variant_index(source, arena, choice_ids[choice_index], arm.variant_span);
+                if variant_index < 0 {
+                    errors.push(make_error(16, arm.variant_span.start, arm.variant_span.end));
+                    (*summary).unknown_field_count = (*summary).unknown_field_count + 1;
+                } else {
+                    var choice_info = arena.choices[choice_ids[choice_index]];
+                    var variant = arena.choice_variants[choice_info.variant_start + variant_index];
+                    if variant.has_payload {
+                        if arm.has_binding {
+                            var binding_type = resolve_type_ref(source, variant.payload_type_ref, struct_names, struct_count, enum_names, enum_count, choice_names, choice_count, errors, summary);
+                            record_name(locals, local_depths, local_types, arm.binding_span, arm_depth, binding_type);
+                        }
+                    } else if arm.has_binding {
+                        errors.push(make_error(7, arm.binding_span.start, arm.binding_span.end));
+                        (*summary).wrong_arg_count_count = (*summary).wrong_arg_count_count + 1;
+                    }
+                }
+            }
+        }
+
+        analyze_block(source, arena, arm.block_id, locals, local_depths, local_types, fn_names, fn_ids, fn_count, struct_names, struct_ids, struct_count, enum_names, enum_ids, enum_count, choice_names, choice_ids, choice_count, arm_depth, has_return_type, return_type_kind, errors, summary);
+
+        (*locals).len = before_locals;
+        (*local_depths).len = before_depths;
+        (*local_types).len = before_types;
+        i = i + 1;
+    }
 }
 
 fn analyze_block(
@@ -284,6 +839,15 @@ fn analyze_block(
     fn_names: @span::Span?,
     fn_ids: @int?,
     fn_count: int,
+    struct_names: @span::Span?,
+    struct_ids: @int?,
+    struct_count: int,
+    enum_names: @span::Span?,
+    enum_ids: @int?,
+    enum_count: int,
+    choice_names: @span::Span?,
+    choice_ids: @int?,
+    choice_count: int,
     depth: int,
     has_return_type: bool,
     return_type_kind: int,
@@ -305,13 +869,13 @@ fn analyze_block(
             } else {
                 var local_type = type_unknown();
                 if stmt.var_decl.has_init {
-                    local_type = infer_expr_type(source, arena, stmt.var_decl.init_expr_id, locals.data, local_depths.data, local_types.data, locals.len, fn_names, fn_ids, fn_count, depth, errors, summary);
+                    local_type = infer_expr_type(source, arena, stmt.var_decl.init_expr_id, locals.data, local_depths.data, local_types.data, locals.len, fn_names, fn_ids, fn_count, struct_names, struct_ids, struct_count, enum_names, enum_ids, enum_count, choice_names, choice_ids, choice_count, depth, errors, summary);
                 }
                 if stmt.var_decl.has_type_hint {
                     if stmt.var_decl.has_init {
-                        expect_type(stmt.var_decl.type_token_kind, local_type, 8, stmt.var_decl.span, errors, summary);
+                        expect_type(resolve_type_ref(source, stmt.var_decl.type_ref, struct_names, struct_count, enum_names, enum_count, choice_names, choice_count, errors, summary), local_type, 8, stmt.var_decl.span, errors, summary);
                     }
-                    local_type = stmt.var_decl.type_token_kind;
+                    local_type = resolve_type_ref(source, stmt.var_decl.type_ref, struct_names, struct_count, enum_names, enum_count, choice_names, choice_count, errors, summary);
                 }
                 record_name(locals, local_depths, local_types, stmt.var_decl.name_span, depth, local_type);
             }
@@ -320,16 +884,16 @@ fn analyze_block(
                 errors.push(make_error(2, stmt.const_decl.name_span.start, stmt.const_decl.name_span.end));
                 (*summary).duplicate_local_count = (*summary).duplicate_local_count + 1;
             } else {
-                var const_type = infer_expr_type(source, arena, stmt.const_decl.init_expr_id, locals.data, local_depths.data, local_types.data, locals.len, fn_names, fn_ids, fn_count, depth, errors, summary);
+                var const_type = infer_expr_type(source, arena, stmt.const_decl.init_expr_id, locals.data, local_depths.data, local_types.data, locals.len, fn_names, fn_ids, fn_count, struct_names, struct_ids, struct_count, enum_names, enum_ids, enum_count, choice_names, choice_ids, choice_count, depth, errors, summary);
                 if stmt.const_decl.has_type_hint {
-                    expect_type(stmt.const_decl.type_token_kind, const_type, 8, stmt.const_decl.span, errors, summary);
-                    const_type = stmt.const_decl.type_token_kind;
+                    expect_type(resolve_type_ref(source, stmt.const_decl.type_ref, struct_names, struct_count, enum_names, enum_count, choice_names, choice_count, errors, summary), const_type, 8, stmt.const_decl.span, errors, summary);
+                    const_type = resolve_type_ref(source, stmt.const_decl.type_ref, struct_names, struct_count, enum_names, enum_count, choice_names, choice_count, errors, summary);
                 }
                 record_name(locals, local_depths, local_types, stmt.const_decl.name_span, depth, const_type);
             }
         } else if stmt.kind == 3 {
             var target_index = find_visible_name_index(source, locals.data, local_depths.data, locals.len, stmt.assign_stmt.target_name_span, depth);
-            var value_type = infer_expr_type(source, arena, stmt.assign_stmt.value_expr_id, locals.data, local_depths.data, local_types.data, locals.len, fn_names, fn_ids, fn_count, depth, errors, summary);
+            var value_type = infer_expr_type(source, arena, stmt.assign_stmt.value_expr_id, locals.data, local_depths.data, local_types.data, locals.len, fn_names, fn_ids, fn_count, struct_names, struct_ids, struct_count, enum_names, enum_ids, enum_count, choice_names, choice_ids, choice_count, depth, errors, summary);
             if target_index < 0 {
                 errors.push(make_error(4, stmt.assign_stmt.target_name_span.start, stmt.assign_stmt.target_name_span.end));
                 (*summary).unknown_variable_count = (*summary).unknown_variable_count + 1;
@@ -337,27 +901,29 @@ fn analyze_block(
                 expect_type(local_types[target_index], value_type, 8, stmt.assign_stmt.span, errors, summary);
             }
         } else if stmt.kind == 4 {
-            analyze_block(source, arena, stmt.block_id, locals, local_depths, local_types, fn_names, fn_ids, fn_count, depth + 1, has_return_type, return_type_kind, errors, summary);
+            analyze_block(source, arena, stmt.block_id, locals, local_depths, local_types, fn_names, fn_ids, fn_count, struct_names, struct_ids, struct_count, enum_names, enum_ids, enum_count, choice_names, choice_ids, choice_count, depth + 1, has_return_type, return_type_kind, errors, summary);
         } else if stmt.kind == 5 {
-            var if_type = infer_expr_type(source, arena, stmt.if_stmt.condition_expr_id, locals.data, local_depths.data, local_types.data, locals.len, fn_names, fn_ids, fn_count, depth, errors, summary);
+            var if_type = infer_expr_type(source, arena, stmt.if_stmt.condition_expr_id, locals.data, local_depths.data, local_types.data, locals.len, fn_names, fn_ids, fn_count, struct_names, struct_ids, struct_count, enum_names, enum_ids, enum_count, choice_names, choice_ids, choice_count, depth, errors, summary);
             if !compatible_type(type_bool(), if_type) {
                 errors.push(make_error(9, stmt.if_stmt.span.start, stmt.if_stmt.span.end));
                 (*summary).bad_condition_count = (*summary).bad_condition_count + 1;
             }
-            analyze_block(source, arena, stmt.if_stmt.then_block_id, locals, local_depths, local_types, fn_names, fn_ids, fn_count, depth + 1, has_return_type, return_type_kind, errors, summary);
+            analyze_block(source, arena, stmt.if_stmt.then_block_id, locals, local_depths, local_types, fn_names, fn_ids, fn_count, struct_names, struct_ids, struct_count, enum_names, enum_ids, enum_count, choice_names, choice_ids, choice_count, depth + 1, has_return_type, return_type_kind, errors, summary);
             if stmt.if_stmt.has_else_block {
-                analyze_block(source, arena, stmt.if_stmt.else_block_id, locals, local_depths, local_types, fn_names, fn_ids, fn_count, depth + 1, has_return_type, return_type_kind, errors, summary);
+                analyze_block(source, arena, stmt.if_stmt.else_block_id, locals, local_depths, local_types, fn_names, fn_ids, fn_count, struct_names, struct_ids, struct_count, enum_names, enum_ids, enum_count, choice_names, choice_ids, choice_count, depth + 1, has_return_type, return_type_kind, errors, summary);
             }
         } else if stmt.kind == 6 {
-            var while_type = infer_expr_type(source, arena, stmt.while_stmt.condition_expr_id, locals.data, local_depths.data, local_types.data, locals.len, fn_names, fn_ids, fn_count, depth, errors, summary);
+            var while_type = infer_expr_type(source, arena, stmt.while_stmt.condition_expr_id, locals.data, local_depths.data, local_types.data, locals.len, fn_names, fn_ids, fn_count, struct_names, struct_ids, struct_count, enum_names, enum_ids, enum_count, choice_names, choice_ids, choice_count, depth, errors, summary);
             if !compatible_type(type_bool(), while_type) {
                 errors.push(make_error(9, stmt.while_stmt.span.start, stmt.while_stmt.span.end));
                 (*summary).bad_condition_count = (*summary).bad_condition_count + 1;
             }
-            analyze_block(source, arena, stmt.while_stmt.body_block_id, locals, local_depths, local_types, fn_names, fn_ids, fn_count, depth + 1, has_return_type, return_type_kind, errors, summary);
+            analyze_block(source, arena, stmt.while_stmt.body_block_id, locals, local_depths, local_types, fn_names, fn_ids, fn_count, struct_names, struct_ids, struct_count, enum_names, enum_ids, enum_count, choice_names, choice_ids, choice_count, depth + 1, has_return_type, return_type_kind, errors, summary);
+        } else if stmt.kind == 11 {
+            analyze_match_stmt(source, arena, stmt.match_stmt, locals, local_depths, local_types, fn_names, fn_ids, fn_count, struct_names, struct_ids, struct_count, enum_names, enum_ids, enum_count, choice_names, choice_ids, choice_count, depth, has_return_type, return_type_kind, errors, summary);
         } else if stmt.kind == 9 {
             if stmt.return_stmt.has_value {
-                var return_type = infer_expr_type(source, arena, stmt.return_stmt.value_expr_id, locals.data, local_depths.data, local_types.data, locals.len, fn_names, fn_ids, fn_count, depth, errors, summary);
+                var return_type = infer_expr_type(source, arena, stmt.return_stmt.value_expr_id, locals.data, local_depths.data, local_types.data, locals.len, fn_names, fn_ids, fn_count, struct_names, struct_ids, struct_count, enum_names, enum_ids, enum_count, choice_names, choice_ids, choice_count, depth, errors, summary);
                 if !has_return_type {
                     errors.push(make_error(6, stmt.return_stmt.span.start, stmt.return_stmt.span.end));
                     (*summary).bad_return_count = (*summary).bad_return_count + 1;
@@ -370,7 +936,7 @@ fn analyze_block(
                 (*summary).bad_return_count = (*summary).bad_return_count + 1;
             }
         } else if stmt.kind == 10 {
-            infer_expr_type(source, arena, stmt.expr_id, locals.data, local_depths.data, local_types.data, locals.len, fn_names, fn_ids, fn_count, depth, errors, summary);
+            infer_expr_type(source, arena, stmt.expr_id, locals.data, local_depths.data, local_types.data, locals.len, fn_names, fn_ids, fn_count, struct_names, struct_ids, struct_count, enum_names, enum_ids, enum_count, choice_names, choice_ids, choice_count, depth, errors, summary);
         }
         i = i + 1;
     }
@@ -381,6 +947,12 @@ export fn analyze_file(source: []char, arena: ast::Arena, file_info: ast::FileIn
 
     var fn_names: array::Array<span::Span> = array::Array();
     var fn_ids: array::Array<int> = array::Array();
+    var struct_names: array::Array<span::Span> = array::Array();
+    var struct_ids: array::Array<int> = array::Array();
+    var enum_names: array::Array<span::Span> = array::Array();
+    var enum_ids: array::Array<int> = array::Array();
+    var choice_names: array::Array<span::Span> = array::Array();
+    var choice_ids: array::Array<int> = array::Array();
 
     var i = 0;
     while i < file_info.item_len {
@@ -395,6 +967,48 @@ export fn analyze_file(source: []char, arena: ast::Arena, file_info: ast::FileIn
                 fn_names.push(function_info.name_span);
                 fn_ids.push(item.function_id);
             }
+        } else if item.kind == 2 {
+            (*summary).struct_count = (*summary).struct_count + 1;
+            var struct_info = arena.structs[item.struct_id];
+            if find_name_index(source, struct_names.data, struct_names.len, struct_info.name_span) >= 0 {
+                errors.push(make_error(11, struct_info.name_span.start, struct_info.name_span.end));
+                (*summary).duplicate_type_count = (*summary).duplicate_type_count + 1;
+            } else {
+                struct_names.push(struct_info.name_span);
+                struct_ids.push(item.struct_id);
+            }
+        } else if item.kind == 3 {
+            (*summary).enum_count = (*summary).enum_count + 1;
+            var enum_info = arena.enums[item.enum_id];
+            if find_name_index(source, enum_names.data, enum_names.len, enum_info.name_span) >= 0 {
+                errors.push(make_error(11, enum_info.name_span.start, enum_info.name_span.end));
+                (*summary).duplicate_type_count = (*summary).duplicate_type_count + 1;
+            } else {
+                enum_names.push(enum_info.name_span);
+                enum_ids.push(item.enum_id);
+            }
+        } else if item.kind == 4 {
+            (*summary).choice_count = (*summary).choice_count + 1;
+            var choice_info = arena.choices[item.choice_id];
+            if find_name_index(source, choice_names.data, choice_names.len, choice_info.name_span) >= 0 {
+                errors.push(make_error(11, choice_info.name_span.start, choice_info.name_span.end));
+                (*summary).duplicate_type_count = (*summary).duplicate_type_count + 1;
+            } else {
+                choice_names.push(choice_info.name_span);
+                choice_ids.push(item.choice_id);
+            }
+        }
+        i = i + 1;
+    }
+
+    i = 0;
+    while i < struct_ids.len {
+        var struct_info = arena.structs[struct_ids[i]];
+        var f = 0;
+        while f < struct_info.field_len {
+            var field = arena.struct_fields[struct_info.field_start + f];
+            resolve_type_ref(source, field.type_ref, struct_names.data, struct_names.len, enum_names.data, enum_names.len, choice_names.data, choice_names.len, errors, summary);
+            f = f + 1;
         }
         i = i + 1;
     }
@@ -416,7 +1030,7 @@ export fn analyze_file(source: []char, arena: ast::Arena, file_info: ast::FileIn
                 } else {
                     var param_type = type_unknown();
                     if param.has_type_hint {
-                        param_type = param.type_token_kind;
+                        param_type = resolve_type_ref(source, param.type_ref, struct_names.data, struct_names.len, enum_names.data, enum_names.len, choice_names.data, choice_names.len, errors, summary);
                     }
                     record_name(@locals, @local_depths, @local_types, param.name_span, 1, param_type);
                 }
@@ -432,9 +1046,18 @@ export fn analyze_file(source: []char, arena: ast::Arena, file_info: ast::FileIn
                 fn_names.data,
                 fn_ids.data,
                 fn_names.len,
+                struct_names.data,
+                struct_ids.data,
+                struct_names.len,
+                enum_names.data,
+                enum_ids.data,
+                enum_names.len,
+                choice_names.data,
+                choice_ids.data,
+                choice_names.len,
                 1,
                 function_info.has_return_type,
-                function_info.return_type_kind,
+                resolve_type_ref(source, function_info.return_type_ref, struct_names.data, struct_names.len, enum_names.data, enum_names.len, choice_names.data, choice_names.len, errors, summary),
                 errors,
                 summary
             );

@@ -6,15 +6,28 @@ export struct ParseError {
     span: span::Span;
 }
 
+export struct TypeRef {
+    token_kind: int;
+    has_qualifier: bool;
+    qualifier_span: span::Span;
+    name_span: span::Span;
+}
+
+export struct ImportInfo {
+    name_span: span::Span;
+    span: span::Span;
+}
+
 export struct ParamInfo {
     name_span: span::Span;
     has_type_hint: bool;
-    type_token_kind: int;
+    type_ref: TypeRef;
 }
 
 export struct Expr {
     kind: int;
     name_span: span::Span;
+    name_ref_start: int;
     int_value: int;
     bool_value: bool;
     char_value: char;
@@ -28,7 +41,7 @@ export struct Expr {
 export struct VarDecl {
     name_span: span::Span;
     has_type_hint: bool;
-    type_token_kind: int;
+    type_ref: TypeRef;
     has_init: bool;
     init_expr_id: int;
     span: span::Span;
@@ -37,7 +50,7 @@ export struct VarDecl {
 export struct ConstDecl {
     name_span: span::Span;
     has_type_hint: bool;
-    type_token_kind: int;
+    type_ref: TypeRef;
     init_expr_id: int;
     span: span::Span;
 }
@@ -68,9 +81,43 @@ export struct WhileStmt {
     span: span::Span;
 }
 
+export struct MatchArm {
+    type_span: span::Span;
+    variant_span: span::Span;
+    has_binding: bool;
+    binding_span: span::Span;
+    block_id: int;
+    span: span::Span;
+}
+
+export struct MatchStmt {
+    value_expr_id: int;
+    arm_start: int;
+    arm_len: int;
+    span: span::Span;
+}
+
 export struct ReturnStmt {
     has_value: bool;
     value_expr_id: int;
+    span: span::Span;
+}
+
+export struct StructField {
+    name_span: span::Span;
+    type_ref: TypeRef;
+    span: span::Span;
+}
+
+export struct EnumVariant {
+    name_span: span::Span;
+    span: span::Span;
+}
+
+export struct ChoiceVariant {
+    name_span: span::Span;
+    has_payload: bool;
+    payload_type_ref: TypeRef;
     span: span::Span;
 }
 
@@ -83,6 +130,7 @@ export struct Stmt {
     block_id: int;
     if_stmt: IfStmt;
     while_stmt: WhileStmt;
+    match_stmt: MatchStmt;
     return_stmt: ReturnStmt;
     span: span::Span;
 }
@@ -92,14 +140,39 @@ export struct FunctionInfo {
     param_start: int;
     param_len: int;
     has_return_type: bool;
-    return_type_kind: int;
+    return_type_ref: TypeRef;
     body_block_id: int;
+    span: span::Span;
+}
+
+export struct StructInfo {
+    name_span: span::Span;
+    field_start: int;
+    field_len: int;
+    span: span::Span;
+}
+
+export struct EnumInfo {
+    name_span: span::Span;
+    variant_start: int;
+    variant_len: int;
+    span: span::Span;
+}
+
+export struct ChoiceInfo {
+    name_span: span::Span;
+    variant_start: int;
+    variant_len: int;
     span: span::Span;
 }
 
 export struct Item {
     kind: int;
     function_id: int;
+    struct_id: int;
+    enum_id: int;
+    choice_id: int;
+    import_id: int;
     span: span::Span;
 }
 
@@ -112,11 +185,20 @@ export struct FileInfo {
 export struct Arena {
     exprs: array::Array<Expr>;
     expr_refs: array::Array<int>;
+    name_refs: array::Array<span::Span>;
     stmts: array::Array<Stmt>;
     stmt_refs: array::Array<int>;
     blocks: array::Array<BlockNode>;
     params: array::Array<ParamInfo>;
+    struct_fields: array::Array<StructField>;
+    enum_variants: array::Array<EnumVariant>;
+    choice_variants: array::Array<ChoiceVariant>;
+    match_arms: array::Array<MatchArm>;
     functions: array::Array<FunctionInfo>;
+    structs: array::Array<StructInfo>;
+    enums: array::Array<EnumInfo>;
+    choices: array::Array<ChoiceInfo>;
+    imports: array::Array<ImportInfo>;
     items: array::Array<Item>;
 }
 
@@ -124,15 +206,65 @@ export fn make_parse_error(kind: int, start: int, end: int): ParseError {
     return ParseError { kind: kind, span: span::make(start, end) };
 }
 
+export fn make_empty_type_ref(): TypeRef {
+    return TypeRef {
+        token_kind: 0,
+        has_qualifier: false,
+        qualifier_span: span::make(0, 0),
+        name_span: span::make(0, 0)
+    };
+}
+
+export fn make_type_ref(token_kind: int, start: int, end: int): TypeRef {
+    return TypeRef {
+        token_kind: token_kind,
+        has_qualifier: false,
+        qualifier_span: span::make(0, 0),
+        name_span: span::make(start, end)
+    };
+}
+
+export fn make_qualified_type_ref(token_kind: int, qualifier_start: int, qualifier_end: int, start: int, end: int): TypeRef {
+    return TypeRef {
+        token_kind: token_kind,
+        has_qualifier: true,
+        qualifier_span: span::make(qualifier_start, qualifier_end),
+        name_span: span::make(start, end)
+    };
+}
+
+export fn make_empty_import_info(): ImportInfo {
+    return ImportInfo {
+        name_span: span::make(0, 0),
+        span: span::make(0, 0)
+    };
+}
+
+export fn make_import_info(name_start: int, name_end: int, start: int, end: int): ImportInfo {
+    return ImportInfo {
+        name_span: span::make(name_start, name_end),
+        span: span::make(start, end)
+    };
+}
+
 export fn make_empty_arena(): Arena {
     return Arena {
         exprs: array::Array(),
         expr_refs: array::Array(),
+        name_refs: array::Array(),
         stmts: array::Array(),
         stmt_refs: array::Array(),
         blocks: array::Array(),
         params: array::Array(),
+        struct_fields: array::Array(),
+        enum_variants: array::Array(),
+        choice_variants: array::Array(),
+        match_arms: array::Array(),
         functions: array::Array(),
+        structs: array::Array(),
+        enums: array::Array(),
+        choices: array::Array(),
+        imports: array::Array(),
         items: array::Array()
     };
 }
@@ -161,9 +293,57 @@ export fn push_param(arena: @Arena, param: ParamInfo): int {
     return id;
 }
 
+export fn push_struct_field(arena: @Arena, field: StructField): int {
+    var id = (*arena).struct_fields.len;
+    (*arena).struct_fields.push(field);
+    return id;
+}
+
+export fn push_enum_variant(arena: @Arena, variant: EnumVariant): int {
+    var id = (*arena).enum_variants.len;
+    (*arena).enum_variants.push(variant);
+    return id;
+}
+
+export fn push_choice_variant(arena: @Arena, variant: ChoiceVariant): int {
+    var id = (*arena).choice_variants.len;
+    (*arena).choice_variants.push(variant);
+    return id;
+}
+
+export fn push_import(arena: @Arena, import_info: ImportInfo): int {
+    var id = (*arena).imports.len;
+    (*arena).imports.push(import_info);
+    return id;
+}
+
+export fn push_match_arm(arena: @Arena, arm: MatchArm): int {
+    var id = (*arena).match_arms.len;
+    (*arena).match_arms.push(arm);
+    return id;
+}
+
 export fn push_function(arena: @Arena, function_info: FunctionInfo): int {
     var id = (*arena).functions.len;
     (*arena).functions.push(function_info);
+    return id;
+}
+
+export fn push_struct(arena: @Arena, struct_info: StructInfo): int {
+    var id = (*arena).structs.len;
+    (*arena).structs.push(struct_info);
+    return id;
+}
+
+export fn push_enum(arena: @Arena, enum_info: EnumInfo): int {
+    var id = (*arena).enums.len;
+    (*arena).enums.push(enum_info);
+    return id;
+}
+
+export fn push_choice(arena: @Arena, choice_info: ChoiceInfo): int {
+    var id = (*arena).choices.len;
+    (*arena).choices.push(choice_info);
     return id;
 }
 
@@ -183,6 +363,16 @@ export fn append_expr_refs(arena: @Arena, refs: @array::Array<int>): int {
     return start;
 }
 
+export fn append_name_refs(arena: @Arena, refs: @array::Array<span::Span>): int {
+    var start = (*arena).name_refs.len;
+    var i = 0;
+    while i < refs.len {
+        (*arena).name_refs.push(refs[i]);
+        i = i + 1;
+    }
+    return start;
+}
+
 export fn append_stmt_refs(arena: @Arena, refs: @array::Array<int>): int {
     var start = (*arena).stmt_refs.len;
     var i = 0;
@@ -197,15 +387,15 @@ export fn make_empty_param_info(): ParamInfo {
     return ParamInfo {
         name_span: span::make(0, 0),
         has_type_hint: false,
-        type_token_kind: 0
+        type_ref: make_empty_type_ref()
     };
 }
 
-export fn make_param_info(name_start: int, name_end: int, has_type_hint: bool, type_token_kind: int): ParamInfo {
+export fn make_param_info(name_start: int, name_end: int, has_type_hint: bool, type_ref: TypeRef): ParamInfo {
     return ParamInfo {
         name_span: span::make(name_start, name_end),
         has_type_hint: has_type_hint,
-        type_token_kind: type_token_kind
+        type_ref: type_ref
     };
 }
 
@@ -213,6 +403,7 @@ export fn make_empty_expr(): Expr {
     return Expr {
         kind: 0,
         name_span: span::make(0, 0),
+        name_ref_start: 0,
         int_value: 0,
         bool_value: false,
         char_value: '\0',
@@ -228,6 +419,7 @@ export fn make_name_expr(start: int, end: int): Expr {
     return Expr {
         kind: 1,
         name_span: span::make(start, end),
+        name_ref_start: 0,
         int_value: 0,
         bool_value: false,
         char_value: '\0',
@@ -243,6 +435,7 @@ export fn make_int_expr(value: int, start: int, end: int): Expr {
     return Expr {
         kind: 2,
         name_span: span::make(0, 0),
+        name_ref_start: 0,
         int_value: value,
         bool_value: false,
         char_value: '\0',
@@ -258,6 +451,7 @@ export fn make_bool_expr(value: bool, start: int, end: int): Expr {
     return Expr {
         kind: 3,
         name_span: span::make(0, 0),
+        name_ref_start: 0,
         int_value: 0,
         bool_value: value,
         char_value: '\0',
@@ -273,6 +467,7 @@ export fn make_char_expr(value: char, start: int, end: int): Expr {
     return Expr {
         kind: 7,
         name_span: span::make(0, 0),
+        name_ref_start: 0,
         int_value: 0,
         bool_value: false,
         char_value: value,
@@ -288,6 +483,7 @@ export fn make_string_expr(start: int, end: int): Expr {
     return Expr {
         kind: 8,
         name_span: span::make(0, 0),
+        name_ref_start: 0,
         int_value: 0,
         bool_value: false,
         char_value: '\0',
@@ -303,6 +499,7 @@ export fn make_group_expr(child_start: int, child_len: int, start: int, end: int
     return Expr {
         kind: 4,
         name_span: span::make(0, 0),
+        name_ref_start: 0,
         int_value: 0,
         bool_value: false,
         char_value: '\0',
@@ -318,6 +515,7 @@ export fn make_binary_expr(op_kind: int, child_start: int, child_len: int, start
     return Expr {
         kind: 5,
         name_span: span::make(0, 0),
+        name_ref_start: 0,
         int_value: 0,
         bool_value: false,
         char_value: '\0',
@@ -333,6 +531,7 @@ export fn make_call_expr(callee_start: int, callee_end: int, child_start: int, c
     return Expr {
         kind: 6,
         name_span: span::make(0, 0),
+        name_ref_start: 0,
         int_value: 0,
         bool_value: false,
         char_value: '\0',
@@ -344,22 +543,70 @@ export fn make_call_expr(callee_start: int, callee_end: int, child_start: int, c
     };
 }
 
+export fn make_member_expr(member_start: int, member_end: int, child_start: int, child_len: int, start: int, end: int): Expr {
+    return Expr {
+        kind: 9,
+        name_span: span::make(member_start, member_end),
+        name_ref_start: 0,
+        int_value: 0,
+        bool_value: false,
+        char_value: '\0',
+        op_kind: 0,
+        callee_span: span::make(0, 0),
+        child_start: child_start,
+        child_len: child_len,
+        span: span::make(start, end)
+    };
+}
+
+export fn make_struct_literal_expr(type_start: int, type_end: int, name_ref_start: int, child_start: int, child_len: int, start: int, end: int): Expr {
+    return Expr {
+        kind: 10,
+        name_span: span::make(0, 0),
+        name_ref_start: name_ref_start,
+        int_value: 0,
+        bool_value: false,
+        char_value: '\0',
+        op_kind: 0,
+        callee_span: span::make(type_start, type_end),
+        child_start: child_start,
+        child_len: child_len,
+        span: span::make(start, end)
+    };
+}
+
+export fn make_variant_expr(type_start: int, type_end: int, variant_start: int, variant_end: int, child_start: int, child_len: int, start: int, end: int): Expr {
+    return Expr {
+        kind: 11,
+        name_span: span::make(variant_start, variant_end),
+        name_ref_start: 0,
+        int_value: 0,
+        bool_value: false,
+        char_value: '\0',
+        op_kind: 0,
+        callee_span: span::make(type_start, type_end),
+        child_start: child_start,
+        child_len: child_len,
+        span: span::make(start, end)
+    };
+}
+
 export fn make_empty_var_decl(): VarDecl {
     return VarDecl {
         name_span: span::make(0, 0),
         has_type_hint: false,
-        type_token_kind: 0,
+        type_ref: make_empty_type_ref(),
         has_init: false,
         init_expr_id: -1,
         span: span::make(0, 0)
     };
 }
 
-export fn make_var_decl(name_start: int, name_end: int, has_type_hint: bool, type_token_kind: int, has_init: bool, init_expr_id: int, start: int, end: int): VarDecl {
+export fn make_var_decl(name_start: int, name_end: int, has_type_hint: bool, type_ref: TypeRef, has_init: bool, init_expr_id: int, start: int, end: int): VarDecl {
     return VarDecl {
         name_span: span::make(name_start, name_end),
         has_type_hint: has_type_hint,
-        type_token_kind: type_token_kind,
+        type_ref: type_ref,
         has_init: has_init,
         init_expr_id: init_expr_id,
         span: span::make(start, end)
@@ -370,17 +617,17 @@ export fn make_empty_const_decl(): ConstDecl {
     return ConstDecl {
         name_span: span::make(0, 0),
         has_type_hint: false,
-        type_token_kind: 0,
+        type_ref: make_empty_type_ref(),
         init_expr_id: -1,
         span: span::make(0, 0)
     };
 }
 
-export fn make_const_decl(name_start: int, name_end: int, has_type_hint: bool, type_token_kind: int, init_expr_id: int, start: int, end: int): ConstDecl {
+export fn make_const_decl(name_start: int, name_end: int, has_type_hint: bool, type_ref: TypeRef, init_expr_id: int, start: int, end: int): ConstDecl {
     return ConstDecl {
         name_span: span::make(name_start, name_end),
         has_type_hint: has_type_hint,
-        type_token_kind: type_token_kind,
+        type_ref: type_ref,
         init_expr_id: init_expr_id,
         span: span::make(start, end)
     };
@@ -454,6 +701,46 @@ export fn make_while_stmt(condition_expr_id: int, body_block_id: int, start: int
     };
 }
 
+export fn make_empty_match_arm(): MatchArm {
+    return MatchArm {
+        type_span: span::make(0, 0),
+        variant_span: span::make(0, 0),
+        has_binding: false,
+        binding_span: span::make(0, 0),
+        block_id: -1,
+        span: span::make(0, 0)
+    };
+}
+
+export fn make_match_arm(type_start: int, type_end: int, variant_start: int, variant_end: int, has_binding: bool, binding_start: int, binding_end: int, block_id: int, start: int, end: int): MatchArm {
+    return MatchArm {
+        type_span: span::make(type_start, type_end),
+        variant_span: span::make(variant_start, variant_end),
+        has_binding: has_binding,
+        binding_span: span::make(binding_start, binding_end),
+        block_id: block_id,
+        span: span::make(start, end)
+    };
+}
+
+export fn make_empty_match_stmt(): MatchStmt {
+    return MatchStmt {
+        value_expr_id: -1,
+        arm_start: 0,
+        arm_len: 0,
+        span: span::make(0, 0)
+    };
+}
+
+export fn make_match_stmt(value_expr_id: int, arm_start: int, arm_len: int, start: int, end: int): MatchStmt {
+    return MatchStmt {
+        value_expr_id: value_expr_id,
+        arm_start: arm_start,
+        arm_len: arm_len,
+        span: span::make(start, end)
+    };
+}
+
 export fn make_empty_return_stmt(): ReturnStmt {
     return ReturnStmt {
         has_value: false,
@@ -470,25 +757,127 @@ export fn make_return_stmt(has_value: bool, value_expr_id: int, start: int, end:
     };
 }
 
+export fn make_empty_struct_field(): StructField {
+    return StructField {
+        name_span: span::make(0, 0),
+        type_ref: make_empty_type_ref(),
+        span: span::make(0, 0)
+    };
+}
+
+export fn make_struct_field(name_start: int, name_end: int, type_ref: TypeRef, start: int, end: int): StructField {
+    return StructField {
+        name_span: span::make(name_start, name_end),
+        type_ref: type_ref,
+        span: span::make(start, end)
+    };
+}
+
 export fn make_empty_function_info(): FunctionInfo {
     return FunctionInfo {
         name_span: span::make(0, 0),
         param_start: 0,
         param_len: 0,
         has_return_type: false,
-        return_type_kind: 0,
+        return_type_ref: make_empty_type_ref(),
         body_block_id: -1,
         span: span::make(0, 0)
     };
 }
 
-export fn make_function_info(name_start: int, name_end: int, param_start: int, param_len: int, has_return_type: bool, return_type_kind: int, body_block_id: int, start: int, end: int): FunctionInfo {
+export fn make_empty_struct_info(): StructInfo {
+    return StructInfo {
+        name_span: span::make(0, 0),
+        field_start: 0,
+        field_len: 0,
+        span: span::make(0, 0)
+    };
+}
+
+export fn make_empty_enum_variant(): EnumVariant {
+    return EnumVariant {
+        name_span: span::make(0, 0),
+        span: span::make(0, 0)
+    };
+}
+
+export fn make_enum_variant(name_start: int, name_end: int, start: int, end: int): EnumVariant {
+    return EnumVariant {
+        name_span: span::make(name_start, name_end),
+        span: span::make(start, end)
+    };
+}
+
+export fn make_empty_choice_variant(): ChoiceVariant {
+    return ChoiceVariant {
+        name_span: span::make(0, 0),
+        has_payload: false,
+        payload_type_ref: make_empty_type_ref(),
+        span: span::make(0, 0)
+    };
+}
+
+export fn make_choice_variant(name_start: int, name_end: int, has_payload: bool, payload_type_ref: TypeRef, start: int, end: int): ChoiceVariant {
+    return ChoiceVariant {
+        name_span: span::make(name_start, name_end),
+        has_payload: has_payload,
+        payload_type_ref: payload_type_ref,
+        span: span::make(start, end)
+    };
+}
+
+export fn make_empty_enum_info(): EnumInfo {
+    return EnumInfo {
+        name_span: span::make(0, 0),
+        variant_start: 0,
+        variant_len: 0,
+        span: span::make(0, 0)
+    };
+}
+
+export fn make_enum_info(name_start: int, name_end: int, variant_start: int, variant_len: int, start: int, end: int): EnumInfo {
+    return EnumInfo {
+        name_span: span::make(name_start, name_end),
+        variant_start: variant_start,
+        variant_len: variant_len,
+        span: span::make(start, end)
+    };
+}
+
+export fn make_empty_choice_info(): ChoiceInfo {
+    return ChoiceInfo {
+        name_span: span::make(0, 0),
+        variant_start: 0,
+        variant_len: 0,
+        span: span::make(0, 0)
+    };
+}
+
+export fn make_choice_info(name_start: int, name_end: int, variant_start: int, variant_len: int, start: int, end: int): ChoiceInfo {
+    return ChoiceInfo {
+        name_span: span::make(name_start, name_end),
+        variant_start: variant_start,
+        variant_len: variant_len,
+        span: span::make(start, end)
+    };
+}
+
+export fn make_struct_info(name_start: int, name_end: int, field_start: int, field_len: int, start: int, end: int): StructInfo {
+    return StructInfo {
+        name_span: span::make(name_start, name_end),
+        field_start: field_start,
+        field_len: field_len,
+        span: span::make(start, end)
+    };
+}
+
+export fn make_function_info(name_start: int, name_end: int, param_start: int, param_len: int, has_return_type: bool, return_type_ref: TypeRef, body_block_id: int, start: int, end: int): FunctionInfo {
     return FunctionInfo {
         name_span: span::make(name_start, name_end),
         param_start: param_start,
         param_len: param_len,
         has_return_type: has_return_type,
-        return_type_kind: return_type_kind,
+        return_type_ref: return_type_ref,
         body_block_id: body_block_id,
         span: span::make(start, end)
     };
@@ -504,6 +893,7 @@ export fn make_empty_stmt(): Stmt {
         block_id: -1,
         if_stmt: make_empty_if_stmt(),
         while_stmt: make_empty_while_stmt(),
+        match_stmt: make_empty_match_stmt(),
         return_stmt: make_empty_return_stmt(),
         span: span::make(0, 0)
     };
@@ -557,6 +947,14 @@ export fn make_while_only_stmt(while_stmt: WhileStmt): Stmt {
     return stmt;
 }
 
+export fn make_match_only_stmt(match_stmt: MatchStmt): Stmt {
+    var stmt = make_empty_stmt();
+    stmt.kind = 11;
+    stmt.match_stmt = match_stmt;
+    stmt.span = match_stmt.span;
+    return stmt;
+}
+
 export fn make_break_stmt(start: int, end: int): Stmt {
     var stmt = make_empty_stmt();
     stmt.kind = 7;
@@ -591,6 +989,10 @@ export fn make_empty_item(): Item {
     return Item {
         kind: 0,
         function_id: -1,
+        struct_id: -1,
+        enum_id: -1,
+        choice_id: -1,
+        import_id: -1,
         span: span::make(0, 0)
     };
 }
@@ -599,7 +1001,59 @@ export fn make_function_item(function_id: int, function_span: span::Span): Item 
     return Item {
         kind: 1,
         function_id: function_id,
+        struct_id: -1,
+        enum_id: -1,
+        choice_id: -1,
+        import_id: -1,
         span: function_span
+    };
+}
+
+export fn make_struct_item(struct_id: int, struct_span: span::Span): Item {
+    return Item {
+        kind: 2,
+        function_id: -1,
+        struct_id: struct_id,
+        enum_id: -1,
+        choice_id: -1,
+        import_id: -1,
+        span: struct_span
+    };
+}
+
+export fn make_enum_item(enum_id: int, enum_span: span::Span): Item {
+    return Item {
+        kind: 3,
+        function_id: -1,
+        struct_id: -1,
+        enum_id: enum_id,
+        choice_id: -1,
+        import_id: -1,
+        span: enum_span
+    };
+}
+
+export fn make_choice_item(choice_id: int, choice_span: span::Span): Item {
+    return Item {
+        kind: 4,
+        function_id: -1,
+        struct_id: -1,
+        enum_id: -1,
+        choice_id: choice_id,
+        import_id: -1,
+        span: choice_span
+    };
+}
+
+export fn make_import_item(import_id: int, import_span: span::Span): Item {
+    return Item {
+        kind: 5,
+        function_id: -1,
+        struct_id: -1,
+        enum_id: -1,
+        choice_id: -1,
+        import_id: import_id,
+        span: import_span
     };
 }
 
