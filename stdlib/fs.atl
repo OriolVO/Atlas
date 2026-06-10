@@ -1,0 +1,19 @@
+import io;
+import array;
+
+export fn read_file(filename: @char, out_array: @array::Array<char>): bool {
+    var f = io::File();
+    if !f.open(filename, "r") {
+        return false;
+    }
+    
+    var c = f.read_char();
+    while c != -1 {
+        out_array.push(cast<char>(c));
+        c = f.read_char();
+    }
+    out_array.push('\0');
+    
+    f.close();
+    return true;
+}

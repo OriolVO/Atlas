@@ -1,0 +1,430 @@
+import array;
+import ast;
+import error;
+import fs;
+import lexer;
+import parser;
+import string;
+import token;
+
+export struct ModuleInterface {
+    name_span: span::Span; // from `import name;`
+    file_info_id: int; // index into arena.file_infos
+}
+
+export struct Project {
+    arena: @ast::Arena;
+    source: @array::Array<char>;
+    modules: @array::Array<ModuleInterface>;
+}
+
+// Builds the project from an entry point file path.
+export fn load_and_resolve(entry_path: string::String, arena: @ast::Arena, source: @array::Array<char>, modules: @array::Array<ModuleInterface>, errors: @array::Array<ast::ParseError>): bool {
+    var p = Project { arena: arena, source: source, modules: modules };
+    
+    var entry_chars = array::Array<char>();
+    var i = 0;
+    while i < entry_path.len {
+        entry_chars.push(entry_path.data[i]);
+        i = i + 1;
+    }
+    
+    // We treat the entry module name as "main"
+    var entry_name = span::make(0, 0); 
+    return load_module(@p, entry_chars.data, entry_chars.len, entry_name, errors);
+}
+
+fn load_module(p: @Project, path_chars: []char, path_len: int, name_span: span::Span, errors: @array::Array<ast::ParseError>): bool {
+    var path_str = string::String::from(path_chars);
+    var start_offset = (*(*p).source).len;
+    
+    if !fs::read_file(path_str.c_str(), (*p).source) {
+        return false;
+    }
+    var end_offset = (*(*p).source).len;
+    
+    var tokens = array::Array<token::Token>();
+    var lex_errors = array::Array<error::LexError>();
+    
+    lexer::tokenize((*p).source, start_offset, @tokens, @lex_errors);
+    
+    if lex_errors.len > 0 {
+        // Just return false for now, we can bubble lex errors into parse errors later
+        return false;
+    }
+    
+    var file_info = ast::make_empty_file_info();
+    if !parser::parse_file((*p).arena, tokens.data, tokens.len, @file_info, errors) {
+        return false;
+    }
+    
+    var file_info_id = (*(*p).arena).file_infos.len;
+    (*(*p).arena).file_infos.push(file_info);
+    
+    var mod_iface = ModuleInterface {
+        name_span: name_span,
+        file_info_id: file_info_id
+    };
+    (*(*p).modules).push(mod_iface);
+    
+    // Now look for imports in the newly parsed file_info
+    var i = file_info.item_start;
+    var end_i = file_info.item_start + file_info.item_len;
+    while i < end_i {
+        var item_index = (*(*p).arena).top_level_items[i];
+        var item = (*(*p).arena).items[item_index];
+        if item.kind == 7 { // ast::ITEM_IMPORT
+            // The name of the import is item.name_span
+            var import_name_span = item.name_span;
+            
+            // Build path: "src/" + name + ".atl"
+                        var name_len = import_name_span.end - import_name_span.start;
+            var name_chars = array::Array<char>();
+            var j = 0;
+            while j < name_len {
+                name_chars.push((*(*p).source).data[import_name_span.start + j]);
+                j = j + 1;
+            }
+            name_chars.push('\0');
+            var name_str = string::String::from(name_chars.data);
+            
+            var prefix_src = string::String::from("src/");
+            var prefix_std = string::String::from("../../stdlib/");
+            var suffix = string::String::from(".atl");
+            
+            var full_path = prefix_src.concat(@name_str).concat(@suffix);
+            
+            // Check if already loaded...
+
+            
+            // Check if already loaded by comparing name_str with existing modules.
+            var already_loaded = false;
+            var m_idx = 0;
+            while m_idx < (*(*p).modules).len {
+                var existing_span = (*(*p).modules)[m_idx].name_span;
+                if existing_span.start != 0 and existing_span.end != 0 {
+                    // we could check name equality, but since entry is "main" which has 0,0 we skip
+                    if existing_span.end - existing_span.start == name_len {
+                        // compare
+                        var eq = true;
+                        var k = 0;
+                        while k < name_len {
+                            if (*(*p).source).data[existing_span.start + k] != (*(*p).source).data[import_name_span.start + k] {
+                                eq = false;
+                                break;
+                            }
+                            k = k + 1;
+                        }
+                        if eq { already_loaded = true; }
+                    }
+                }
+                m_idx = m_idx + 1;
+            }
+            
+            if !already_loaded {
+                // Recursively load
+                // path is full_path.c_str(), which is @char. But load_module takes []char.
+                // full_path has len.
+                // We construct a temporary array? Or just change load_module to take @char and len.
+                // Wait! full_path is a String, we can just use it directly!
+                
+                // Let's create an array of char from full_path
+                                var path_arr = array::Array<char>();
+                j = 0;
+                while j < full_path.len {
+                    path_arr.push(full_path.data[j]);
+                    j = j + 1;
+                }
+                if !load_module(p, path_arr.data, path_arr.len, import_name_span, errors) {
+                    // Try stdlib fallback
+                    var full_path_std = prefix_std.concat(@name_str).concat(@suffix);
+                    var path_arr_std = array::Array<char>();
+                    j = 0;
+                    while j < full_path_std.len {
+                        path_arr_std.push(full_path_std.data[j]);
+                        j = j + 1;
+                    }
+                    if !load_module(p, path_arr_std.data, path_arr_std.len, import_name_span, errors) {
+                        return false;
+                    }
+                }
+            }
+        }
+        i = i + 1;
+    }
+    
+    return true;
+}
+
+export fn resolve_names(p: @Project, errors: @array::Array<ast::ParseError>): bool {
+    var ok = true;
+    var i = 0;
+    while i < (*p).modules.len {
+        var mod_iface = (*p).modules[i];
+        var file_info = (*(*p).arena).file_infos[mod_iface.file_info_id];
+        
+        var j = file_info.item_start;
+        var end_j = file_info.item_start + file_info.item_len;
+        while j < end_j {
+            var item_index = (*(*p).arena).top_level_items[j];
+            var item = (*(*p).arena).items[item_index];
+            if item.kind == 1 { // fn
+                if !resolve_function(p, i, item.function_id, errors) { ok = false; }
+            } else if item.kind == 2 { // struct
+                if !resolve_struct(p, i, item.struct_id, errors) { ok = false; }
+            } else if item.kind == 8 { // class
+                if !resolve_class(p, i, item.class_id, errors) { ok = false; }
+            }
+            // enum, choice later
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    return ok;
+}
+
+fn resolve_function(p: @Project, mod_idx: int, func_id: int, errors: @array::Array<ast::ParseError>): bool {
+    var func = (*(*p).arena).functions[func_id];
+    var ok = true;
+    
+    // Resolve return type
+    if func.has_return_type {
+        if !resolve_type_ref(p, mod_idx, @(*(*p).arena).functions[func_id].return_type_ref, errors) { ok = false; }
+    }
+    
+    // Resolve params
+    var i = func.param_start;
+    var end_i = func.param_start + func.param_len;
+    while i < end_i {
+        var param_idx = (*(*p).arena).function_params[i];
+        if !resolve_type_ref(p, mod_idx, @(*(*p).arena).params[param_idx].type_ref, errors) { ok = false; }
+        i = i + 1;
+    }
+    
+    // Resolve body
+    if func.body_block_id != -1 {
+        if !resolve_block(p, mod_idx, func.body_block_id, errors) { ok = false; }
+    }
+    
+    return ok;
+}
+
+fn resolve_struct(p: @Project, mod_idx: int, struct_id: int, errors: @array::Array<ast::ParseError>): bool {
+    var s = (*(*p).arena).structs[struct_id];
+    var ok = true;
+    
+    var i = s.field_start;
+    var end_i = s.field_start + s.field_len;
+    while i < end_i {
+        var field_idx = (*(*p).arena).struct_fields[i];
+        if !resolve_type_ref(p, mod_idx, @(*(*p).arena).fields[field_idx].type_ref, errors) { ok = false; }
+        i = i + 1;
+    }
+    return ok;
+}
+
+fn resolve_class(p: @Project, mod_idx: int, class_id: int, errors: @array::Array<ast::ParseError>): bool {
+    var c = (*(*p).arena).classes[class_id];
+    var ok = true;
+    
+    var i = c.field_start;
+    var end_i = c.field_start + c.field_len;
+    while i < end_i {
+        var field_idx = (*(*p).arena).class_fields[i];
+        if !resolve_type_ref(p, mod_idx, @(*(*p).arena).fields[field_idx].type_ref, errors) { ok = false; }
+        i = i + 1;
+    }
+    
+    i = c.method_start;
+    end_i = c.method_start + c.method_len;
+    while i < end_i {
+        var method_idx = (*(*p).arena).class_methods[i];
+        if !resolve_function(p, mod_idx, method_idx, errors) { ok = false; }
+        i = i + 1;
+    }
+    return ok;
+}
+
+fn resolve_block(p: @Project, mod_idx: int, block_id: int, errors: @array::Array<ast::ParseError>): bool {
+    var block = (*(*p).arena).blocks[block_id];
+    var ok = true;
+    var i = block.stmt_start;
+    var end_i = block.stmt_start + block.stmt_len;
+    while i < end_i {
+        var stmt_idx = (*(*p).arena).block_stmts[i];
+        var stmt = (*(*p).arena).stmts[stmt_idx];
+        if stmt.kind == 1 { // expr
+            if !resolve_expr(p, mod_idx, stmt.expr_id, errors) { ok = false; }
+        } else if stmt.kind == 2 { // let
+            var let_stmt = (*(*p).arena).let_stmts[stmt.let_stmt_id];
+            if let_stmt.has_type {
+                if !resolve_type_ref(p, mod_idx, @(*(*p).arena).let_stmts[stmt.let_stmt_id].type_ref, errors) { ok = false; }
+            }
+            if let_stmt.has_init {
+                if !resolve_expr(p, mod_idx, let_stmt.init_expr_id, errors) { ok = false; }
+            }
+        }
+        i = i + 1;
+    }
+    return ok;
+}
+
+fn resolve_expr(p: @Project, mod_idx: int, expr_id: int, errors: @array::Array<ast::ParseError>): bool {
+    if expr_id == -1 { return true; }
+    var expr = (*(*p).arena).exprs[expr_id];
+    var ok = true;
+    
+    if expr.kind == 1 { // name
+        var def_id = find_name(p, mod_idx, expr.name_span, expr.name_span);
+        // Only set it if found, otherwise leave as -1 for local variable resolution later
+        if def_id != -1 {
+            (*(*p).arena).exprs[expr_id].resolved_def_id = def_id;
+        }
+    } else if expr.kind == 7 { // group
+        if !resolve_expr(p, mod_idx, expr.child_start, errors) { ok = false; }
+    } else if expr.kind == 8 { // binary
+        var lhs_id = (*(*p).arena).expr_children[expr.child_start];
+        var rhs_id = (*(*p).arena).expr_children[expr.child_start + 1];
+        if !resolve_expr(p, mod_idx, lhs_id, errors) { ok = false; }
+        if !resolve_expr(p, mod_idx, rhs_id, errors) { ok = false; }
+    } else if expr.kind == 9 { // unary
+        var child_id = (*(*p).arena).expr_children[expr.child_start];
+        if !resolve_expr(p, mod_idx, child_id, errors) { ok = false; }
+    } else if expr.kind == 10 { // call
+        var callee_id = (*(*p).arena).expr_children[expr.child_start];
+        if !resolve_expr(p, mod_idx, callee_id, errors) { ok = false; }
+        var j = 1;
+        while j < expr.child_len {
+            var arg_id = (*(*p).arena).expr_children[expr.child_start + j];
+            if !resolve_expr(p, mod_idx, arg_id, errors) { ok = false; }
+            j = j + 1;
+        }
+    } else if expr.kind == 11 { // member access
+        var base_id = (*(*p).arena).expr_children[expr.child_start];
+        if !resolve_expr(p, mod_idx, base_id, errors) { ok = false; }
+    } else if expr.kind == 12 { // struct literal
+        var j = 0;
+        while j < expr.child_len {
+            var field_expr_id = (*(*p).arena).expr_children[expr.child_start + j];
+            if !resolve_expr(p, mod_idx, field_expr_id, errors) { ok = false; }
+            j = j + 1;
+        }
+    } else if expr.kind == 13 { // variant expr
+        var j = 0;
+        while j < expr.child_len {
+            var child_expr_id = (*(*p).arena).expr_children[expr.child_start + j];
+            if !resolve_expr(p, mod_idx, child_expr_id, errors) { ok = false; }
+            j = j + 1;
+        }
+    }
+    return ok;
+}
+
+fn resolve_type_ref(p: @Project, mod_idx: int, type_ref: @ast::TypeRef, errors: @array::Array<ast::ParseError>): bool {
+    if (*type_ref).token_kind == 0 { // Named type
+        var def_id = find_name(p, mod_idx, (*type_ref).qualifier_span, (*type_ref).name_span);
+        (*type_ref).resolved_def_id = def_id;
+        if def_id == -1 {
+            return false; // Type not found!
+        }
+    }
+    return true;
+}
+
+fn find_name(p: @Project, mod_idx: int, qualifier: span::Span, name: span::Span): int {
+    return -1; // Placeholder
+}
+
+fn spans_equal(source: @array::Array<char>, a: span::Span, b: span::Span): bool {
+    var len_a = a.end - a.start;
+    var len_b = b.end - b.start;
+    if len_a != len_b { return false; }
+    var i = 0;
+    while i < len_a {
+        if (*source).data[a.start + i] != (*source).data[b.start + i] { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn find_name(p: @Project, mod_idx: int, qualifier: span::Span, name: span::Span): int {
+    var has_qualifier = qualifier.end > qualifier.start;
+    
+    if has_qualifier {
+        // Find the module corresponding to the qualifier in this file's imports
+        var mod_iface = (*p).modules[mod_idx];
+        var file_info = (*(*p).arena).file_infos[mod_iface.file_info_id];
+        
+        var target_mod_idx = -1;
+        var i = file_info.item_start;
+        var end_i = file_info.item_start + file_info.item_len;
+        while i < end_i {
+            var item_index = (*(*p).arena).top_level_items[i];
+            var item = (*(*p).arena).items[item_index];
+            if item.kind == 7 { // import
+                if spans_equal((*p).source, item.name_span, qualifier) {
+                    // Found the import! Find which module this corresponds to.
+                    var j = 0;
+                    while j < (*p).modules.len {
+                        if spans_equal((*p).source, (*p).modules[j].name_span, qualifier) {
+                            target_mod_idx = j;
+                            break;
+                        }
+                        j = j + 1;
+                    }
+                    break;
+                }
+            }
+            i = i + 1;
+        }
+        
+        if target_mod_idx == -1 {
+            return -1; // Unresolved qualifier
+        }
+        
+        // Search the exported items of target_mod_idx
+        var target_mod = (*p).modules[target_mod_idx];
+        var target_file = (*(*p).arena).file_infos[target_mod.file_info_id];
+        i = target_file.item_start;
+        end_i = target_file.item_start + target_file.item_len;
+        while i < end_i {
+            var item_index = (*(*p).arena).top_level_items[i];
+            var item = (*(*p).arena).items[item_index];
+            if item.is_export {
+                // Check name
+                var item_name_span = get_item_name_span(p, item);
+                if spans_equal((*p).source, item_name_span, name) {
+                    return item_index;
+                }
+            }
+            i = i + 1;
+        }
+        return -1;
+    } else {
+        // Unqualified. Search in local scope (variables) -> not implemented yet.
+        // Search in current file's global scope.
+        var mod_iface = (*p).modules[mod_idx];
+        var file_info = (*(*p).arena).file_infos[mod_iface.file_info_id];
+        var i = file_info.item_start;
+        var end_i = file_info.item_start + file_info.item_len;
+        while i < end_i {
+            var item_index = (*(*p).arena).top_level_items[i];
+            var item = (*(*p).arena).items[item_index];
+            var item_name_span = get_item_name_span(p, item);
+            if spans_equal((*p).source, item_name_span, name) {
+                return item_index;
+            }
+            i = i + 1;
+        }
+    }
+    return -1;
+}
+
+fn get_item_name_span(p: @Project, item: ast::Item): span::Span {
+    if item.kind == 1 { return (*(*p).arena).functions[item.function_id].name_span; }
+    if item.kind == 2 { return (*(*p).arena).structs[item.struct_id].name_span; }
+    if item.kind == 3 { return (*(*p).arena).enums[item.enum_id].name_span; }
+    if item.kind == 4 { return (*(*p).arena).choices[item.choice_id].name_span; }
+    if item.kind == 8 { return (*(*p).arena).classes[item.class_id].name_span; }
+    return span::make(0, 0);
+}

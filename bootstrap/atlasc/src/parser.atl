@@ -1096,6 +1096,209 @@ fn parse_import_at(
     return true;
 }
 
+
+fn parse_generic_params_at(
+    arena: @ast::Arena,
+    tokens: @token::Token?,
+    token_count: int,
+    index: @int,
+    out_start: @int,
+    out_len: @int,
+    errors: @array::Array<ast::ParseError>
+): bool {
+    (*out_start) = (*arena).generic_params.len;
+    (*out_len) = 0;
+    if tokens[(*index)].kind != 26 { return true; } // not '<'
+    (*index) = (*index) + 1;
+    while (*index) < token_count and tokens[(*index)].kind != 28 { // not '>'
+        if tokens[(*index)].kind != 6 { return fail(errors, 170, token_start(tokens[(*index)]), token_end(tokens[(*index)])); }
+        var name_span = span::make(token_start(tokens[(*index)]), token_end(tokens[(*index)]));
+        (*index) = (*index) + 1;
+        var p = ast::GenericParam { name_span: name_span, span: name_span };
+        ast::push_generic_param(arena, p);
+        (*out_len) = (*out_len) + 1;
+        if tokens[(*index)].kind == 53 { // ','
+            (*index) = (*index) + 1;
+        } else {
+            break;
+        }
+    }
+    if (*index) >= token_count or tokens[(*index)].kind != 28 {
+        if (*index) < token_count { return fail(errors, 171, token_start(tokens[(*index)]), token_end(tokens[(*index)])); }
+        return fail(errors, 171, 0, 0);
+    }
+    (*index) = (*index) + 1;
+    return true;
+}
+
+fn parse_where_clauses_at(
+    arena: @ast::Arena,
+    tokens: @token::Token?,
+    token_count: int,
+    index: @int,
+    out_start: @int,
+    out_len: @int,
+    errors: @array::Array<ast::ParseError>
+): bool {
+    (*out_start) = (*arena).where_clauses.len;
+    (*out_len) = 0;
+    while (*index) < token_count and tokens[(*index)].kind == 20 { // 'where'
+        var clause_start = token_start(tokens[(*index)]);
+        (*index) = (*index) + 1;
+        if tokens[(*index)].kind != 6 { return fail(errors, 172, token_start(tokens[(*index)]), token_end(tokens[(*index)])); }
+        var target_span = span::make(token_start(tokens[(*index)]), token_end(tokens[(*index)]));
+        (*index) = (*index) + 1;
+        if tokens[(*index)].kind != 52 { return fail(errors, 173, token_start(tokens[(*index)]), token_end(tokens[(*index)])); } // ':'
+        (*index) = (*index) + 1;
+        
+        var sig_start = (*arena).constraint_signatures.len;
+        var sig_len = 0;
+        while (*index) < token_count {
+            if tokens[(*index)].kind != 6 { return fail(errors, 174, token_start(tokens[(*index)]), token_end(tokens[(*index)])); }
+            var name_span = span::make(token_start(tokens[(*index)]), token_end(tokens[(*index)]));
+            (*index) = (*index) + 1;
+            
+            var param_start = 0; var param_len = 0;
+            if tokens[(*index)].kind == 56 { // '('
+                (*index) = (*index) + 1;
+                while (*index) < token_count and tokens[(*index)].kind != 57 {
+                    (*index) = (*index) + 1;
+                }
+                if (*index) < token_count { (*index) = (*index) + 1; }
+            }
+            
+            var has_ret = false;
+            var ret_type = ast::make_empty_type_ref();
+            if tokens[(*index)].kind == 63 { // '->'
+                (*index) = (*index) + 1;
+                has_ret = true;
+                if !parse_type_ref_direct(tokens, token_count, index, @ret_type, errors) { return false; }
+            }
+            
+            var sig = ast::ConstraintSignature {
+                name_span: name_span,
+                param_start: param_start,
+                param_len: param_len,
+                has_return_type: has_ret,
+                return_type_ref: ret_type,
+                span: name_span
+            };
+            ast::push_constraint_signature(arena, sig);
+            sig_len = sig_len + 1;
+            
+            if tokens[(*index)].kind == 53 { // ','
+                (*index) = (*index) + 1;
+            } else {
+                break;
+            }
+        }
+        
+        var clause = ast::WhereClause {
+            target_span: target_span,
+            constraint_start: sig_start,
+            constraint_len: sig_len,
+            span: span::make(clause_start, token_end(tokens[(*index)-1]))
+        };
+        ast::push_where_clause(arena, clause);
+        (*out_len) = (*out_len) + 1;
+    }
+    return true;
+}
+
+fn parse_class_at(
+    arena: @ast::Arena,
+    tokens: @token::Token?,
+    token_count: int,
+    index: @int,
+    out_class_id: @int,
+    errors: @array::Array<ast::ParseError>
+): bool {
+    var start = token_start(tokens[(*index)]);
+    (*index) = (*index) + 1; // 'class'
+    
+    if tokens[(*index)].kind != 6 { return fail(errors, 180, token_start(tokens[(*index)]), token_end(tokens[(*index)])); }
+    var name_span = span::make(token_start(tokens[(*index)]), token_end(tokens[(*index)]));
+    (*index) = (*index) + 1;
+    
+    var generic_start = 0; var generic_len = 0;
+    if !parse_generic_params_at(arena, tokens, token_count, index, @generic_start, @generic_len, errors) { return false; }
+    
+    var where_start = 0; var where_len = 0;
+    if !parse_where_clauses_at(arena, tokens, token_count, index, @where_start, @where_len, errors) { return false; }
+    
+    if tokens[(*index)].kind != 58 { return fail(errors, 181, token_start(tokens[(*index)]), token_end(tokens[(*index)])); } // '{'
+    (*index) = (*index) + 1;
+    
+    var field_start = (*arena).class_fields.len; var field_len = 0;
+    var method_start = (*arena).class_methods.len; var method_len = 0;
+    var struct_start = (*arena).class_structs.len; var struct_len = 0;
+    
+    while (*index) < token_count and tokens[(*index)].kind != 59 { // '}'
+        var visibility = 0; // private
+        if tokens[(*index)].kind == 14 { // 'public'
+            visibility = 1;
+            (*index) = (*index) + 1;
+        } else if tokens[(*index)].kind == 15 { // 'private'
+            visibility = 0;
+            (*index) = (*index) + 1;
+        }
+        
+        if tokens[(*index)].kind == 9 { // 'fn'
+            var fn_id = -1;
+            if !parse_function_at(arena, tokens, token_count, index, @fn_id, errors) { return false; }
+            var method = ast::ClassMethod { visibility: visibility, function_id: fn_id, span: (*arena).functions[fn_id].span };
+            ast::push_class_method(arena, method);
+            method_len = method_len + 1;
+        } else if tokens[(*index)].kind == 10 { // 'struct'
+            var st_id = -1;
+            if !parse_struct_at(arena, tokens, token_count, index, @st_id, errors) { return false; }
+            var c_struct = ast::ClassStruct { visibility: visibility, struct_id: st_id, span: (*arena).structs[st_id].span };
+            ast::push_class_struct(arena, c_struct);
+            struct_len = struct_len + 1;
+        } else { // field
+            var is_const = false;
+            if tokens[(*index)].kind == 8 { // 'const'
+                is_const = true;
+                (*index) = (*index) + 1;
+            }
+            if tokens[(*index)].kind != 6 { return fail(errors, 182, token_start(tokens[(*index)]), token_end(tokens[(*index)])); }
+            var f_name = span::make(token_start(tokens[(*index)]), token_end(tokens[(*index)]));
+            (*index) = (*index) + 1;
+            if tokens[(*index)].kind != 52 { return fail(errors, 183, token_start(tokens[(*index)]), token_end(tokens[(*index)])); } // ':'
+            (*index) = (*index) + 1;
+            var f_type = ast::make_empty_type_ref();
+            if !parse_type_ref_direct(tokens, token_count, index, @f_type, errors) { return false; }
+            if tokens[(*index)].kind != 65 { return fail(errors, 184, token_start(tokens[(*index)]), token_end(tokens[(*index)])); } // ';'
+            (*index) = (*index) + 1;
+            
+            var field = ast::ClassField { visibility: visibility, is_const: is_const, name_span: f_name, type_ref: f_type, span: f_name };
+            ast::push_class_field(arena, field);
+            field_len = field_len + 1;
+        }
+    }
+    
+    if (*index) >= token_count or tokens[(*index)].kind != 59 { return fail(errors, 185, token_start(tokens[(*index)]), token_end(tokens[(*index)])); }
+    var end = token_end(tokens[(*index)]);
+    (*index) = (*index) + 1;
+    
+    var class_info = ast::ClassInfo {
+        name_span: name_span,
+        generic_param_start: generic_start,
+        generic_param_len: generic_len,
+        where_clause_start: where_start,
+        where_clause_len: where_len,
+        field_start: field_start,
+        field_len: field_len,
+        method_start: method_start,
+        method_len: method_len,
+        struct_start: struct_start,
+        struct_len: struct_len,
+        span: span::make(start, end)
+    };
+    (*out_class_id) = ast::push_class(arena, class_info);
+    return true;
+}
+
 export fn parse_first_item(
     arena: @ast::Arena,
     tokens: @token::Token?,
@@ -1105,39 +1308,53 @@ export fn parse_first_item(
     errors: @array::Array<ast::ParseError>
 ): bool {
     if tokens == null or (*index) >= token_count { return fail(errors, 130, 0, 0); }
+    var is_export = false;
+    if tokens[(*index)].kind == 20 {
+        is_export = true;
+        (*index) = (*index) + 1;
+    }
+    if (*index) >= token_count { return fail(errors, 130, 0, 0); }
+    
+    if tokens[(*index)].kind == 11 { // 'class'
+        var class_id = -1;
+        if !parse_class_at(arena, tokens, token_count, index, @class_id, errors) { return false; }
+        var class_info = (*arena).classes[class_id];
+        (*out_item_id) = ast::push_item(arena, ast::make_class_item(class_id, is_export, class_info.span));
+        return true;
+    }
     if tokens[(*index)].kind == 9 {
         var function_id = -1;
         if !parse_function_at(arena, tokens, token_count, index, @function_id, errors) { return false; }
         var function_info = (*arena).functions[function_id];
-        (*out_item_id) = ast::push_item(arena, ast::make_function_item(function_id, function_info.span));
+        (*out_item_id) = ast::push_item(arena, ast::make_function_item(function_id, is_export, function_info.span));
         return true;
     }
     if tokens[(*index)].kind == 10 {
         var struct_id = -1;
         if !parse_struct_at(arena, tokens, token_count, index, @struct_id, errors) { return false; }
         var struct_info = (*arena).structs[struct_id];
-        (*out_item_id) = ast::push_item(arena, ast::make_struct_item(struct_id, struct_info.span));
+        (*out_item_id) = ast::push_item(arena, ast::make_struct_item(struct_id, is_export, struct_info.span));
         return true;
     }
     if tokens[(*index)].kind == 12 {
         var enum_id = -1;
         if !parse_enum_at(arena, tokens, token_count, index, @enum_id, errors) { return false; }
         var enum_info = (*arena).enums[enum_id];
-        (*out_item_id) = ast::push_item(arena, ast::make_enum_item(enum_id, enum_info.span));
+        (*out_item_id) = ast::push_item(arena, ast::make_enum_item(enum_id, is_export, enum_info.span));
         return true;
     }
     if tokens[(*index)].kind == 13 {
         var choice_id = -1;
         if !parse_choice_at(arena, tokens, token_count, index, @choice_id, errors) { return false; }
         var choice_info = (*arena).choices[choice_id];
-        (*out_item_id) = ast::push_item(arena, ast::make_choice_item(choice_id, choice_info.span));
+        (*out_item_id) = ast::push_item(arena, ast::make_choice_item(choice_id, is_export, choice_info.span));
         return true;
     }
     if tokens[(*index)].kind == 19 {
         var import_id = -1;
         if !parse_import_at(arena, tokens, token_count, index, @import_id, errors) { return false; }
         var import_info = (*arena).imports[import_id];
-        (*out_item_id) = ast::push_item(arena, ast::make_import_item(import_id, import_info.span));
+        (*out_item_id) = ast::push_item(arena, ast::make_import_item(import_id, is_export, import_info.span));
         return true;
     }
     return fail(errors, 131, token_start(tokens[(*index)]), token_end(tokens[(*index)]));

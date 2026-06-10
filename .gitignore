@@ -4,4 +4,5 @@ target
 *.tmp.*
 *.log
 *.out
+*.py
 bootstrap/atlasc/src/main

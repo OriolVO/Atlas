@@ -18,6 +18,49 @@ export class String {
         return (*self).len;
     }
 
+    
+    public fn concat(self: @String, other: @String): String {
+        var s = String();
+        memory::free(s.data);
+        var total_len = (*self).len + (*other).len;
+        s.len = total_len;
+        s.data = memory::malloc(total_len + 1);
+        
+        var i = 0;
+        while i < (*self).len {
+            s.data[i] = (*self).data[i];
+            i = i + 1;
+        }
+        var j = 0;
+        while j < (*other).len {
+            s.data[i + j] = (*other).data[j];
+            j = j + 1;
+        }
+        s.data[total_len] = '\0';
+        return s;
+    }
+    
+    public fn append_chars(self: @String, chars: []char) {
+        var new_len = (*self).len + chars.len;
+        var new_data = memory::malloc(new_len + 1);
+        
+        var i = 0;
+        while i < (*self).len {
+            new_data[i] = (*self).data[i];
+            i = i + 1;
+        }
+        var j = 0;
+        while j < chars.len {
+            new_data[i + j] = chars[j];
+            j = j + 1;
+        }
+        new_data[new_len] = '\0';
+        
+        memory::free((*self).data);
+        (*self).data = new_data;
+        (*self).len = new_len;
+    }
+
     public fn c_str(self: @String): @char {
         return (*self).data;
     }

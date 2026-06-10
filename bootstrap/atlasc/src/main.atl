@@ -311,7 +311,13 @@ fn run_lexer_case(name: []char, sample: []char) {
     print_chars("\n");
     var tokens: array::Array<token::Token> = array::Array();
     var errors: array::Array<error::LexError> = array::Array();
-    lexer::tokenize(sample, @tokens, @errors);
+        var sample_arr: array::Array<char> = array::Array();
+    var si = 0;
+    while si < sample.len {
+        sample_arr.push(sample[si]);
+        si = si + 1;
+    }
+    lexer::tokenize(@sample_arr, 0, @tokens, @errors);
     var i = 0;
     while i < tokens.len {
         print_token(tokens[i]);
@@ -332,7 +338,13 @@ fn run_parser_case(sample: []char) {
     var parse_errors: array::Array<ast::ParseError> = array::Array();
     var stmt_id = -1;
     var index = 0;
-    lexer::tokenize(sample, @tokens, @lex_errors);
+        var sample_arr: array::Array<char> = array::Array();
+    var si = 0;
+    while si < sample.len {
+        sample_arr.push(sample[si]);
+        si = si + 1;
+    }
+    lexer::tokenize(@sample_arr, 0, @tokens, @lex_errors);
     if lex_errors.len > 0 {
         print_chars("lexer failed\n");
         return;
@@ -356,7 +368,13 @@ fn run_item_parser_case(sample: []char) {
     var parse_errors: array::Array<ast::ParseError> = array::Array();
     var item_id = -1;
     var index = 0;
-    lexer::tokenize(sample, @tokens, @lex_errors);
+        var sample_arr: array::Array<char> = array::Array();
+    var si = 0;
+    while si < sample.len {
+        sample_arr.push(sample[si]);
+        si = si + 1;
+    }
+    lexer::tokenize(@sample_arr, 0, @tokens, @lex_errors);
     if lex_errors.len > 0 {
         print_chars("lexer failed\n");
         return;
@@ -379,7 +397,13 @@ fn run_file_parser_case(sample: []char) {
     var lex_errors: array::Array<error::LexError> = array::Array();
     var parse_errors: array::Array<ast::ParseError> = array::Array();
     var file_info = ast::make_empty_file_info();
-    lexer::tokenize(sample, @tokens, @lex_errors);
+        var sample_arr: array::Array<char> = array::Array();
+    var si = 0;
+    while si < sample.len {
+        sample_arr.push(sample[si]);
+        si = si + 1;
+    }
+    lexer::tokenize(@sample_arr, 0, @tokens, @lex_errors);
     if lex_errors.len > 0 {
         print_chars("lexer failed\n");
         return;
@@ -404,7 +428,13 @@ fn run_semantic_case(sample: []char) {
     var semantic_errors: array::Array<semantic::SemanticError> = array::Array();
     var summary = semantic::make_empty_summary();
     var file_info = ast::make_empty_file_info();
-    lexer::tokenize(sample, @tokens, @lex_errors);
+        var sample_arr: array::Array<char> = array::Array();
+    var si = 0;
+    while si < sample.len {
+        sample_arr.push(sample[si]);
+        si = si + 1;
+    }
+    lexer::tokenize(@sample_arr, 0, @tokens, @lex_errors);
     if lex_errors.len > 0 {
         print_chars("lexer failed\n");
         return;

@@ -952,6 +952,31 @@ impl<'src> Parser<'src> {
                                     span: Span::new(span.start, r_span.end),
                                 }
                             }
+                        } else if self.peek() == &Token::LBrace
+                            && (self.peek_nth(1) == &Token::RBrace
+                                || (matches!(self.peek_nth(1), Token::Identifier(_)) && self.peek_nth(2) == &Token::Colon))
+                        {
+                            self.advance();
+                            let mut fields = Vec::new();
+                            if self.peek() != &Token::RBrace {
+                                loop {
+                                    let field_name = self.expect_identifier()?;
+                                    self.expect(&Token::Colon)?;
+                                    let value = self.parse_expr(0)?;
+                                    fields.push((field_name, value));
+                                    if self.peek() == &Token::Comma {
+                                        self.advance();
+                                        if self.peek() == &Token::RBrace {
+                                            break;
+                                        }
+                                    } else {
+                                        break;
+                                    }
+                                }
+                            }
+                            let r_span = self.expect(&Token::RBrace)?;
+                            path.push(member);
+                            Expr::StructInit { struct_name: path.join("::"), fields, span: Span::new(span.start, r_span.end) }
                         } else {
                             Expr::StaticMember {
                                 class_name,

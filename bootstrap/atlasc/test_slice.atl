@@ -1,0 +1,5 @@
+struct String { ptr: @char; len: int; }
+fn get_slice(s: @String): []char {
+    return (*s).ptr;
+}
+fn main(): int { return 0; }

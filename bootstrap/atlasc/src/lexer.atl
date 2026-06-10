@@ -18,13 +18,13 @@ fn is_alnum(ch: char): bool {
     return is_alpha(ch) or is_digit(ch);
 }
 
-fn slice_equals(source: []char, start: int, end: int, text: []char): bool {
+fn slice_equals(source: @array::Array<char>, start: int, end: int, text: []char): bool {
     if end - start != text.len {
         return false;
     }
     var i = 0;
     while i < text.len {
-        if source[start + i] != text[i] {
+        if (*source).data[start + i] != text[i] {
             return false;
         }
         i = i + 1;
@@ -32,7 +32,7 @@ fn slice_equals(source: []char, start: int, end: int, text: []char): bool {
     return true;
 }
 
-fn parse_suffix(source: []char, start: int, end: int, has_suffix: @bool, suffix: @int): bool {
+fn parse_suffix(source: @array::Array<char>, start: int, end: int, has_suffix: @bool, suffix: @int): bool {
     (*has_suffix) = true;
     if slice_equals(source, start, end, "i8") or slice_equals(source, start, end, "int8") { (*suffix) = 1; return true; }
     if slice_equals(source, start, end, "i16") or slice_equals(source, start, end, "int16") { (*suffix) = 2; return true; }
@@ -45,7 +45,7 @@ fn parse_suffix(source: []char, start: int, end: int, has_suffix: @bool, suffix:
     return false;
 }
 
-fn push_keyword_or_identifier(source: []char, start: int, end: int, tokens: @array::Array<token::Token>) {
+fn push_keyword_or_identifier(source: @array::Array<char>, start: int, end: int, tokens: @array::Array<token::Token>) {
     if slice_equals(source, start, end, "var") { tokens.push(token::make(7, start, end)); return; }
     if slice_equals(source, start, end, "const") { tokens.push(token::make(8, start, end)); return; }
     if slice_equals(source, start, end, "fn") { tokens.push(token::make(9, start, end)); return; }
@@ -92,26 +92,26 @@ fn push_keyword_or_identifier(source: []char, start: int, end: int, tokens: @arr
     tokens.push(token::make(6, start, end));
 }
 
-export fn tokenize(source: []char, tokens: @array::Array<token::Token>, errors: @array::Array<error::LexError>) {
-    var i = 0;
-    while i < source.len {
-        var ch = source[i];
+export fn tokenize(source: @array::Array<char>, start_offset: int, tokens: @array::Array<token::Token>, errors: @array::Array<error::LexError>) {
+    var i = start_offset;
+    while i < (*source).len {
+        var ch = (*source).data[i];
         if is_space(ch) {
             i = i + 1;
-        } else if ch == '/' and i + 1 < source.len and source[i + 1] == '/' {
+        } else if ch == '/' and i + 1 < (*source).len and (*source).data[i + 1] == '/' {
             i = i + 2;
-            while i < source.len and source[i] != '\n' {
+            while i < (*source).len and (*source).data[i] != '\n' {
                 i = i + 1;
             }
-        } else if ch == '/' and i + 1 < source.len and source[i + 1] == '*' {
+        } else if ch == '/' and i + 1 < (*source).len and (*source).data[i + 1] == '*' {
             var start = i;
             i = i + 2;
             var depth = 1;
-            while i < source.len and depth > 0 {
-                if source[i] == '/' and i + 1 < source.len and source[i + 1] == '*' {
+            while i < (*source).len and depth > 0 {
+                if (*source).data[i] == '/' and i + 1 < (*source).len and (*source).data[i + 1] == '*' {
                     depth = depth + 1;
                     i = i + 2;
-                } else if source[i] == '*' and i + 1 < source.len and source[i + 1] == '/' {
+                } else if (*source).data[i] == '*' and i + 1 < (*source).len and (*source).data[i + 1] == '/' {
                     depth = depth - 1;
                     i = i + 2;
                 } else {
@@ -119,18 +119,18 @@ export fn tokenize(source: []char, tokens: @array::Array<token::Token>, errors: 
                 }
             }
             if depth > 0 {
-                errors.push(error::make(4, start, source.len));
+                errors.push(error::make(4, start, (*source).len));
             }
         } else if is_digit(ch) {
             var start = i;
             var value = 0;
-            while i < source.len and is_digit(source[i]) {
-                value = value * 10 + (cast<int>(source[i]) - cast<int>('0'));
+            while i < (*source).len and is_digit((*source).data[i]) {
+                value = value * 10 + (cast<int>((*source).data[i]) - cast<int>('0'));
                 i = i + 1;
             }
-            if i < source.len and source[i] == '.' and i + 1 < source.len and is_digit(source[i + 1]) {
+            if i < (*source).len and (*source).data[i] == '.' and i + 1 < (*source).len and is_digit((*source).data[i + 1]) {
                 i = i + 1;
-                while i < source.len and is_digit(source[i]) {
+                while i < (*source).len and is_digit((*source).data[i]) {
                     i = i + 1;
                 }
                 tokens.push(token::make(2, start, i));
@@ -138,7 +138,7 @@ export fn tokenize(source: []char, tokens: @array::Array<token::Token>, errors: 
                 var has_suffix = false;
                 var suffix = 4;
                 var suffix_start = i;
-                while i < source.len and is_alnum(source[i]) {
+                while i < (*source).len and is_alnum((*source).data[i]) {
                     i = i + 1;
                 }
                 if i > suffix_start and !parse_suffix(source, suffix_start, i, @has_suffix, @suffix) {
@@ -150,24 +150,24 @@ export fn tokenize(source: []char, tokens: @array::Array<token::Token>, errors: 
         } else if is_alpha(ch) {
             var start = i;
             i = i + 1;
-            while i < source.len and is_alnum(source[i]) {
+            while i < (*source).len and is_alnum((*source).data[i]) {
                 i = i + 1;
             }
             push_keyword_or_identifier(source, start, i, tokens);
         } else if ch == '\'' {
             var start = i;
-            if i + 2 < source.len and source[i + 2] == '\'' and source[i + 1] != '\\' {
-                tokens.push(token::make_char(source[i + 1], start, i + 3));
+            if i + 2 < (*source).len and (*source).data[i + 2] == '\'' and (*source).data[i + 1] != '\\' {
+                tokens.push(token::make_char((*source).data[i + 1], start, i + 3));
                 i = i + 3;
-            } else if i + 3 < source.len and source[i + 1] == '\\' and source[i + 3] == '\'' {
+            } else if i + 3 < (*source).len and (*source).data[i + 1] == '\\' and (*source).data[i + 3] == '\'' {
                 var value = '\0';
                 var ok = true;
-                if source[i + 2] == 'n' { value = '\n'; }
-                else if source[i + 2] == 't' { value = '\t'; }
-                else if source[i + 2] == 'r' { value = '\r'; }
-                else if source[i + 2] == '0' { value = '\0'; }
-                else if source[i + 2] == '\\' { value = '\\'; }
-                else if source[i + 2] == '\'' { value = '\''; }
+                if (*source).data[i + 2] == 'n' { value = '\n'; }
+                else if (*source).data[i + 2] == 't' { value = '\t'; }
+                else if (*source).data[i + 2] == 'r' { value = '\r'; }
+                else if (*source).data[i + 2] == '0' { value = '\0'; }
+                else if (*source).data[i + 2] == '\\' { value = '\\'; }
+                else if (*source).data[i + 2] == '\'' { value = '\''; }
                 else { ok = false; }
 
                 if ok {
@@ -185,14 +185,14 @@ export fn tokenize(source: []char, tokens: @array::Array<token::Token>, errors: 
             i = i + 1;
             var terminated = false;
             var done = false;
-            while i < source.len and !done {
-                if source[i] == '"' {
+            while i < (*source).len and !done {
+                if (*source).data[i] == '"' {
                     terminated = true;
                     i = i + 1;
                     done = true;
-                } else if source[i] == '\\' and i + 1 < source.len {
+                } else if (*source).data[i] == '\\' and i + 1 < (*source).len {
                     i = i + 2;
-                } else if source[i] == '\n' {
+                } else if (*source).data[i] == '\n' {
                     done = true;
                 } else {
                     i = i + 1;
@@ -203,31 +203,31 @@ export fn tokenize(source: []char, tokens: @array::Array<token::Token>, errors: 
             } else {
                 errors.push(error::make(3, start, i));
             }
-        } else if ch == '=' and i + 1 < source.len and source[i + 1] == '=' {
+        } else if ch == '=' and i + 1 < (*source).len and (*source).data[i + 1] == '=' {
             tokens.push(token::make(51, i, i + 2));
             i = i + 2;
-        } else if ch == '!' and i + 1 < source.len and source[i + 1] == '=' {
+        } else if ch == '!' and i + 1 < (*source).len and (*source).data[i + 1] == '=' {
             tokens.push(token::make(52, i, i + 2));
             i = i + 2;
-        } else if ch == '<' and i + 1 < source.len and source[i + 1] == '=' {
+        } else if ch == '<' and i + 1 < (*source).len and (*source).data[i + 1] == '=' {
             tokens.push(token::make(53, i, i + 2));
             i = i + 2;
-        } else if ch == '>' and i + 1 < source.len and source[i + 1] == '=' {
+        } else if ch == '>' and i + 1 < (*source).len and (*source).data[i + 1] == '=' {
             tokens.push(token::make(54, i, i + 2));
             i = i + 2;
-        } else if ch == '&' and i + 1 < source.len and source[i + 1] == '&' {
+        } else if ch == '&' and i + 1 < (*source).len and (*source).data[i + 1] == '&' {
             tokens.push(token::make(59, i, i + 2));
             i = i + 2;
-        } else if ch == '|' and i + 1 < source.len and source[i + 1] == '|' {
+        } else if ch == '|' and i + 1 < (*source).len and (*source).data[i + 1] == '|' {
             tokens.push(token::make(60, i, i + 2));
             i = i + 2;
-        } else if ch == ':' and i + 1 < source.len and source[i + 1] == ':' {
+        } else if ch == ':' and i + 1 < (*source).len and (*source).data[i + 1] == ':' {
             tokens.push(token::make(63, i, i + 2));
             i = i + 2;
-        } else if ch == '=' and i + 1 < source.len and source[i + 1] == '>' {
+        } else if ch == '=' and i + 1 < (*source).len and (*source).data[i + 1] == '>' {
             tokens.push(token::make(69, i, i + 2));
             i = i + 2;
-        } else if ch == '.' and i + 2 < source.len and source[i + 1] == '.' and source[i + 2] == '.' {
+        } else if ch == '.' and i + 2 < (*source).len and (*source).data[i + 1] == '.' and (*source).data[i + 2] == '.' {
             tokens.push(token::make(67, i, i + 3));
             i = i + 3;
         } else if ch == '+' { tokens.push(token::make(46, i, i + 1)); i = i + 1; }
@@ -257,5 +257,6 @@ export fn tokenize(source: []char, tokens: @array::Array<token::Token>, errors: 
         }
     }
 
-    tokens.push(token::make(76, source.len, source.len));
+    tokens.push(token::make(76, (*source).len, (*source).len));
 }
+
