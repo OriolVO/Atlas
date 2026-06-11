@@ -3062,6 +3062,26 @@ fn is_assignable_to(expected: &AtlasType, actual: &AtlasType) -> bool {
         }
     }
 
+    if let (
+        AtlasType::Pointer { target, nullable: false },
+        AtlasType::Slice(elem),
+    ) = (expected, actual)
+    {
+        if target.as_ref() == elem.as_ref() {
+            return true;
+        }
+    }
+
+    if let (
+        AtlasType::Slice(expected_elem),
+        AtlasType::Pointer { target, .. },
+    ) = (expected, actual)
+    {
+        if expected_elem.as_ref() == target.as_ref() {
+            return true;
+        }
+    }
+
     if matches!((expected, actual), (AtlasType::Pointer { nullable: true, .. }, AtlasType::Null)) {
         return true;
     }

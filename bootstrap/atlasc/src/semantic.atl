@@ -770,8 +770,14 @@ fn infer_expr_type(
             return type_int();
         }
         if expr.op_kind == 55 or expr.op_kind == 56 or expr.op_kind == 53 or expr.op_kind == 54 {
-            expect_type(type_int(), lhs_type, 8, expr.span, errors, summary);
-            expect_type(type_int(), rhs_type, 8, expr.span, errors, summary);
+            if lhs_type != type_int() and lhs_type != type_float() and lhs_type != type_float32() and lhs_type != type_float64() and lhs_type != type_unknown() {
+                errors.push(make_error(8, expr.span.start, expr.span.end));
+                (*summary).type_mismatch_count = (*summary).type_mismatch_count + 1;
+            }
+            if !is_unary and rhs_type != lhs_type and rhs_type != type_unknown() and lhs_type != type_unknown() {
+                errors.push(make_error(8, expr.span.start, expr.span.end));
+                (*summary).type_mismatch_count = (*summary).type_mismatch_count + 1;
+            }
             return type_bool();
         }
         if expr.op_kind == 51 or expr.op_kind == 52 {
@@ -781,7 +787,7 @@ fn infer_expr_type(
             }
             return type_bool();
         }
-        if expr.op_kind == 59 or expr.op_kind == 60 {
+        if expr.op_kind == 59 or expr.op_kind == 60 or expr.op_kind == 25 or expr.op_kind == 26 {
             expect_type(type_bool(), lhs_type, 9, expr.span, errors, summary);
             expect_type(type_bool(), rhs_type, 9, expr.span, errors, summary);
             return type_bool();

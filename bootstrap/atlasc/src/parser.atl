@@ -81,6 +81,32 @@ fn parse_atomic_expr(
         var name_start = token_start(tok);
         var name_end = token_end(tok);
         (*index) = (*index) + 1;
+        if (*index) < token_count and tokens[(*index)].kind == 55 {
+            var save_idx = (*index);
+            (*index) = (*index) + 1;
+            var target_type = ast::make_empty_type_ref();
+            if !parse_type_ref_direct(tokens, token_count, index, @target_type, errors) {
+                (*index) = save_idx;
+            } else if (*index) >= token_count or tokens[(*index)].kind != 56 {
+                (*index) = save_idx;
+            } else {
+                (*index) = (*index) + 1;
+                if (*index) >= token_count or tokens[(*index)].kind != 70 {
+                    (*index) = save_idx;
+                } else {
+                    (*index) = (*index) + 1;
+                    var inner_id = -1;
+                    if !parse_expr_at(arena, tokens, token_count, index, @inner_id, errors) { return false; }
+                    if (*index) >= token_count or tokens[(*index)].kind != 71 {
+                        return fail(errors, 19, name_start, name_start);
+                    }
+                    var end = token_end(tokens[(*index)]);
+                    (*index) = (*index) + 1;
+                    (*out_expr_id) = inner_id;
+                    return true;
+                }
+            }
+        }
         if (*index) < token_count and tokens[(*index)].kind == 63 {
             var start = name_start;
             (*index) = (*index) + 1;
@@ -404,7 +430,7 @@ fn parse_and_expr(
     if !parse_compare_expr(arena, tokens, token_count, index, @lhs_id, errors) {
         return false;
     }
-    while (*index) < token_count and tokens[(*index)].kind == 59 {
+    while (*index) < token_count and (tokens[(*index)].kind == 59 or tokens[(*index)].kind == 25) {
         var op_kind = tokens[(*index)].kind;
         (*index) = (*index) + 1;
         var rhs_id = -1;
@@ -435,7 +461,7 @@ fn parse_or_expr(
     if !parse_and_expr(arena, tokens, token_count, index, @lhs_id, errors) {
         return false;
     }
-    while (*index) < token_count and tokens[(*index)].kind == 60 {
+    while (*index) < token_count and (tokens[(*index)].kind == 60 or tokens[(*index)].kind == 26) {
         var op_kind = tokens[(*index)].kind;
         (*index) = (*index) + 1;
         var rhs_id = -1;
@@ -462,6 +488,39 @@ fn parse_type_ref_direct(tokens: @token::Token?, token_count: int, index: @int, 
     if tokens == null or (*index) >= token_count {
         return fail(errors, 12, 0, 0);
     }
+    if tokens[(*index)].kind == 74 {
+        (*index) = (*index) + 1;
+        if (*index) < token_count and tokens[(*index)].kind == 75 {
+            (*index) = (*index) + 1;
+        }
+        if !is_type_token_kind(tokens[(*index)].kind) {
+            return fail(errors, 12, token_start(tokens[(*index)]), token_end(tokens[(*index)]));
+        }
+        var target_kind = tokens[(*index)].kind;
+        var target_start = token_start(tokens[(*index)]);
+        var target_end = token_end(tokens[(*index)]);
+        (*index) = (*index) + 1;
+        (*out_type_ref) = ast::make_type_ref(target_kind, target_start, target_end);
+        return true;
+    }
+    if tokens[(*index)].kind == 61 {
+        var at_start = token_start(tokens[(*index)]);
+        (*index) = (*index) + 1;
+        if !is_type_token_kind(tokens[(*index)].kind) {
+            return fail(errors, 12, token_start(tokens[(*index)]), token_end(tokens[(*index)]));
+        }
+        var target_kind = tokens[(*index)].kind;
+        var target_start = token_start(tokens[(*index)]);
+        var target_end = token_end(tokens[(*index)]);
+        (*index) = (*index) + 1;
+        if (*index) < token_count and tokens[(*index)].kind == 62 {
+            (*out_type_ref) = ast::make_type_ref(target_kind, at_start, token_end(tokens[(*index)]));
+            (*index) = (*index) + 1;
+        } else {
+            (*out_type_ref) = ast::make_type_ref(target_kind, at_start, target_end);
+        }
+        return true;
+    }
     if !is_type_token_kind(tokens[(*index)].kind) {
         return fail(errors, 12, token_start(tokens[(*index)]), token_end(tokens[(*index)]));
     }
@@ -479,6 +538,19 @@ fn parse_type_ref_direct(tokens: @token::Token?, token_count: int, index: @int, 
         return true;
     }
     (*out_type_ref) = ast::make_type_ref(first_kind, first_start, first_end);
+    if (*index) < token_count and tokens[(*index)].kind == 74 {
+        (*index) = (*index) + 1;
+        if (*index) < token_count and tokens[(*index)].kind == 75 {
+            (*index) = (*index) + 1;
+        } else {
+            while (*index) < token_count and tokens[(*index)].kind == 1 {
+                (*index) = (*index) + 1;
+            }
+            if (*index) < token_count and tokens[(*index)].kind == 75 {
+                (*index) = (*index) + 1;
+            }
+        }
+    }
     return true;
 }
 
@@ -597,11 +669,53 @@ fn parse_assign_stmt_at(
     errors: @array::Array<ast::ParseError>
 ): bool {
     if tokens == null or (*index) >= token_count { return fail(errors, 30, 0, 0); }
+    if tokens[(*index)].kind == 48 {
+        var start = token_start(tokens[(*index)]);
+        (*index) = (*index) + 1;
+        if (*index) >= token_count or tokens[(*index)].kind != 6 {
+            return fail(errors, 31, start, start);
+        }
+        var name_start = token_start(tokens[(*index)]);
+        var name_end = token_end(tokens[(*index)]);
+        (*index) = (*index) + 1;
+        while (*index) < token_count and tokens[(*index)].kind == 68 {
+            (*index) = (*index) + 1;
+            if (*index) >= token_count or tokens[(*index)].kind != 6 {
+                return fail(errors, 31, start, start);
+            }
+            name_start = token_start(tokens[(*index)]);
+            name_end = token_end(tokens[(*index)]);
+            (*index) = (*index) + 1;
+        }
+        if (*index) >= token_count or tokens[(*index)].kind != 57 {
+            return fail(errors, 32, start, start);
+        }
+        (*index) = (*index) + 1;
+        var value_expr_id = -1;
+        if !parse_expr_at(arena, tokens, token_count, index, @value_expr_id, errors) { return false; }
+        if (*index) >= token_count or tokens[(*index)].kind != 65 {
+            return fail(errors, 33, start, start);
+        }
+        (*out_stmt) = ast::make_assign_stmt(name_start, name_end, value_expr_id, start, token_end(tokens[(*index)]));
+        (*index) = (*index) + 1;
+        return true;
+    }
     if tokens[(*index)].kind != 6 { return fail(errors, 31, token_start(tokens[(*index)]), token_end(tokens[(*index)])); }
     var name_start = token_start(tokens[(*index)]);
     var name_end = token_end(tokens[(*index)]);
     var start = name_start;
     (*index) = (*index) + 1;
+
+    while (*index) < token_count and tokens[(*index)].kind == 68 {
+        (*index) = (*index) + 1;
+        if (*index) >= token_count or tokens[(*index)].kind != 6 {
+            return fail(errors, 31, start, start);
+        }
+        name_start = token_start(tokens[(*index)]);
+        name_end = token_end(tokens[(*index)]);
+        (*index) = (*index) + 1;
+    }
+
     if (*index) >= token_count or tokens[(*index)].kind != 57 {
         if (*index) < token_count { return fail(errors, 32, token_start(tokens[(*index)]), token_end(tokens[(*index)])); }
         return fail(errors, 32, start, start);
@@ -694,8 +808,20 @@ fn parse_if_stmt_at(
     if (*index) < token_count and tokens[(*index)].kind == 16 {
         (*index) = (*index) + 1;
         has_else_block = true;
-        if !parse_block_at(arena, tokens, token_count, index, @else_block_id, errors) { return false; }
-        end = (*arena).blocks[else_block_id].span.end;
+        if (*index) < token_count and tokens[(*index)].kind == 15 {
+            var else_if_stmt = ast::make_empty_if_stmt();
+            if !parse_if_stmt_at(arena, tokens, token_count, index, @else_if_stmt, errors) { return false; }
+            var stmt = ast::make_if_only_stmt(else_if_stmt);
+            var stmt_id = ast::push_stmt(arena, stmt);
+            var stmt_refs: array::Array<int> = array::Array();
+            stmt_refs.push(stmt_id);
+            var ref_start = ast::append_stmt_refs(arena, @stmt_refs);
+            else_block_id = ast::push_block(arena, ast::make_block(ref_start, 1, stmt.span.start, stmt.span.end));
+            end = stmt.span.end;
+        } else {
+            if !parse_block_at(arena, tokens, token_count, index, @else_block_id, errors) { return false; }
+            end = (*arena).blocks[else_block_id].span.end;
+        }
     }
     (*out_stmt) = ast::make_if_stmt(condition_expr_id, then_block_id, has_else_block, else_block_id, start, end);
     return true;
@@ -917,6 +1043,12 @@ export fn parse_first_stmt(
         (*out_stmt_id) = ast::push_stmt(arena, continue_stmt);
         return true;
     }
+    if kind == 48 {
+        var assign_stmt = ast::make_empty_assign_stmt();
+        if !parse_assign_stmt_at(arena, tokens, token_count, index, @assign_stmt, errors) { return false; }
+        (*out_stmt_id) = ast::push_stmt(arena, ast::make_assign_only_stmt(assign_stmt));
+        return true;
+    }
     if kind == 18 {
         var return_stmt = ast::make_empty_return_stmt();
         if !parse_return_stmt_at(arena, tokens, token_count, index, @return_stmt, errors) { return false; }
@@ -924,6 +1056,21 @@ export fn parse_first_stmt(
         return true;
     }
     if kind == 6 {
+        var save = (*index);
+        var si = save + 1;
+        var is_assign = false;
+        while si < token_count and tokens[si].kind == 68 {
+            si = si + 1;
+            if si < token_count and tokens[si].kind == 6 { si = si + 1; } else { break; }
+        }
+        if si < token_count and tokens[si].kind == 57 { is_assign = true; }
+
+        if is_assign {
+            var assign_stmt = ast::make_empty_assign_stmt();
+            if !parse_assign_stmt_at(arena, tokens, token_count, index, @assign_stmt, errors) { return false; }
+            (*out_stmt_id) = ast::push_stmt(arena, ast::make_assign_only_stmt(assign_stmt));
+            return true;
+        }
         if (*index) + 1 < token_count and tokens[(*index) + 1].kind == 57 {
             var assign_stmt = ast::make_empty_assign_stmt();
             if !parse_assign_stmt_at(arena, tokens, token_count, index, @assign_stmt, errors) { return false; }
@@ -937,7 +1084,7 @@ export fn parse_first_stmt(
 
 fn parse_param_info_at(tokens: @token::Token?, token_count: int, index: @int, out_param: @ast::ParamInfo, errors: @array::Array<ast::ParseError>): bool {
     if tokens == null or (*index) >= token_count { return fail(errors, 110, 0, 0); }
-    if tokens[(*index)].kind != 6 { return fail(errors, 111, token_start(tokens[(*index)]), token_end(tokens[(*index)])); }
+    if tokens[(*index)].kind != 6 and tokens[(*index)].kind != 29 { return fail(errors, 111, token_start(tokens[(*index)]), token_end(tokens[(*index)])); }
     var name_start = token_start(tokens[(*index)]);
     var name_end = token_end(tokens[(*index)]);
     (*index) = (*index) + 1;
@@ -967,6 +1114,15 @@ fn parse_function_at(
     var name_start = token_start(tokens[(*index)]);
     var name_end = token_end(tokens[(*index)]);
     (*index) = (*index) + 1;
+
+    if (*index) < token_count and (tokens[(*index)].kind >= 46 and tokens[(*index)].kind <= 50) {
+        name_end = token_end(tokens[(*index)]);
+        (*index) = (*index) + 1;
+        if (*index) < token_count and tokens[(*index)].kind == 57 {
+            name_end = token_end(tokens[(*index)]);
+            (*index) = (*index) + 1;
+        }
+    }
     if (*index) >= token_count or tokens[(*index)].kind != 70 {
         if (*index) < token_count { return fail(errors, 123, token_start(tokens[(*index)]), token_end(tokens[(*index)])); }
         return fail(errors, 123, start, start);

@@ -190,15 +190,20 @@ fn resolve_function(p: @Project, mod_idx: int, func_id: int, errors: @array::Arr
     
     // Resolve return type
     if func.has_return_type {
-        if !resolve_type_ref(p, mod_idx, @(*(*p).arena).functions[func_id].return_type_ref, errors) { ok = false; }
+        var func_copy = (*(*p).arena).functions[func_id];
+        if !resolve_type_ref(p, mod_idx, @func_copy.return_type_ref, errors) { ok = false; }
+        (*(*p).arena).functions[func_id] = func_copy;
     }
     
     // Resolve params
     var i = func.param_start;
     var end_i = func.param_start + func.param_len;
     while i < end_i {
-        var param_idx = i;
-        if !resolve_type_ref(p, mod_idx, @(*(*p).arena).params[param_idx].type_ref, errors) { ok = false; }
+        var param = (*(*p).arena).params[i];
+        if param.has_type_hint {
+            if !resolve_type_ref(p, mod_idx, @param.type_ref, errors) { ok = false; }
+        }
+        (*(*p).arena).params[i] = param;
         i = i + 1;
     }
     
@@ -217,8 +222,9 @@ fn resolve_struct(p: @Project, mod_idx: int, struct_id: int, errors: @array::Arr
     var i = s.field_start;
     var end_i = s.field_start + s.field_len;
     while i < end_i {
-        var field_idx = i;
-        if !resolve_type_ref(p, mod_idx, @(*(*p).arena).struct_fields[field_idx].type_ref, errors) { ok = false; }
+        var field = (*(*p).arena).struct_fields[i];
+        if !resolve_type_ref(p, mod_idx, @field.type_ref, errors) { ok = false; }
+        (*(*p).arena).struct_fields[i] = field;
         i = i + 1;
     }
     return ok;
@@ -231,8 +237,9 @@ fn resolve_class(p: @Project, mod_idx: int, class_id: int, errors: @array::Array
     var i = c.field_start;
     var end_i = c.field_start + c.field_len;
     while i < end_i {
-        var field_idx = i;
-        if !resolve_type_ref(p, mod_idx, @(*(*p).arena).class_fields[field_idx].type_ref, errors) { ok = false; }
+        var field = (*(*p).arena).class_fields[i];
+        if !resolve_type_ref(p, mod_idx, @field.type_ref, errors) { ok = false; }
+        (*(*p).arena).class_fields[i] = field;
         i = i + 1;
     }
     
@@ -356,11 +363,11 @@ fn resolve_expr(p: @Project, mod_idx: int, expr_id: int, errors: @array::Array<a
 }
 
 fn resolve_type_ref(p: @Project, mod_idx: int, type_ref: @ast::TypeRef, errors: @array::Array<ast::ParseError>): bool {
-    if (*type_ref).token_kind == 0 { // Named type
+    if (*type_ref).token_kind == 6 { // Named type
         var def_id = find_name(p, mod_idx, (*type_ref).qualifier_span, (*type_ref).name_span);
         (*type_ref).resolved_def_id = def_id;
         if def_id == -1 {
-            return false; // Type not found!
+            return false;
         }
     }
     return true;
