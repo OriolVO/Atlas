@@ -1883,8 +1883,14 @@ impl NativeCodegen {
                 return Ok((value, class_name));
             }
         }
-        if let AtlasType::Class(class_name) = ty {
-            return Ok((value, class_name));
+        if let AtlasType::Class(class_name) = &ty {
+            let tmp_ptr = self.next_temp();
+            let llvm_class_ty = map_type(&ty)?;
+            self.output.push_str(&format!(
+                "    {} = alloca {}\n    store {} {}, {}* {}\n",
+                tmp_ptr, llvm_class_ty, llvm_class_ty, value, llvm_class_ty, tmp_ptr
+            ));
+            return Ok((tmp_ptr, class_name.clone()));
         }
 
         Err(AtlasError::CodegenError {
@@ -2479,6 +2485,61 @@ impl NativeCodegen {
         }
 
         let (value, actual_ty) = self.emit_expr(expr)?;
+        if let (
+            AtlasType::Pointer { target, .. },
+            AtlasType::Slice(elem),
+        ) = (expected_ty, &actual_ty)
+        {
+            if target.as_ref() == elem.as_ref() {
+                let ptr_reg = self.next_temp();
+                let llvm_slice_ty = map_type(&actual_ty)?;
+                self.output.push_str(&format!(
+                    "    {} = extractvalue {} {}, 0\n",
+                    ptr_reg, llvm_slice_ty, value
+                ));
+                return Ok((ptr_reg, expected_ty.clone()));
+            }
+        }
+        if let (
+            AtlasType::Slice(expected_elem),
+            AtlasType::Pointer { target, .. },
+        ) = (expected_ty, &actual_ty)
+        {
+            if expected_elem.as_ref() == target.as_ref() {
+                let slice_ty = AtlasType::Slice(expected_elem.clone());
+                let llvm_slice_ty = map_type(&slice_ty)?;
+                let llvm_ptr_ty = map_type(&actual_ty)?;
+                let with_ptr = self.next_temp();
+                self.output.push_str(&format!(
+                    "    {} = insertvalue {} undef, {} {}, 0\n",
+                    with_ptr, llvm_slice_ty, llvm_ptr_ty, value
+                ));
+                let with_len = self.next_temp();
+                let len_reg = self.next_temp();
+                self.output.push_str(&format!(
+                    "    {} = add i64 0, 0\n    {} = insertvalue {} {}, i64 {}, 1\n",
+                    len_reg, with_len, llvm_slice_ty, with_ptr, len_reg
+                ));
+                return Ok((with_len, slice_ty));
+            }
+        }
+        if let (
+            AtlasType::Pointer { target, .. },
+            AtlasType::Class(actual_class),
+        ) = (expected_ty, &actual_ty)
+        {
+            if let AtlasType::Class(expected_class) = target.as_ref() {
+                if expected_class == actual_class {
+                    let alloca_reg = self.next_temp();
+                    let llvm_class_ty = map_type(&actual_ty)?;
+                    self.output.push_str(&format!(
+                        "    {} = alloca {}\n    store {} {}, {}* {}\n",
+                        alloca_reg, llvm_class_ty, llvm_class_ty, value, llvm_class_ty, alloca_reg
+                    ));
+                    return Ok((alloca_reg, expected_ty.clone()));
+                }
+            }
+        }
         if let (
             AtlasType::Slice(expected_elem),
             AtlasType::Array {

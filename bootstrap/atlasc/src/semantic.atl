@@ -30,39 +30,41 @@ export struct Summary {
     duplicate_field_init_count: int;
 }
 
-fn type_unknown(): int { return 0; }
-fn type_null(): int { return 1; }
-fn type_int(): int { return 31; }
-fn type_bool(): int { return 44; }
-fn type_char(): int { return 45; }
-fn type_float(): int { return 41; }
-fn type_float32(): int { return 42; }
-fn type_float64(): int { return 43; }
-fn type_string_literal(): int { return 100; }
+export fn type_unknown(): int { return 0; }
+export fn type_null(): int { return 1; }
+export fn type_int(): int { return 31; }
+export fn type_bool(): int { return 44; }
+export fn type_char(): int { return 45; }
+export fn type_float(): int { return 41; }
+export fn type_float32(): int { return 42; }
+export fn type_float64(): int { return 43; }
+export fn type_string_literal(): int { return 100; }
 
-fn type_pointer(target: int, nullable: bool): int {
-    return 10000 + target * 2 + (if nullable { 1 } else { 0 });
+export fn type_pointer(target: int, nullable: bool): int {
+    var extra = 0;
+    if nullable { extra = 1; }
+    return 10000 + target * 2 + extra;
 }
 
-fn is_pointer_type(ty: int): bool {
+export fn is_pointer_type(ty: int): bool {
     return ty >= 10000;
 }
 
-fn type_dereference(ptr_ty: int): int {
+export fn type_dereference(ptr_ty: int): int {
     if ptr_ty < 10000 { return type_unknown(); }
     return (ptr_ty - 10000) / 2;
 }
 
-fn is_nullable_pointer(ptr_ty: int): bool {
+export fn is_nullable_pointer(ptr_ty: int): bool {
     if ptr_ty < 10000 { return false; }
     return (ptr_ty - 10000) % 2 == 1;
 }
 
-fn is_integer_type(ty: int): bool {
+export fn is_integer_type(ty: int): bool {
     return ty == 31 or (ty >= 32 and ty <= 40) or (ty >= 33 and ty <= 36) or (ty >= 37 and ty <= 40);
 }
 
-fn is_numeric_type(ty: int): bool {
+export fn is_numeric_type(ty: int): bool {
     return is_integer_type(ty) or ty == type_float() or ty == type_float32() or ty == type_float64();
 }
 
@@ -327,7 +329,7 @@ fn infer_struct_literal_type(
 }
 
 
-fn resolve_type_ref(
+export fn resolve_type_ref(
     p: @resolver::Project,
     type_ref: ast::TypeRef,
     errors: @array::Array<SemanticError>,
@@ -376,7 +378,7 @@ fn resolve_type_ref(
     return type_unknown();
 }
 
-fn name_equals(source: @char?, left: span::Span, right: span::Span): bool {
+export fn name_equals(source: @char?, left: span::Span, right: span::Span): bool {
     var left_len = left.end - left.start;
     if left_len != right.end - right.start {
         return false;
@@ -784,6 +786,24 @@ fn infer_expr_type(
             expect_type(type_bool(), rhs_type, 9, expr.span, errors, summary);
             return type_bool();
         }
+        if expr.op_kind == 62 {
+            if is_unary and lhs_type >= 3000 {
+                var choice_index = lhs_type - 3000;
+                if choice_index >= 0 and choice_index < (*(*p).arena).choices.len {
+                    var choice_info = (*(*p).arena).choices[choice_index];
+                    if choice_info.variant_len > 0 {
+                        var first_variant = (*(*p).arena).choice_variants[choice_info.variant_start];
+                        if first_variant.has_payload {
+                            return resolve_type_ref(p, first_variant.payload_type_ref, errors, summary);
+                        }
+                        return lhs_type;
+                    }
+                }
+            }
+            errors.push(make_error(8, expr.span.start, expr.span.end));
+            (*summary).type_mismatch_count = (*summary).type_mismatch_count + 1;
+            return type_unknown();
+        }
         if expr.op_kind == 58 or expr.op_kind == 27 {
             if is_unary {
                 expect_type(type_bool(), lhs_type, 9, expr.span, errors, summary);
@@ -825,6 +845,19 @@ fn infer_expr_type(
         }
 
         var function_info = (*(*p).arena).functions[fn_index];
+        var is_generic = function_info.generic_param_len > 0;
+
+        if is_generic {
+            while i < expr.child_len {
+                infer_expr_type(p, (*(*p).arena).expr_refs[expr.child_start + i], locals, depths, local_types, local_count,     depth, errors, summary);
+                i = i + 1;
+            }
+            if function_info.has_return_type {
+                return resolve_type_ref(p, function_info.return_type_ref, errors, summary);
+            }
+            return type_unknown();
+        }
+
         if expr.child_len != function_info.param_len {
             errors.push(make_error(7, expr.span.start, expr.span.end));
             (*summary).wrong_arg_count_count = (*summary).wrong_arg_count_count + 1;
@@ -1174,6 +1207,10 @@ export fn analyze_file(p: @resolver::Project, file_info: ast::FileInfo, summary:
         var item = (*(*p).arena).items[file_info.item_start + i];
         if item.kind == 1 {
             var function_info = (*(*p).arena).functions[item.function_id];
+            if function_info.generic_param_len > 0 {
+                i = i + 1;
+                continue;
+            }
             var locals: array::Array<span::Span> = array::Array();
             var local_depths: array::Array<int> = array::Array();
             var local_types: array::Array<int> = array::Array();
@@ -1221,6 +1258,10 @@ export fn analyze_file(p: @resolver::Project, file_info: ast::FileInfo, summary:
             while m < class_info.method_len {
                 var method = (*(*p).arena).class_methods[class_info.method_start + m];
                 var method_info = (*(*p).arena).functions[method.function_id];
+                if class_info.generic_param_len > 0 or method_info.generic_param_len > 0 {
+                    m = m + 1;
+                    continue;
+                }
                 var locals: array::Array<span::Span> = array::Array();
                 var local_depths: array::Array<int> = array::Array();
                 var local_types: array::Array<int> = array::Array();

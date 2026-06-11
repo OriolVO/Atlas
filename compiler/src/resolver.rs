@@ -31,6 +31,7 @@ impl Project {
         let mut files: HashMap<String, (PathBuf, SourceFile, Vec<String>)> = HashMap::new();
         let mut sources = HashMap::new();
         let mut queue = vec![("main".to_string(), entry_path.to_path_buf())];
+        let entry_dir = entry_path.parent().unwrap_or(entry_path);
         let prelude_modules = &["result"];
         for pm in prelude_modules {
             let pm_path = stdlib_path.join(format!("{}.atl", pm));
@@ -89,24 +90,59 @@ impl Project {
                     continue;
                 }
 
-                let local_path = parent_dir.join(format!("{}.atl", imp));
+                let dotted_path = imp.replace('.', "/");
+                let mut found = false;
+
+                let local_path = parent_dir.join(format!("{}.atl", dotted_path));
                 if local_path.exists() {
-                    queue.push((imp, local_path));
-                } else {
+                    queue.push((imp.clone(), local_path));
+                    found = true;
+                }
+                if !found {
+                    let local_path = parent_dir.join(format!("{}.atl", imp));
+                    if local_path.exists() {
+                        queue.push((imp.clone(), local_path));
+                        found = true;
+                    }
+                }
+                if !found {
+                    let entry_path = entry_dir.join(format!("{}.atl", dotted_path));
+                    if entry_path.exists() {
+                        queue.push((imp.clone(), entry_path));
+                        found = true;
+                    }
+                }
+                if !found {
+                    let entry_path = entry_dir.join(format!("{}.atl", imp));
+                    if entry_path.exists() {
+                        queue.push((imp.clone(), entry_path));
+                        found = true;
+                    }
+                }
+                if !found {
+                    let std_path = stdlib_path.join(format!("{}.atl", dotted_path));
+                    if std_path.exists() {
+                        queue.push((imp.clone(), std_path));
+                        found = true;
+                    }
+                }
+                if !found {
                     let std_path = stdlib_path.join(format!("{}.atl", imp));
                     if std_path.exists() {
-                        queue.push((imp, std_path));
-                    } else {
-                        return Err(vec![(
-                            path.to_string_lossy().into_owned(),
-                            source.clone(),
-                            AtlasError::TypeError {
-                                span: Span::new(0, 0),
-                                message: format!("imported module '{}' not found", imp),
-                                hint: Some(format!("checked: '{}' and '{}'", local_path.display(), std_path.display())),
-                            }
-                        )]);
+                        queue.push((imp.clone(), std_path));
+                        found = true;
                     }
+                }
+                if !found {
+                    return Err(vec![(
+                        path.to_string_lossy().into_owned(),
+                        source.clone(),
+                        AtlasError::TypeError {
+                            span: Span::new(0, 0),
+                            message: format!("imported module '{}' not found", imp),
+                            hint: Some(format!("checked relative to '{}' and stdlib", parent_dir.display())),
+                        }
+                    )]);
                 }
             }
         }
@@ -329,12 +365,15 @@ impl<'a> NameResolver<'a> {
                     return Some(format!("{}.{}", self.current_module, item_name));
                 }
                 if !self.imports.contains(mod_name) {
-                    self.errors.push(AtlasError::TypeError {
-                        span: Span::new(0, 0),
-                        message: format!("module '{}' is not imported in this file", mod_name),
-                        hint: Some(format!("Add 'import {};' at the top of the file", mod_name)),
-                    });
-                    return None;
+                    let dotted_match = self.imports.iter().any(|imp| imp.starts_with(&format!("{}.", mod_name)));
+                    if !dotted_match {
+                        self.errors.push(AtlasError::TypeError {
+                            span: Span::new(0, 0),
+                            message: format!("module '{}' is not imported in this file", mod_name),
+                            hint: Some(format!("Add 'import {};' at the top of the file", mod_name)),
+                        });
+                        return None;
+                    }
                 }
                 if let Some(module_interface) = self.global_modules.get(mod_name) {
                     if module_interface.exports.contains(&item_name) {
@@ -427,16 +466,25 @@ impl<'a> NameResolver<'a> {
                 }
             }
             Expr::StaticCall { class_name, method_name, args, span } => {
-                // Is `class_name` a known imported module (or the current one)?
-                if self.imports.contains(class_name.as_str()) || class_name == self.current_module {
-                    if let Some(mi) = self.global_modules.get(class_name.as_str()) {
+                let dotted_class = class_name.replace("::", ".");
+                let is_imported = self.imports.contains(class_name.as_str())
+                    || self.imports.contains(&dotted_class)
+                    || self.imports.iter().any(|imp| imp.starts_with(&format!("{}.", class_name)));
+                if is_imported || class_name == self.current_module {
+                    let lookup_name = if self.imports.contains(&dotted_class) {
+                        &dotted_class
+                    } else if self.imports.contains(class_name.as_str()) {
+                        class_name.as_str()
+                    } else {
+                        class_name.as_str()
+                    };
+                    if let Some(mi) = self.global_modules.get(lookup_name) {
                         let is_fn     = mi.functions.contains(method_name.as_str());
                         let is_extern = mi.extern_fns.contains(method_name.as_str());
                         let is_class  = mi.classes.contains(method_name.as_str());
                         let is_struct = mi.structs.contains(method_name.as_str());
 
                         if is_fn || is_extern || is_class || is_struct {
-                            // Visibility check (own-module items are always visible)
                             if class_name != self.current_module && !mi.exports.contains(method_name.as_str()) {
                                 self.errors.push(AtlasError::TypeError {
                                     span: Span::new(0, 0),
@@ -452,11 +500,10 @@ impl<'a> NameResolver<'a> {
                                 return;
                             }
 
-                            // Extern fns keep their bare name; regular fns get qualified
                             let callee = if is_extern {
                                 method_name.clone()
                             } else {
-                                format!("{}.{}", class_name, method_name)
+                                format!("{}.{}", lookup_name, method_name)
                             };
 
                             let mut resolved_args = std::mem::take(args);

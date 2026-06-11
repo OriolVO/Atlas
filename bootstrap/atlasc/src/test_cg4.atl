@@ -1,0 +1,9 @@
+import llvm_codegen.native;
+import resolver;
+import span;
+
+fn main(): int {
+    var g = llvm_codegen.native::make_empty_codegen();
+    var p: @resolver::Project = null;
+    return 0;
+}

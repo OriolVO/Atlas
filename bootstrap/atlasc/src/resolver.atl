@@ -20,13 +20,13 @@ export struct Project {
 }
 
 // Builds the project from an entry point file path.
-export fn load_and_resolve(entry_path: string::String, arena: @ast::Arena, source: @array::Array<char>, modules: @array::Array<ModuleInterface>, errors: @array::Array<ast::ParseError>): bool {
+export fn load_and_resolve(entry_path: @string::String, arena: @ast::Arena, source: @array::Array<char>, modules: @array::Array<ModuleInterface>, errors: @array::Array<ast::ParseError>): bool {
     var p = Project { arena: arena, source: source, modules: modules };
     
     var entry_chars: array::Array<char> = array::Array();
     var i = 0;
-    while i < entry_path.len {
-        entry_chars.push(entry_path.data[i]);
+    while i < (*entry_path).len {
+        entry_chars.push((*entry_path).data[i]);
         i = i + 1;
     }
     

@@ -1,0 +1,15 @@
+import llvm_codegen.native;
+import resolver;
+import array;
+import ast;
+import span;
+
+fn main(): int {
+    var g = llvm_codegen.native::make_empty_codegen();
+    var arena = ast::make_empty_arena();
+    var source: array::Array<char> = array::Array();
+    var modules: array::Array<resolver::ModuleInterface> = array::Array();
+    var proj = resolver::Project { arena: @arena, source: @source, modules: @modules };
+    llvm_codegen.native::generate(@g, @proj);
+    return 0;
+}

@@ -286,6 +286,16 @@ fn parse_primary_expr(
         (*out_expr_id) = ast::push_expr(arena, ast::make_member_expr(member_start, member_end, child_start, 1, base_expr.span.start, member_end));
         (*index) = (*index) + 1;
     }
+    if (*index) < token_count and tokens[(*index)].kind == 62 {
+        var base_id = (*out_expr_id);
+        var base_expr = (*arena).exprs[base_id];
+        var start = token_start(tokens[(*index)]);
+        (*index) = (*index) + 1;
+        var refs: array::Array<int> = array::Array();
+        refs.push(base_id);
+        var child_start = ast::append_expr_refs(arena, @refs);
+        (*out_expr_id) = ast::push_expr(arena, ast::make_binary_expr(62, child_start, 1, base_expr.span.start, start));
+    }
     return true;
 }
 

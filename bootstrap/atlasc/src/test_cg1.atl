@@ -1,0 +1,6 @@
+import llvm_codegen.native;
+
+fn main(): int {
+    var g = llvm_codegen.native::make_empty_codegen();
+    return 0;
+}

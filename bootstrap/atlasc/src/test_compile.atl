@@ -1,0 +1,11 @@
+import llvm_codegen.native;
+import semantic;
+import resolver;
+import ast;
+import array;
+import span;
+
+fn main(): int {
+    var g = llvm_codegen.native::make_empty_codegen();
+    return 0;
+}

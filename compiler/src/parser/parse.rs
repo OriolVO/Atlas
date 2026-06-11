@@ -264,9 +264,18 @@ impl<'src> Parser<'src> {
 
     fn parse_import(&mut self) -> Option<Spanned<String>> {
         self.expect(&Token::Import)?;
-        let name = self.expect_identifier()?;
+        let first = self.expect_identifier()?;
+        let mut name = first.0;
+        let mut span = first.1;
+        while self.peek() == &Token::Dot {
+            self.advance();
+            let next = self.expect_identifier()?;
+            name.push('.');
+            name.push_str(&next.0);
+            span.end = next.1.end;
+        }
         self.expect(&Token::Semicolon)?;
-        Some(name)
+        Some((name, span))
     }
 
     fn parse_class_decl(&mut self) -> Option<ClassDecl> {
@@ -917,75 +926,98 @@ impl<'src> Parser<'src> {
                 span,
             },
             Token::Identifier(name) => {
-                if self.peek() == &Token::ColonColon {
-                    let mut path = vec![name];
-                    let mut end_span = span;
-                    while self.peek() == &Token::ColonColon {
-                        self.advance(); // consume "::"
-                        let (next_id, next_span) = self.expect_identifier()?;
-                        path.push(next_id);
-                        end_span = next_span;
+                if self.peek() == &Token::ColonColon || self.peek() == &Token::Dot {
+                    let mut has_coloncolon = false;
+                    let mut lookahead = 0;
+                    while self.cursor + lookahead < self.tokens.len() {
+                        let tok = &self.tokens[self.cursor + lookahead].0;
+                        if *tok == Token::ColonColon {
+                            has_coloncolon = true;
+                            break;
+                        }
+                        if *tok != Token::Dot && !matches!(tok, Token::Identifier(_)) {
+                            break;
+                        }
+                        lookahead = lookahead + 1;
                     }
-                    let type_args = if self.peek() == &Token::Lt {
-                        self.try_parse_generic_call_type_args()
-                    } else {
-                        None
-                    };
-                    if path.len() >= 2 {
-                        let member = path.pop().unwrap();
-                        let class_name = path.join("::");
-                        if self.peek() == &Token::LParen {
-                            let (args, r_span) = self.parse_call_args()?;
-                            if let Some(type_args) = type_args {
-                                Expr::GenericStaticCall {
-                                    class_name,
-                                    method_name: member,
-                                    type_args,
-                                    args,
-                                    span: Span::new(span.start, r_span.end),
-                                }
-                            } else {
-                                Expr::StaticCall {
-                                    class_name,
-                                    method_name: member,
-                                    args,
-                                    span: Span::new(span.start, r_span.end),
-                                }
-                            }
-                        } else if self.peek() == &Token::LBrace
-                            && (self.peek_nth(1) == &Token::RBrace
-                                || (matches!(self.peek_nth(1), Token::Identifier(_)) && self.peek_nth(2) == &Token::Colon))
-                        {
+                    if has_coloncolon {
+                        let mut path = vec![name];
+                        let mut end_span = span;
+                        while self.peek() == &Token::Dot {
                             self.advance();
-                            let mut fields = Vec::new();
-                            if self.peek() != &Token::RBrace {
-                                loop {
-                                    let field_name = self.expect_identifier()?;
-                                    self.expect(&Token::Colon)?;
-                                    let value = self.parse_expr(0)?;
-                                    fields.push((field_name, value));
-                                    if self.peek() == &Token::Comma {
-                                        self.advance();
-                                        if self.peek() == &Token::RBrace {
-                                            break;
-                                        }
-                                    } else {
-                                        break;
+                            let (next_id, next_span) = self.expect_identifier()?;
+                            path.push(next_id);
+                            end_span = next_span;
+                        }
+                        while self.peek() == &Token::ColonColon {
+                            self.advance();
+                            let (next_id, next_span) = self.expect_identifier()?;
+                            path.push(next_id);
+                            end_span = next_span;
+                        }
+                        let type_args = if self.peek() == &Token::Lt {
+                            self.try_parse_generic_call_type_args()
+                        } else {
+                            None
+                        };
+                        if path.len() >= 2 {
+                            let member = path.pop().unwrap();
+                            let class_name = path.join("::");
+                            if self.peek() == &Token::LParen {
+                                let (args, r_span) = self.parse_call_args()?;
+                                if let Some(type_args) = type_args {
+                                    Expr::GenericStaticCall {
+                                        class_name,
+                                        method_name: member,
+                                        type_args,
+                                        args,
+                                        span: Span::new(span.start, r_span.end),
+                                    }
+                                } else {
+                                    Expr::StaticCall {
+                                        class_name,
+                                        method_name: member,
+                                        args,
+                                        span: Span::new(span.start, r_span.end),
                                     }
                                 }
+                            } else if self.peek() == &Token::LBrace
+                                && (self.peek_nth(1) == &Token::RBrace
+                                    || (matches!(self.peek_nth(1), Token::Identifier(_)) && self.peek_nth(2) == &Token::Colon))
+                            {
+                                self.advance();
+                                let mut fields = Vec::new();
+                                if self.peek() != &Token::RBrace {
+                                    loop {
+                                        let field_name = self.expect_identifier()?;
+                                        self.expect(&Token::Colon)?;
+                                        let value = self.parse_expr(0)?;
+                                        fields.push((field_name, value));
+                                        if self.peek() == &Token::Comma {
+                                            self.advance();
+                                            if self.peek() == &Token::RBrace {
+                                                break;
+                                            }
+                                        } else {
+                                            break;
+                                        }
+                                    }
+                                }
+                                let r_span = self.expect(&Token::RBrace)?;
+                                path.push(member);
+                                Expr::StructInit { struct_name: path.join("::"), fields, span: Span::new(span.start, r_span.end) }
+                            } else {
+                                Expr::StaticMember {
+                                    class_name,
+                                    member_name: member,
+                                    span: Span::new(span.start, end_span.end),
+                                }
                             }
-                            let r_span = self.expect(&Token::RBrace)?;
-                            path.push(member);
-                            Expr::StructInit { struct_name: path.join("::"), fields, span: Span::new(span.start, r_span.end) }
                         } else {
-                            Expr::StaticMember {
-                                class_name,
-                                member_name: member,
-                                span: Span::new(span.start, end_span.end),
-                            }
+                            Expr::Var { name: path[0].clone(), span }
                         }
                     } else {
-                        Expr::Var { name: path[0].clone(), span }
+                        Expr::Var { name, span }
                     }
                 } else if self.peek() == &Token::Lt {
                     if let Some(type_args) = self.try_parse_generic_call_type_args() {
