@@ -31,10 +31,40 @@ export struct Summary {
 }
 
 fn type_unknown(): int { return 0; }
+fn type_null(): int { return 1; }
 fn type_int(): int { return 31; }
 fn type_bool(): int { return 44; }
 fn type_char(): int { return 45; }
+fn type_float(): int { return 41; }
+fn type_float32(): int { return 42; }
+fn type_float64(): int { return 43; }
 fn type_string_literal(): int { return 100; }
+
+fn type_pointer(target: int, nullable: bool): int {
+    return 10000 + target * 2 + (if nullable { 1 } else { 0 });
+}
+
+fn is_pointer_type(ty: int): bool {
+    return ty >= 10000;
+}
+
+fn type_dereference(ptr_ty: int): int {
+    if ptr_ty < 10000 { return type_unknown(); }
+    return (ptr_ty - 10000) / 2;
+}
+
+fn is_nullable_pointer(ptr_ty: int): bool {
+    if ptr_ty < 10000 { return false; }
+    return (ptr_ty - 10000) % 2 == 1;
+}
+
+fn is_integer_type(ty: int): bool {
+    return ty == 31 or (ty >= 32 and ty <= 40) or (ty >= 33 and ty <= 36) or (ty >= 37 and ty <= 40);
+}
+
+fn is_numeric_type(ty: int): bool {
+    return is_integer_type(ty) or ty == type_float() or ty == type_float32() or ty == type_float64();
+}
 
 export fn make_error(kind: int, start: int, end: int): SemanticError {
     return SemanticError { kind: kind, span: span::make(start, end) };
@@ -71,12 +101,27 @@ fn find_field_type(
     errors: @array::Array<SemanticError>,
     summary: @Summary
 ): int {
-    if struct_type < 1000 {
+    var target = struct_type;
+    if is_pointer_type(struct_type) {
+        if is_nullable_pointer(struct_type) {
+            errors.push(make_error(17, member_name.start, member_name.end));
+            (*summary).type_mismatch_count = (*summary).type_mismatch_count + 1;
+            return type_unknown();
+        }
+        target = type_dereference(struct_type);
+    }
+    if target >= 4000 {
+        var class_index = target - 4000;
+        if class_index < (*(*p).arena).classes.len {
+            return find_class_field_type(p, class_index, member_name, errors, summary);
+        }
+    }
+    if target < 1000 {
         errors.push(make_error(13, member_name.start, member_name.end));
         (*summary).bad_member_base_count = (*summary).bad_member_base_count + 1;
         return type_unknown();
     }
-    var struct_index = struct_type - 1000;
+    var struct_index = target - 1000;
     if struct_index >= (*(*p).arena).structs.len {
         errors.push(make_error(13, member_name.start, member_name.end));
         (*summary).bad_member_base_count = (*summary).bad_member_base_count + 1;
@@ -297,6 +342,15 @@ fn resolve_type_ref(
     if type_ref.token_kind == 45 {
         return type_char();
     }
+    if type_ref.token_kind == 41 {
+        return type_float();
+    }
+    if type_ref.token_kind == 42 {
+        return type_float32();
+    }
+    if type_ref.token_kind == 43 {
+        return type_float64();
+    }
     if type_ref.token_kind == 6 {
         if type_ref.resolved_def_id >= 0 {
             var item = (*(*p).arena).items[type_ref.resolved_def_id];
@@ -306,7 +360,7 @@ fn resolve_type_ref(
                 return 2000 + item.enum_id;
             } else if item.kind == 4 {
                 return 3000 + item.choice_id;
-            } else if item.kind == 8 {
+            } else if item.kind == 6 {
                 return 4000 + item.class_id;
             }
         }
@@ -346,6 +400,38 @@ fn find_struct_index(p: @resolver::Project, candidate: span::Span): int {
         i = i + 1;
     }
     return -1;
+}
+
+fn find_class_index(p: @resolver::Project, candidate: span::Span): int {
+    var i = 0;
+    while i < (*(*p).arena).classes.len {
+        if name_equals((*(*p).source).data, (*(*p).arena).classes[i].name_span, candidate) {
+            return i;
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+fn find_class_field_type(
+    p: @resolver::Project,
+    class_id: int,
+    member_name: span::Span,
+    errors: @array::Array<SemanticError>,
+    summary: @Summary
+): int {
+    var class_info = (*(*p).arena).classes[class_id];
+    var i = 0;
+    while i < class_info.field_len {
+        var field = (*(*p).arena).class_fields[class_info.field_start + i];
+        if name_equals((*(*p).source).data, field.name_span, member_name) {
+            return resolve_type_ref(p, field.type_ref, errors, summary);
+        }
+        i = i + 1;
+    }
+    errors.push(make_error(12, member_name.start, member_name.end));
+    (*summary).unknown_field_count = (*summary).unknown_field_count + 1;
+    return type_unknown();
 }
 
 fn find_enum_index(p: @resolver::Project, candidate: span::Span): int {
@@ -438,7 +524,24 @@ fn compatible_type(expected: int, actual: int): bool {
     if expected == type_unknown() or actual == type_unknown() {
         return true;
     }
-    return expected == actual;
+    if expected == actual {
+        return true;
+    }
+    if is_pointer_type(expected) and is_pointer_type(actual) {
+        var exp_target = type_dereference(expected);
+        var act_target = type_dereference(actual);
+        if exp_target == act_target {
+            var exp_nullable = is_nullable_pointer(expected);
+            var act_nullable = is_nullable_pointer(actual);
+            if !act_nullable and exp_nullable {
+                return true;
+            }
+        }
+    }
+    if is_pointer_type(expected) and is_nullable_pointer(expected) and actual == type_null() {
+        return true;
+    }
+    return false;
 }
 
 fn expect_type(
@@ -476,6 +579,17 @@ fn infer_expr_type(
 
     var expr = (*(*p).arena).exprs[expr_id];
     if expr.kind == 1 {
+        var null_span = span::make(0, 0);
+        var null_name = span::make(expr.name_span.start, expr.name_span.end);
+        if expr.name_span.end > expr.name_span.start {
+            var null_len = 4;
+            if expr.name_span.end - expr.name_span.start == null_len {
+                var nn = (*(*p).source).data;
+                if nn[expr.name_span.start] == 'n' and nn[expr.name_span.start + 1] == 'u' and nn[expr.name_span.start + 2] == 'l' and nn[expr.name_span.start + 3] == 'l' {
+                    return type_null();
+                }
+            }
+        }
         var local_index = find_visible_name_index((*(*p).source).data, locals, depths, local_count, expr.name_span, depth);
         if local_index < 0 {
             errors.push(make_error(4, expr.name_span.start, expr.name_span.end));
@@ -502,6 +616,10 @@ fn infer_expr_type(
 
     if expr.kind == 8 {
         return type_string_literal();
+    }
+
+    if expr.kind == 12 {
+        return type_float();
     }
 
     if expr.kind == 9 {
@@ -614,14 +732,37 @@ fn infer_expr_type(
         if expr.child_len > 1 {
             rhs_type = infer_expr_type(p, (*(*p).arena).expr_refs[expr.child_start + 1], locals, depths, local_types, local_count,     depth, errors, summary);
         }
-        if expr.op_kind == 47 {
-            expect_type(type_int(), lhs_type, 8, expr.span, errors, summary);
-            if !is_unary {
-                expect_type(type_int(), rhs_type, 8, expr.span, errors, summary);
+        if expr.op_kind == 48 {
+            if is_unary {
+                if !is_pointer_type(lhs_type) {
+                    errors.push(make_error(8, expr.span.start, expr.span.end));
+                    (*summary).type_mismatch_count = (*summary).type_mismatch_count + 1;
+                    return type_unknown();
+                }
+                if is_nullable_pointer(lhs_type) {
+                    errors.push(make_error(17, expr.span.start, expr.span.end));
+                    (*summary).type_mismatch_count = (*summary).type_mismatch_count + 1;
+                    return type_unknown();
+                }
+                return type_dereference(lhs_type);
             }
+            expect_type(type_int(), lhs_type, 8, expr.span, errors, summary);
+            expect_type(type_int(), rhs_type, 8, expr.span, errors, summary);
             return type_int();
         }
-        if expr.op_kind == 46 or expr.op_kind == 48 or expr.op_kind == 49 or expr.op_kind == 50 {
+        if expr.op_kind == 61 {
+            return type_pointer(lhs_type, false);
+        }
+        if expr.op_kind == 47 {
+            if is_unary {
+                expect_type(type_int(), lhs_type, 8, expr.span, errors, summary);
+                return type_int();
+            }
+            expect_type(type_int(), lhs_type, 8, expr.span, errors, summary);
+            expect_type(type_int(), rhs_type, 8, expr.span, errors, summary);
+            return type_int();
+        }
+        if expr.op_kind == 46 or expr.op_kind == 49 or expr.op_kind == 50 {
             expect_type(type_int(), lhs_type, 8, expr.span, errors, summary);
             expect_type(type_int(), rhs_type, 8, expr.span, errors, summary);
             return type_int();
@@ -722,6 +863,7 @@ fn analyze_match_stmt(
     depth: int,
     has_return_type: bool,
     return_type_kind: int,
+    in_loop: bool,
     errors: @array::Array<SemanticError>,
     summary: @Summary
 ) {
@@ -773,12 +915,60 @@ fn analyze_match_stmt(
             }
         }
 
-        analyze_block(p, arm.block_id, locals, local_depths, local_types,     arm_depth, has_return_type, return_type_kind, errors, summary);
+        analyze_block(p, arm.block_id, locals, local_depths, local_types,     arm_depth, has_return_type, return_type_kind, in_loop, errors, summary);
 
         (*locals).len = before_locals;
         (*local_depths).len = before_depths;
         (*local_types).len = before_types;
         i = i + 1;
+    }
+
+    if target_type >= 2000 and target_type < 3000 {
+        var enum_index = target_type - 2000;
+        if enum_index >= 0 and enum_index < (*(*p).arena).enums.len {
+            var enum_info = (*(*p).arena).enums[enum_index];
+            var v = 0;
+            while v < enum_info.variant_len {
+                var variant = (*(*p).arena).enum_variants[enum_info.variant_start + v];
+                var covered = false;
+                var a = 0;
+                while a < match_stmt.arm_len {
+                    var arm = (*(*p).arena).match_arms[match_stmt.arm_start + a];
+                    if name_equals((*(*p).source).data, arm.variant_span, variant.name_span) {
+                        covered = true;
+                    }
+                    a = a + 1;
+                }
+                if !covered {
+                    errors.push(make_error(16, variant.name_span.start, variant.name_span.end));
+                    (*summary).unknown_field_count = (*summary).unknown_field_count + 1;
+                }
+                v = v + 1;
+            }
+        }
+    } else if target_type >= 3000 {
+        var choice_index = target_type - 3000;
+        if choice_index >= 0 and choice_index < (*(*p).arena).choices.len {
+            var choice_info = (*(*p).arena).choices[choice_index];
+            var v = 0;
+            while v < choice_info.variant_len {
+                var variant = (*(*p).arena).choice_variants[choice_info.variant_start + v];
+                var covered = false;
+                var a = 0;
+                while a < match_stmt.arm_len {
+                    var arm = (*(*p).arena).match_arms[match_stmt.arm_start + a];
+                    if name_equals((*(*p).source).data, arm.variant_span, variant.name_span) {
+                        covered = true;
+                    }
+                    a = a + 1;
+                }
+                if !covered {
+                    errors.push(make_error(16, variant.name_span.start, variant.name_span.end));
+                    (*summary).unknown_field_count = (*summary).unknown_field_count + 1;
+                }
+                v = v + 1;
+            }
+        }
     }
 }
 
@@ -795,6 +985,7 @@ fn analyze_block(
     depth: int,
     has_return_type: bool,
     return_type_kind: int,
+    in_loop: bool,
     errors: @array::Array<SemanticError>,
     summary: @Summary
 ) {
@@ -845,16 +1036,16 @@ fn analyze_block(
                 expect_type(local_types[target_index], value_type, 8, stmt.assign_stmt.span, errors, summary);
             }
         } else if stmt.kind == 4 {
-            analyze_block(p, stmt.block_id, locals, local_depths, local_types,     depth + 1, has_return_type, return_type_kind, errors, summary);
+            analyze_block(p, stmt.block_id, locals, local_depths, local_types,     depth + 1, has_return_type, return_type_kind, in_loop, errors, summary);
         } else if stmt.kind == 5 {
             var if_type = infer_expr_type(p, stmt.if_stmt.condition_expr_id, locals.data, local_depths.data, local_types.data, locals.len,     depth, errors, summary);
             if !compatible_type(type_bool(), if_type) {
                 errors.push(make_error(9, stmt.if_stmt.span.start, stmt.if_stmt.span.end));
                 (*summary).bad_condition_count = (*summary).bad_condition_count + 1;
             }
-            analyze_block(p, stmt.if_stmt.then_block_id, locals, local_depths, local_types,     depth + 1, has_return_type, return_type_kind, errors, summary);
+            analyze_block(p, stmt.if_stmt.then_block_id, locals, local_depths, local_types,     depth + 1, has_return_type, return_type_kind, in_loop, errors, summary);
             if stmt.if_stmt.has_else_block {
-                analyze_block(p, stmt.if_stmt.else_block_id, locals, local_depths, local_types,     depth + 1, has_return_type, return_type_kind, errors, summary);
+                analyze_block(p, stmt.if_stmt.else_block_id, locals, local_depths, local_types,     depth + 1, has_return_type, return_type_kind, in_loop, errors, summary);
             }
         } else if stmt.kind == 6 {
             var while_type = infer_expr_type(p, stmt.while_stmt.condition_expr_id, locals.data, local_depths.data, local_types.data, locals.len,     depth, errors, summary);
@@ -862,9 +1053,19 @@ fn analyze_block(
                 errors.push(make_error(9, stmt.while_stmt.span.start, stmt.while_stmt.span.end));
                 (*summary).bad_condition_count = (*summary).bad_condition_count + 1;
             }
-            analyze_block(p, stmt.while_stmt.body_block_id, locals, local_depths, local_types,     depth + 1, has_return_type, return_type_kind, errors, summary);
+            analyze_block(p, stmt.while_stmt.body_block_id, locals, local_depths, local_types,     depth + 1, has_return_type, return_type_kind, true, errors, summary);
+        } else if stmt.kind == 7 {
+            if !in_loop {
+                errors.push(make_error(18, stmt.span.start, stmt.span.end));
+                (*summary).type_mismatch_count = (*summary).type_mismatch_count + 1;
+            }
+        } else if stmt.kind == 8 {
+            if !in_loop {
+                errors.push(make_error(19, stmt.span.start, stmt.span.end));
+                (*summary).type_mismatch_count = (*summary).type_mismatch_count + 1;
+            }
         } else if stmt.kind == 11 {
-            analyze_match_stmt(p, stmt.match_stmt, locals, local_depths, local_types,     depth, has_return_type, return_type_kind, errors, summary);
+            analyze_match_stmt(p, stmt.match_stmt, locals, local_depths, local_types,     depth, has_return_type, return_type_kind, in_loop, errors, summary);
         } else if stmt.kind == 9 {
             if stmt.return_stmt.has_value {
                 var return_type = infer_expr_type(p, stmt.return_stmt.value_expr_id, locals.data, local_depths.data, local_types.data, locals.len,     depth, errors, summary);
@@ -897,6 +1098,8 @@ export fn analyze_file(p: @resolver::Project, file_info: ast::FileInfo, summary:
     var enum_ids: array::Array<int> = array::Array();
     var choice_names: array::Array<span::Span> = array::Array();
     var choice_ids: array::Array<int> = array::Array();
+    var class_names: array::Array<span::Span> = array::Array();
+    var class_ids: array::Array<int> = array::Array();
 
     var i = 0;
     while i < file_info.item_len {
@@ -940,6 +1143,15 @@ export fn analyze_file(p: @resolver::Project, file_info: ast::FileInfo, summary:
             } else {
                 choice_names.push(choice_info.name_span);
                 choice_ids.push(item.choice_id);
+            }
+        } else if item.kind == 6 {
+            var class_info = (*(*p).arena).classes[item.class_id];
+            if find_name_index((*(*p).source).data, class_names.data, class_names.len, class_info.name_span) >= 0 {
+                errors.push(make_error(11, class_info.name_span.start, class_info.name_span.end));
+                (*summary).duplicate_type_count = (*summary).duplicate_type_count + 1;
+            } else {
+                class_names.push(class_info.name_span);
+                class_ids.push(item.class_id);
             }
         }
         i = i + 1;
@@ -993,9 +1205,59 @@ export fn analyze_file(p: @resolver::Project, file_info: ast::FileInfo, summary:
                 1,
                 function_info.has_return_type,
                 resolve_type_ref(p, function_info.return_type_ref, errors, summary),
+                false,
                 errors,
                 summary
             );
+        } else if item.kind == 6 {
+            var class_info = (*(*p).arena).classes[item.class_id];
+            var f = 0;
+            while f < class_info.field_len {
+                var field = (*(*p).arena).class_fields[class_info.field_start + f];
+                resolve_type_ref(p, field.type_ref, errors, summary);
+                f = f + 1;
+            }
+            var m = 0;
+            while m < class_info.method_len {
+                var method = (*(*p).arena).class_methods[class_info.method_start + m];
+                var method_info = (*(*p).arena).functions[method.function_id];
+                var locals: array::Array<span::Span> = array::Array();
+                var local_depths: array::Array<int> = array::Array();
+                var local_types: array::Array<int> = array::Array();
+                var param_i = 0;
+                while param_i < method_info.param_len {
+                    var param = (*(*p).arena).params[method_info.param_start + param_i];
+                    if find_name_index((*(*p).source).data, locals.data, locals.len, param.name_span) >= 0 {
+                        errors.push(make_error(3, param.name_span.start, param.name_span.end));
+                        (*summary).duplicate_param_count = (*summary).duplicate_param_count + 1;
+                    } else {
+                        var param_type = type_unknown();
+                        if param.has_type_hint {
+                            param_type = resolve_type_ref(p, param.type_ref, errors, summary);
+                        }
+                        record_name(@locals, @local_depths, @local_types, param.name_span, 1, param_type);
+                    }
+                    param_i = param_i + 1;
+                }
+                analyze_block(
+                    p,
+                    method_info.body_block_id,
+                    @locals,
+                    @local_depths,
+                    @local_types,
+                    
+                    
+                    
+                    
+                    1,
+                    method_info.has_return_type,
+                    resolve_type_ref(p, method_info.return_type_ref, errors, summary),
+                    false,
+                    errors,
+                    summary
+                );
+                m = m + 1;
+            }
         }
         i = i + 1;
     }

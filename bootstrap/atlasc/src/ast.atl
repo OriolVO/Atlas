@@ -593,6 +593,23 @@ export fn make_string_expr(start: int, end: int): Expr {
     };
 }
 
+export fn make_float_expr(start: int, end: int): Expr {
+    return Expr {
+        kind: 12,
+        name_span: span::make(0, 0),
+        name_ref_start: 0,
+        int_value: 0,
+        bool_value: false,
+        char_value: '\0',
+        op_kind: 0,
+        callee_span: span::make(0, 0),
+        child_start: 0,
+        child_len: 0,
+        resolved_def_id: -1,
+        span: span::make(start, end)
+    };
+}
+
 export fn make_group_expr(child_start: int, child_len: int, start: int, end: int): Expr {
     return Expr {
         kind: 4,

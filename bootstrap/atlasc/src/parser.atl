@@ -176,6 +176,11 @@ fn parse_atomic_expr(
         (*index) = (*index) + 1;
         return true;
     }
+    if tok.kind == 2 {
+        (*out_expr_id) = ast::push_expr(arena, ast::make_float_expr(token_start(tok), token_end(tok)));
+        (*index) = (*index) + 1;
+        return true;
+    }
     if tok.kind == 3 {
         (*out_expr_id) = ast::push_expr(arena, ast::make_bool_expr(tok.bool_value, token_start(tok), token_end(tok)));
         (*index) = (*index) + 1;
@@ -188,6 +193,11 @@ fn parse_atomic_expr(
     }
     if tok.kind == 5 {
         (*out_expr_id) = ast::push_expr(arena, ast::make_string_expr(token_start(tok), token_end(tok)));
+        (*index) = (*index) + 1;
+        return true;
+    }
+    if tok.kind == 30 {
+        (*out_expr_id) = ast::push_expr(arena, ast::make_name_expr(token_start(tok), token_end(tok)));
         (*index) = (*index) + 1;
         return true;
     }
@@ -225,7 +235,7 @@ fn parse_unary_expr(
 ): bool {
     if tokens != null and (*index) < token_count {
         var tok = tokens[(*index)];
-        if tok.kind == 47 or tok.kind == 58 or tok.kind == 27 {
+        if tok.kind == 47 or tok.kind == 58 or tok.kind == 27 or tok.kind == 48 or tok.kind == 61 {
             var op_kind = tok.kind;
             var start = token_start(tok);
             (*index) = (*index) + 1;
