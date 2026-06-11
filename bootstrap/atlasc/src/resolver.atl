@@ -333,13 +333,15 @@ fn resolve_expr(p: @Project, mod_idx: int, expr_id: int, errors: @array::Array<a
             if !resolve_expr(p, mod_idx, child_id, errors) { ok = false; }
         }
     } else if expr.kind == 6 { // call
-        var callee_id = (*(*p).arena).expr_refs[expr.child_start];
-        if !resolve_expr(p, mod_idx, callee_id, errors) { ok = false; }
-        var j = 1;
-        while j < expr.child_len {
-            var arg_id = (*(*p).arena).expr_refs[expr.child_start + j];
-            if !resolve_expr(p, mod_idx, arg_id, errors) { ok = false; }
-            j = j + 1;
+        if expr.child_len > 0 {
+            var callee_id = (*(*p).arena).expr_refs[expr.child_start];
+            if !resolve_expr(p, mod_idx, callee_id, errors) { ok = false; }
+            var j = 1;
+            while j < expr.child_len {
+                var arg_id = (*(*p).arena).expr_refs[expr.child_start + j];
+                if !resolve_expr(p, mod_idx, arg_id, errors) { ok = false; }
+                j = j + 1;
+            }
         }
     } else if expr.kind == 9 { // member access
         var base_id = (*(*p).arena).expr_refs[expr.child_start];
@@ -366,9 +368,9 @@ fn resolve_type_ref(p: @Project, mod_idx: int, type_ref: @ast::TypeRef, errors: 
     if (*type_ref).token_kind == 6 { // Named type
         var def_id = find_name(p, mod_idx, (*type_ref).qualifier_span, (*type_ref).name_span);
         (*type_ref).resolved_def_id = def_id;
-        if def_id == -1 {
-            return false;
-        }
+    } else if (*type_ref).token_kind == 61 or (*type_ref).token_kind == 62 { // @T or @T? pointer
+        var def_id = find_name(p, mod_idx, span::make(0, 0), (*type_ref).name_span);
+        (*type_ref).resolved_def_id = def_id;
     }
     return true;
 }

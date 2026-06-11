@@ -1008,7 +1008,7 @@ export fn make_struct_info(name_start: int, name_end: int, field_start: int, fie
     };
 }
 
-export fn make_function_info(name_start: int, name_end: int, param_start: int, param_len: int, has_return_type: bool, return_type_ref: TypeRef, body_block_id: int, start: int, end: int): FunctionInfo {
+export fn make_function_info(name_start: int, name_end: int, param_start: int, param_len: int, has_return_type: bool, return_type_ref: TypeRef, body_block_id: int, generic_param_start: int, generic_param_len: int, where_clause_start: int, where_clause_len: int, start: int, end: int): FunctionInfo {
     return FunctionInfo {
         name_span: span::make(name_start, name_end),
         param_start: param_start,
@@ -1016,10 +1016,10 @@ export fn make_function_info(name_start: int, name_end: int, param_start: int, p
         has_return_type: has_return_type,
         return_type_ref: return_type_ref,
         body_block_id: body_block_id,
-        generic_param_start: 0,
-        generic_param_len: 0,
-        where_clause_start: 0,
-        where_clause_len: 0,
+        generic_param_start: generic_param_start,
+        generic_param_len: generic_param_len,
+        where_clause_start: where_clause_start,
+        where_clause_len: where_clause_len,
         span: span::make(start, end)
     };
 }

@@ -1,0 +1,116 @@
+import ast;
+import array;
+import error;
+import io;
+import lexer;
+import parser;
+import resolver;
+import semantic;
+import span;
+import token;
+
+fn pushstr(arr: @array::Array<char>, s: []char) {
+    var i = 0;
+    while i < s.len {
+        (*arr).push(s[i]);
+        i = i + 1;
+    }
+}
+
+fn main(): int {
+    var src: array::Array<char> = array::Array();
+    pushstr(@src, "e");
+    pushstr(@src, "x");
+    pushstr(@src, "t");
+    pushstr(@src, "e");
+    pushstr(@src, "r");
+    pushstr(@src, "n");
+    pushstr(@src, " ");
+    pushstr(@src, "\"");
+    pushstr(@src, "C");
+    pushstr(@src, "\"");
+    pushstr(@src, " ");
+    pushstr(@src, "f");
+    pushstr(@src, "n");
+    pushstr(@src, " ");
+    pushstr(@src, "p");
+    pushstr(@src, "u");
+    pushstr(@src, "t");
+    pushstr(@src, "c");
+    pushstr(@src, "h");
+    pushstr(@src, "a");
+    pushstr(@src, "r");
+    pushstr(@src, "(");
+    pushstr(@src, "c");
+    pushstr(@src, ":");
+    pushstr(@src, " ");
+    pushstr(@src, "i");
+    pushstr(@src, "n");
+    pushstr(@src, "t");
+    pushstr(@src, "3");
+    pushstr(@src, "2");
+    pushstr(@src, ")");
+    pushstr(@src, ":");
+    pushstr(@src, " ");
+    pushstr(@src, "i");
+    pushstr(@src, "n");
+    pushstr(@src, "t");
+    pushstr(@src, "3");
+    pushstr(@src, "2");
+    pushstr(@src, ";");
+    pushstr(@src, "\n");
+    pushstr(@src, "\n");
+    pushstr(@src, "f");
+    pushstr(@src, "n");
+    pushstr(@src, " ");
+    pushstr(@src, "m");
+    pushstr(@src, "a");
+    pushstr(@src, "i");
+    pushstr(@src, "n");
+    pushstr(@src, "(");
+    pushstr(@src, ")");
+    pushstr(@src, ":");
+    pushstr(@src, " ");
+    pushstr(@src, "i");
+    pushstr(@src, "n");
+    pushstr(@src, "t");
+    pushstr(@src, " ");
+    pushstr(@src, "{");
+    pushstr(@src, " ");
+    pushstr(@src, "r");
+    pushstr(@src, "e");
+    pushstr(@src, "t");
+    pushstr(@src, "u");
+    pushstr(@src, "r");
+    pushstr(@src, "n");
+    pushstr(@src, " ");
+    pushstr(@src, "0");
+    pushstr(@src, ";");
+    pushstr(@src, " ");
+    pushstr(@src, "}");
+    pushstr(@src, "\n");
+
+    var tokens: array::Array<token::Token> = array::Array();
+    var lex_errors: array::Array<error::LexError> = array::Array();
+    lexer::tokenize(@src, 0, @tokens, @lex_errors);
+    var arena = ast::make_empty_arena();
+    var file_info = ast::make_empty_file_info();
+    var parse_errors: array::Array<ast::ParseError> = array::Array();
+    if !parser::parse_file(@arena, tokens.data, tokens.len, @file_info, @parse_errors) { return 200; }
+    var fid = arena.file_infos.len; arena.file_infos.push(file_info);
+    var modules: array::Array<resolver::ModuleInterface> = array::Array();
+    modules.push(resolver::ModuleInterface { name_span: span::make(0, 0), file_info_id: fid });
+    var proj = resolver::Project { arena: @arena, source: @src, modules: @modules };
+    resolver::resolve_names(@proj, @parse_errors);
+    var summary = semantic::make_empty_summary();
+    var sem_errs: array::Array<semantic::SemanticError> = array::Array();
+    semantic::analyze_file(@proj, file_info, @summary, @sem_errs);
+    io::print(sem_errs.len);
+    var i = 0;
+    while i < sem_errs.len {
+        io::print_char(':');
+        io::print(sem_errs[i].kind);
+        i = i + 1;
+    }
+    return 0;
+}

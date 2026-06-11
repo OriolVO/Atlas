@@ -329,6 +329,56 @@ fn infer_struct_literal_type(
 }
 
 
+fn resolve_inner_type_for_pointer(p: @resolver::Project, type_ref: ast::TypeRef): int {
+    if type_ref.resolved_def_id >= 0 {
+        var item = (*(*p).arena).items[type_ref.resolved_def_id];
+        if item.kind == 2 { return 1000 + item.struct_id; }
+        if item.kind == 3 { return 2000 + item.enum_id; }
+        if item.kind == 4 { return 3000 + item.choice_id; }
+        if item.kind == 6 { return 4000 + item.class_id; }
+    }
+    return resolve_type_ref_from_name(p, type_ref.name_span);
+}
+
+fn resolve_type_ref_from_name(p: @resolver::Project, name: span::Span): int {
+    var i = 0;
+    while i < (*(*p).arena).items.len {
+        var item = (*(*p).arena).items[i];
+        if item.kind == 1 {
+            var fi = (*(*p).arena).functions[item.function_id];
+            if name_equals((*(*p).source).data, fi.name_span, name) { return type_int(); }
+        } else if item.kind == 2 {
+            var si = (*(*p).arena).structs[item.struct_id];
+            if name_equals((*(*p).source).data, si.name_span, name) { return 1000 + item.struct_id; }
+        } else if item.kind == 3 {
+            var ei = (*(*p).arena).enums[item.enum_id];
+            if name_equals((*(*p).source).data, ei.name_span, name) { return 2000 + item.enum_id; }
+        } else if item.kind == 4 {
+            var ci = (*(*p).arena).choices[item.choice_id];
+            if name_equals((*(*p).source).data, ci.name_span, name) { return 3000 + item.choice_id; }
+        } else if item.kind == 6 {
+            var ci = (*(*p).arena).classes[item.class_id];
+            if name_equals((*(*p).source).data, ci.name_span, name) { return 4000 + item.class_id; }
+        }
+        i = i + 1;
+    }
+    return type_int();
+}
+
+fn resolve_numeric_alias(p: @resolver::Project, name: span::Span): int {
+    var slen = name.end - name.start;
+    var s = (*(*p).source).data;
+    if slen == 5 and s[name.start] == 'i' and s[name.start + 1] == 'n' and s[name.start + 2] == 't' and s[name.start + 3] == '3' and s[name.start + 4] == '2' { return type_int(); }
+    if slen == 3 and s[name.start] == 'i' and s[name.start + 1] == '3' and s[name.start + 2] == '2' { return type_int(); }
+    if slen == 5 and s[name.start] == 'i' and s[name.start + 1] == 'n' and s[name.start + 2] == 't' and s[name.start + 3] == '1' and s[name.start + 4] == '6' { return type_int(); }
+    if slen == 3 and s[name.start] == 'i' and s[name.start + 1] == '1' and s[name.start + 2] == '6' { return type_int(); }
+    if slen == 4 and s[name.start] == 'i' and s[name.start + 1] == 'n' and s[name.start + 2] == 't' and s[name.start + 3] == '8' { return type_int(); }
+    if slen == 2 and s[name.start] == 'i' and s[name.start + 1] == '8' { return type_int(); }
+    if slen == 5 and s[name.start] == 'i' and s[name.start + 1] == 'n' and s[name.start + 2] == 't' and s[name.start + 3] == '6' and s[name.start + 4] == '4' { return type_int(); }
+    if slen == 3 and s[name.start] == 'i' and s[name.start + 1] == '6' and s[name.start + 2] == '4' { return type_int(); }
+    return type_unknown();
+}
+
 export fn resolve_type_ref(
     p: @resolver::Project,
     type_ref: ast::TypeRef,
@@ -353,6 +403,14 @@ export fn resolve_type_ref(
     if type_ref.token_kind == 43 {
         return type_float64();
     }
+    if type_ref.token_kind == 61 {
+        var inner = resolve_inner_type_for_pointer(p, type_ref);
+        return type_pointer(inner, false);
+    }
+    if type_ref.token_kind == 62 {
+        var inner = resolve_inner_type_for_pointer(p, type_ref);
+        return type_pointer(inner, true);
+    }
     if type_ref.token_kind == 6 {
         if type_ref.resolved_def_id >= 0 {
             var item = (*(*p).arena).items[type_ref.resolved_def_id];
@@ -366,6 +424,8 @@ export fn resolve_type_ref(
                 return 4000 + item.class_id;
             }
         }
+        var num_type = resolve_numeric_alias(p, type_ref.name_span);
+        if num_type != type_unknown() { return num_type; }
         errors.push(make_error(10, type_ref.name_span.start, type_ref.name_span.end));
         (*summary).unknown_type_count = (*summary).unknown_type_count + 1;
         return type_unknown();
