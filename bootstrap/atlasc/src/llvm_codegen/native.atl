@@ -14,6 +14,14 @@ export struct Codegen {
     fn_is_main: bool;
     fn_return_type: int;
     block_terminated: bool;
+    last_type: int;
+    current_fn_id: int;
+    local_count: int;
+    local_name_base: int;
+    local_reg_base: int;
+    local_type_base: int;
+    loop_break: int;
+    loop_continue: int;
 }
 
 export fn make_empty_codegen(): Codegen {
@@ -24,7 +32,15 @@ export fn make_empty_codegen(): Codegen {
         str_counter: 0,
         fn_is_main: false,
         fn_return_type: semantic::type_unknown(),
-        block_terminated: false
+        block_terminated: false,
+        last_type: semantic::type_int(),
+        current_fn_id: -1,
+        local_count: 0,
+        local_name_base: 0,
+        local_reg_base: 0,
+        local_type_base: 0,
+        loop_break: -1,
+        loop_continue: -1
     };
 }
 
@@ -231,7 +247,7 @@ fn emit_aggregate_types(g: @Codegen, p: @resolver::Project) {
         while f < si.field_len {
             if f > 0 { emit(g, ", "); }
             var field = (*(*p).arena).struct_fields[si.field_start + f];
-            var fty = semantic::type_int();
+            var fty = resolve_type_simple(p, field.type_ref);
             emit_type(g, fty, p);
             f = f + 1;
         }
@@ -250,7 +266,7 @@ fn emit_aggregate_types(g: @Codegen, p: @resolver::Project) {
         while f < ci.field_len {
             if f > 0 { emit(g, ", "); }
             var field = (*(*p).arena).class_fields[ci.field_start + f];
-            var fty = semantic::type_int();
+            var fty = resolve_type_simple(p, field.type_ref);
             emit_type(g, fty, p);
             f = f + 1;
         }
@@ -283,6 +299,30 @@ fn struct_llvm_type_name(g: @Codegen, p: @resolver::Project, ty: int): int {
     if ty >= 1000 and ty < 2000 { return ty - 1000; }
     if ty >= 4000 { return ty - 3900; }
     return -1;
+}
+
+fn resolve_type_simple(p: @resolver::Project, type_ref: ast::TypeRef): int {
+    if type_ref.token_kind == 31 { return semantic::type_int(); }
+    if type_ref.token_kind == 44 { return semantic::type_bool(); }
+    if type_ref.token_kind == 45 { return semantic::type_char(); }
+    if type_ref.token_kind == 41 { return semantic::type_float(); }
+    if type_ref.token_kind == 42 { return semantic::type_float32(); }
+    if type_ref.token_kind == 43 { return semantic::type_float64(); }
+    if type_ref.token_kind == 0 { return semantic::type_unknown(); }
+    if type_ref.token_kind == 3 { return semantic::type_null(); }
+    if type_ref.token_kind == 6 {
+        if type_ref.resolved_def_id >= 0 and type_ref.resolved_def_id < (*(*p).arena).items.len {
+            var item = (*(*p).arena).items[type_ref.resolved_def_id];
+            if item.kind == 2 { return 1000 + item.struct_id; }
+            if item.kind == 3 { return 2000 + item.enum_id; }
+            if item.kind == 4 { return 3000 + item.choice_id; }
+            if item.kind == 6 { return 4000 + item.class_id; }
+        }
+        return semantic::type_int();
+    }
+    if type_ref.token_kind == 1 { return semantic::type_pointer(semantic::type_int(), false); }
+    if type_ref.token_kind == 2 { return semantic::type_pointer(semantic::type_int(), true); }
+    return semantic::type_int();
 }
 
 fn emit_aggregate_type(g: @Codegen, p: @resolver::Project, name: []char, fields: @array::Array<int>) {
@@ -353,52 +393,32 @@ fn bool_str(value: bool): []char {
     return "false";
 }
 
+fn set_last(g: @Codegen, ty: int) { (*g).last_type = ty; }
+fn get_last(g: @Codegen): int { return (*g).last_type; }
+fn emit_zext_i1_to_i64(g: @Codegen, src_reg: int): int { var r = next_temp(g); emit(g, "    "); push_temp(g, r); emit(g, "= zext i1 "); push_reg(g, src_reg); emit(g, " to i64"); newline(g); return r; }
+
 fn lookup_local(g: @Codegen, p: @resolver::Project, name: span::Span): int {
+    var fn_id = (*g).current_fn_id;
+    if fn_id >= 0 { var fi = (*(*p).arena).functions[fn_id]; var pi = 0; while pi < fi.param_len { var pr = (*(*p).arena).params[fi.param_start + pi]; if semantic::name_equals((*(*p).source).data, pr.name_span, name) { return 100 + pi; } pi = pi + 1; } }
+    var end = (*(*p).arena).name_refs.len - 1;
+    var ni = end;
+    while ni >= (*g).local_name_base { var n = (*(*p).arena).name_refs[ni]; if semantic::name_equals((*(*p).source).data, n, name) { var offset = ni - (*g).local_name_base; return (*(*p).arena).expr_refs[(*g).local_reg_base + offset]; } ni = ni - 1; }
     return -1;
 }
 
-fn lookup_local_type(g: @Codegen, p: @resolver::Project, name: span::Span): int {
-    return semantic::type_unknown();
-}
+fn lookup_local_type(g: @Codegen, p: @resolver::Project, name: span::Span): int { var fn_id = (*g).current_fn_id; if fn_id >= 0 { var fi = (*(*p).arena).functions[fn_id]; var pi = 0; while pi < fi.param_len { var pr = (*(*p).arena).params[fi.param_start + pi]; if semantic::name_equals((*(*p).source).data, pr.name_span, name) { return semantic::type_int(); } pi = pi + 1; } }     var end = (*(*p).arena).name_refs.len - 1; var ni = end; while ni >= (*g).local_name_base { var n = (*(*p).arena).name_refs[ni]; if semantic::name_equals((*(*p).source).data, n, name) { var offset = ni - (*g).local_name_base; return (*(*p).arena).stmt_refs[(*g).local_type_base + offset]; } ni = ni - 1; } return semantic::type_int(); }
 
-fn register_local(g: @Codegen, name: span::Span, ty: int, reg: int) {
-}
+fn register_local(g: @Codegen, p: @resolver::Project, name: span::Span, ty: int, reg: int) { var arena = (*p).arena; if (*g).local_count == 0 { (*g).local_name_base = (*arena).name_refs.len; (*g).local_reg_base = (*arena).expr_refs.len; (*g).local_type_base = (*arena).stmt_refs.len; } (*arena).name_refs.push(name); (*arena).expr_refs.push(reg); (*arena).stmt_refs.push(ty); (*g).local_count = (*g).local_count + 1; }
 
-fn push_loop(g: @Codegen, break_label: int, continue_label: int) {
-}
+fn push_loop(g: @Codegen, break_label: int, continue_label: int) { (*g).loop_break = break_label; (*g).loop_continue = continue_label; }
 
-fn pop_loop(g: @Codegen, old_break: int, old_continue: int, old_depth: int) {
-}
+fn pop_loop(g: @Codegen, old_break: int, old_continue: int) { (*g).loop_break = old_break; (*g).loop_continue = old_continue; }
 
-fn emit_alloca(g: @Codegen, dest_reg: int, atype: int) {
-    push_temp(g, dest_reg);
-    emit(g, "= alloca ");
-    emit(g, llvm_type(atype));
-    newline(g);
-}
+fn emit_alloca(g: @Codegen, dest_reg: int, atype: int) { push_temp(g, dest_reg); emit(g, "= alloca "); if atype == semantic::type_float() or atype == semantic::type_float64() { emit(g, "double"); } else if atype == semantic::type_float32() { emit(g, "float"); } else if atype == semantic::type_bool() { emit(g, "i1"); } else { emit(g, "i64"); } newline(g); }
 
-fn emit_store(g: @Codegen, src_reg: int, dst_reg: int, atype: int) {
-    emit(g, "    store ");
-    emit(g, llvm_type(atype));
-    emit(g, " ");
-    push_reg(g, src_reg);
-    emit(g, ", ");
-    emit(g, llvm_type(atype));
-    emit(g, "* ");
-    push_reg(g, dst_reg);
-    newline(g);
-}
+fn emit_store(g: @Codegen, src_reg: int, dst_reg: int, atype: int) { emit(g, "    store "); if atype == semantic::type_float() or atype == semantic::type_float64() { emit(g, "double"); } else if atype == semantic::type_float32() { emit(g, "float"); } else if atype == semantic::type_bool() { emit(g, "i1"); } else { emit(g, "i64"); } emit(g, " "); push_reg(g, src_reg); emit(g, ", "); if atype == semantic::type_float() or atype == semantic::type_float64() { emit(g, "double"); } else if atype == semantic::type_float32() { emit(g, "float"); } else if atype == semantic::type_bool() { emit(g, "i1"); } else { emit(g, "i64"); } emit(g, "* "); push_reg(g, dst_reg); newline(g); }
 
-fn emit_load(g: @Codegen, dest_reg: int, src_reg: int, atype: int) {
-    push_temp(g, dest_reg);
-    emit(g, "= load ");
-    emit(g, llvm_type(atype));
-    emit(g, ", ");
-    emit(g, llvm_type(atype));
-    emit(g, "* ");
-    push_reg(g, src_reg);
-    newline(g);
-}
+fn emit_load(g: @Codegen, dest_reg: int, src_reg: int, atype: int) { push_temp(g, dest_reg); emit(g, "= load "); if atype == semantic::type_float() or atype == semantic::type_float64() { emit(g, "double"); } else if atype == semantic::type_float32() { emit(g, "float"); } else if atype == semantic::type_bool() { emit(g, "i1"); } else { emit(g, "i64"); } emit(g, ", "); if atype == semantic::type_float() or atype == semantic::type_float64() { emit(g, "double"); } else if atype == semantic::type_float32() { emit(g, "float"); } else if atype == semantic::type_bool() { emit(g, "i1"); } else { emit(g, "i64"); } emit(g, "* "); push_reg(g, src_reg); newline(g); }
 
 fn emit_binop(g: @Codegen, dest_reg: int, op: []char, atype: int, lhs_reg: int, rhs_reg: int) {
     push_temp(g, dest_reg);
@@ -545,6 +565,7 @@ fn codegen_expr(g: @Codegen, p: @resolver::Project, expr_id: int): int {
         emit(g, "= add i64 0, ");
         emit_int_value(g, expr.int_value);
         newline(g);
+        set_last(g, semantic::type_int());
         return r;
     }
 
@@ -555,6 +576,7 @@ fn codegen_expr(g: @Codegen, p: @resolver::Project, expr_id: int): int {
         emit(g, "= add i1 0, ");
         emit(g, bool_str(expr.bool_value));
         newline(g);
+        set_last(g, semantic::type_bool());
         return r;
     }
 
@@ -562,9 +584,7 @@ fn codegen_expr(g: @Codegen, p: @resolver::Project, expr_id: int): int {
         var r = next_temp(g);
         emit(g, "    ");
         push_temp(g, r);
-        emit(g, "= fadd double 0.0, 0.0");
-        newline(g);
-        return r;
+        emit(g, "= fadd double 0.0, "); var fi = expr.span.start; while fi < expr.span.end { (*g).output.push((*(*p).source).data[fi]); fi = fi + 1; } newline(g); set_last(g, semantic::type_float()); return r;
     }
 
     if expr.kind == 7 {
@@ -574,6 +594,7 @@ fn codegen_expr(g: @Codegen, p: @resolver::Project, expr_id: int): int {
         emit(g, "= add i8 0, ");
         emit_int(g, cast<int>(expr.char_value));
         newline(g);
+        set_last(g, semantic::type_char());
         return r;
     }
 
@@ -630,7 +651,12 @@ fn codegen_expr(g: @Codegen, p: @resolver::Project, expr_id: int): int {
         }
         var ty = lookup_local_type(g, p, expr.name_span);
         var r = next_temp(g);
-        emit_load(g, r, reg, ty);
+        if ty >= 1000 or ty >= 2000 or ty >= 3000 or ty >= 4000 {
+            emit_load_typed(g, r, reg, ty, p);
+        } else {
+            emit_load(g, r, reg, ty);
+        }
+        set_last(g, ty);
         return r;
     }
 
@@ -655,22 +681,37 @@ fn codegen_expr(g: @Codegen, p: @resolver::Project, expr_id: int): int {
             var opstr = "add";
             if op == 49 { opstr = "sdiv"; }
             if op == 50 { opstr = "srem"; }
-            emit_binop(g, r, opstr, aty, lhs_reg, rhs_reg);
+            var arith_ty = get_last(g);
+            if arith_ty == semantic::type_float() or arith_ty == semantic::type_float64() {
+                if op == 46 { opstr = "fadd"; }
+                if op == 49 { opstr = "fdiv"; }
+                if op == 50 { opstr = "frem"; }
+            }
+            emit_binop(g, r, opstr, arith_ty, lhs_reg, rhs_reg);
+            set_last(g, arith_ty);
             return r;
         }
         if op == 47 {
+            var arith_ty = get_last(g);
             if is_unary {
                 emit_binop_with_zero(g, r, "sub", lhs_reg);
             } else {
-                emit_binop(g, r, "sub", aty, lhs_reg, rhs_reg);
+                var opstr = "sub";
+                if arith_ty == semantic::type_float() or arith_ty == semantic::type_float64() { opstr = "fsub"; }
+                emit_binop(g, r, opstr, arith_ty, lhs_reg, rhs_reg);
             }
+            set_last(g, arith_ty);
             return r;
         }
         if op == 48 {
             if is_unary {
                 return lhs_reg;
             }
-            emit_binop(g, r, "mul", aty, lhs_reg, rhs_reg);
+            var arith_ty = get_last(g);
+            var opstr = "mul";
+            if arith_ty == semantic::type_float() or arith_ty == semantic::type_float64() { opstr = "fmul"; }
+            emit_binop(g, r, opstr, arith_ty, lhs_reg, rhs_reg);
+            set_last(g, arith_ty);
             return r;
         }
         if op == 61 {
@@ -707,30 +748,55 @@ fn codegen_expr(g: @Codegen, p: @resolver::Project, expr_id: int): int {
             if op == 56 { cmp = "sgt"; }
             if op == 53 { cmp = "sle"; }
             if op == 54 { cmp = "sge"; }
-            emit_icmp(g, r, cmp, aty, lhs_reg, rhs_reg);
+            var cmp_ty = get_last(g);
+            if cmp_ty == semantic::type_float() or cmp_ty == semantic::type_float64() {
+                if op == 55 { cmp = "olt"; }
+                if op == 56 { cmp = "ogt"; }
+                if op == 53 { cmp = "ole"; }
+                if op == 54 { cmp = "oge"; }
+                emit_fcmp(g, r, cmp, cmp_ty, lhs_reg, rhs_reg);
+            } else {
+                emit_icmp(g, r, cmp, aty, lhs_reg, rhs_reg);
+            }
+            set_last(g, semantic::type_bool());
             return r;
         }
         if op == 51 {
-            emit_icmp(g, r, "eq", aty, lhs_reg, rhs_reg);
+            var cmp_ty = get_last(g);
+            if cmp_ty == semantic::type_float() or cmp_ty == semantic::type_float64() {
+                emit_fcmp(g, r, "oeq", cmp_ty, lhs_reg, rhs_reg);
+            } else {
+                emit_icmp(g, r, "eq", aty, lhs_reg, rhs_reg);
+            }
+            set_last(g, semantic::type_bool());
             return r;
         }
         if op == 52 {
-            emit_icmp(g, r, "ne", aty, lhs_reg, rhs_reg);
+            var cmp_ty = get_last(g);
+            if cmp_ty == semantic::type_float() or cmp_ty == semantic::type_float64() {
+                emit_fcmp(g, r, "one", cmp_ty, lhs_reg, rhs_reg);
+            } else {
+                emit_icmp(g, r, "ne", aty, lhs_reg, rhs_reg);
+            }
+            set_last(g, semantic::type_bool());
             return r;
         }
         if op == 59 {
             if is_unary { return lhs_reg; }
             var and_r = next_temp(g);
             emit_binop(g, and_r, "and", semantic::type_bool(), lhs_reg, rhs_reg);
+            set_last(g, semantic::type_bool());
             return and_r;
         }
         if op == 60 {
             if is_unary { return lhs_reg; }
             var or_r = next_temp(g);
             emit_binop(g, or_r, "or", semantic::type_bool(), lhs_reg, rhs_reg);
+            set_last(g, semantic::type_bool());
             return or_r;
         }
         if op == 58 or op == 27 {
+            set_last(g, semantic::type_bool());
             var xor_r = next_temp(g);
             var tru_reg = next_temp(g);
             emit(g, "    ");
@@ -783,39 +849,98 @@ fn codegen_expr(g: @Codegen, p: @resolver::Project, expr_id: int): int {
 
     if expr.kind == 9 {
         if expr.child_len == 0 { return -1; }
-        var base_reg = codegen_expr(g, p, (*(*p).arena).expr_refs[expr.child_start]);
-        if base_reg < 0 { return -1; }
-        var base_ty = semantic::type_int();
-        var field_idx = find_struct_field_index_for_codegen(p, expr.name_span);
+        var base_val = codegen_expr(g, p, (*(*p).arena).expr_refs[expr.child_start]);
+        if base_val < 0 { return -1; }
+        var base_ty = get_last(g);
+        var field_idx = -1;
+        var field_ty = semantic::type_int();
+        var si = 0;
+        while si < (*(*p).arena).structs.len and field_idx < 0 {
+            var st = (*(*p).arena).structs[si];
+            var fi = 0;
+            while fi < st.field_len {
+                var f = (*(*p).arena).struct_fields[st.field_start + fi];
+                if semantic::name_equals((*(*p).source).data, f.name_span, expr.name_span) {
+                    field_idx = fi;
+                    base_ty = 1000 + si;
+                    field_ty = resolve_type_simple(p, f.type_ref);
+                    break;
+                }
+                fi = fi + 1;
+            }
+            si = si + 1;
+        }
+        var ci = 0;
+        while ci < (*(*p).arena).classes.len and field_idx < 0 {
+            var cl = (*(*p).arena).classes[ci];
+            var fi = 0;
+            while fi < cl.field_len {
+                var f = (*(*p).arena).class_fields[cl.field_start + fi];
+                if semantic::name_equals((*(*p).source).data, f.name_span, expr.name_span) {
+                    field_idx = fi;
+                    base_ty = 4000 + ci;
+                    field_ty = resolve_type_simple(p, f.type_ref);
+                    break;
+                }
+                fi = fi + 1;
+            }
+            ci = ci + 1;
+        }
         if field_idx < 0 { return -1; }
         var r = next_temp(g);
-        emit_gep(g, r, base_ty, p, base_reg, 0, field_idx);
-        var load_r = next_temp(g);
-        emit_load_typed(g, load_r, r, semantic::type_int(), p);
-        return load_r;
+        emit(g, "    ");
+        push_temp(g, r);
+        emit(g, "= extractvalue ");
+        emit_type(g, base_ty, p);
+        emit(g, " ");
+        push_reg(g, base_val);
+        emit(g, ", ");
+        emit_int(g, field_idx);
+        newline(g);
+        set_last(g, field_ty);
+        return r;
     }
 
     if expr.kind == 10 {
         var struct_ty = semantic::type_int();
-        var undef_reg = next_temp(g);
-        emit(g, "    ");
-        push_temp(g, undef_reg);
-        emit(g, "= add ");
-        emit_type(g, struct_ty, p);
-        emit(g, " undef, 0");
-        newline(g);
-        var accum = undef_reg;
+        var si = 0;
+        while si < (*(*p).arena).structs.len {
+            var st = (*(*p).arena).structs[si];
+            if semantic::name_equals((*(*p).source).data, st.name_span, expr.callee_span) {
+                struct_ty = 1000 + si;
+                break;
+            }
+            si = si + 1;
+        }
+        var accum_value = -1;
         var fi = 0;
         while fi < expr.child_len {
             var val_reg = codegen_expr(g, p, (*(*p).arena).expr_refs[expr.child_start + fi]);
             if val_reg >= 0 {
                 var new_accum = next_temp(g);
-                emit_insertvalue(g, new_accum, semantic::type_int(), p, accum, val_reg, fi, struct_ty);
-                accum = new_accum;
+                emit(g, "    ");
+                push_temp(g, new_accum);
+                emit(g, "= insertvalue ");
+                emit_type(g, struct_ty, p);
+                emit(g, " ");
+                if accum_value < 0 {
+                    emit(g, "undef");
+                } else {
+                    push_reg(g, accum_value);
+                }
+                emit(g, ", ");
+                emit_type(g, semantic::type_int(), p);
+                emit(g, " ");
+                push_reg(g, val_reg);
+                emit(g, ", ");
+                emit_int(g, fi);
+                newline(g);
+                accum_value = new_accum;
             }
             fi = fi + 1;
         }
-        return accum;
+        set_last(g, struct_ty);
+        return accum_value;
     }
 
     if expr.kind == 11 {
@@ -856,6 +981,14 @@ fn find_struct_field_index_for_codegen(p: @resolver::Project, member: span::Span
 }
 
 fn emit_binop_with_zero(g: @Codegen, dest_reg: int, op: []char, rhs_reg: int) {
+    var ty = get_last(g);
+    if ty == semantic::type_float() or ty == semantic::type_float64() {
+        push_temp(g, dest_reg);
+        emit(g, "= fsub double 0.0, ");
+        push_reg(g, rhs_reg);
+        newline(g);
+        return;
+    }
     var zero_reg = next_temp(g);
     emit(g, "    ");
     push_temp(g, zero_reg);
@@ -888,28 +1021,51 @@ fn codegen_stmt(g: @Codegen, p: @resolver::Project, stmt: ast::Stmt) {
         var ty = semantic::type_int();
         if stmt.var_decl.has_init {
             init_reg = codegen_expr(g, p, stmt.var_decl.init_expr_id);
+            ty = get_last(g);
         }
         var reg = next_temp(g);
-        emit_alloca(g, reg, ty);
-        if init_reg >= 0 {
-            emit_store(g, init_reg, reg, ty);
+        if ty >= 1000 or ty >= 2000 or ty >= 3000 or ty >= 4000 {
+            emit_alloca_typed(g, reg, ty, p);
+        } else {
+            emit_alloca(g, reg, ty);
         }
-        register_local(g, stmt.var_decl.name_span, ty, reg);
+        if init_reg >= 0 {
+            if ty >= 1000 or ty >= 2000 or ty >= 3000 or ty >= 4000 {
+                emit_store_typed(g, init_reg, reg, ty, p);
+            } else {
+                emit_store(g, init_reg, reg, ty);
+            }
+        }
+        register_local(g, p, stmt.var_decl.name_span, ty, reg);
     } else if stmt.kind == 2 {
         var init_reg = codegen_expr(g, p, stmt.const_decl.init_expr_id);
-        var ty = semantic::type_int();
+        var ty = get_last(g);
         var reg = next_temp(g);
-        emit_alloca(g, reg, ty);
-        if init_reg >= 0 {
-            emit_store(g, init_reg, reg, ty);
+        if ty >= 1000 or ty >= 2000 or ty >= 3000 or ty >= 4000 {
+            emit_alloca_typed(g, reg, ty, p);
+        } else {
+            emit_alloca(g, reg, ty);
         }
-        register_local(g, stmt.const_decl.name_span, ty, reg);
+        if init_reg >= 0 {
+            if ty >= 1000 or ty >= 2000 or ty >= 3000 or ty >= 4000 {
+                emit_store_typed(g, init_reg, reg, ty, p);
+            } else {
+                emit_store(g, init_reg, reg, ty);
+            }
+        }
+        register_local(g, p, stmt.const_decl.name_span, ty, reg);
+    } else if stmt.kind == 4 {
+        codegen_block_flat(g, p, stmt.block_id);
     } else if stmt.kind == 3 {
         var value_reg = codegen_expr(g, p, stmt.assign_stmt.value_expr_id);
         var target_reg = lookup_local(g, p, stmt.assign_stmt.target_name_span);
         if target_reg >= 0 and value_reg >= 0 {
             var ty = lookup_local_type(g, p, stmt.assign_stmt.target_name_span);
-            emit_store(g, value_reg, target_reg, ty);
+            if ty >= 1000 or ty >= 2000 or ty >= 3000 or ty >= 4000 {
+                emit_store_typed(g, value_reg, target_reg, ty, p);
+            } else {
+                emit_store(g, value_reg, target_reg, ty);
+            }
         }
     } else if stmt.kind == 9 {
         if stmt.return_stmt.has_value {
@@ -944,9 +1100,8 @@ fn codegen_stmt(g: @Codegen, p: @resolver::Project, stmt: ast::Stmt) {
         var body_label = next_label(g);
         var end_label = next_label(g);
 
-        var old_break = 0;
-        var old_continue = 0;
-        var old_depth = 0;
+        var old_break = (*g).loop_break;
+        var old_continue = (*g).loop_continue;
         push_loop(g, end_label, cond_label);
 
         emit_br(g, cond_label);
@@ -961,13 +1116,11 @@ fn codegen_stmt(g: @Codegen, p: @resolver::Project, stmt: ast::Stmt) {
 
         (*g).block_terminated = false;
         emit_label(g, end_label);
-        pop_loop(g, old_break, old_continue, old_depth);
+        pop_loop(g, old_break, old_continue);
     } else if stmt.kind == 7 {
-        emit_br(g, 0);
-        (*g).block_terminated = true;
+        if (*g).loop_break >= 0 { emit_br(g, (*g).loop_break); (*g).block_terminated = true; }
     } else if stmt.kind == 8 {
-        emit_br(g, 0);
-        (*g).block_terminated = true;
+        if (*g).loop_continue >= 0 { emit_br(g, (*g).loop_continue); (*g).block_terminated = true; }
     } else if stmt.kind == 11 {
         var val_reg = codegen_expr(g, p, stmt.match_stmt.value_expr_id);
         var end_label = next_label(g);
@@ -1012,7 +1165,7 @@ fn codegen_function(g: @Codegen, p: @resolver::Project, fn_id: int, source: @arr
     }
 
     emit(g, "define ");
-    emit(g, llvm_type(ret_ty));
+    emit_type(g, ret_ty, p);
     emit(g, " @\"");
     var ni = fn_info.name_span.start;
     while ni < fn_info.name_span.end {
@@ -1030,7 +1183,7 @@ fn codegen_function(g: @Codegen, p: @resolver::Project, fn_id: int, source: @arr
             pty = semantic::resolve_type_ref(p, param.type_ref, @errors, @summary);
         }
         if pi > 0 { emit(g, ", "); }
-        emit(g, llvm_type(pty));
+        emit_type(g, pty, p);
         emit(g, " %");
         var pj = param.name_span.start;
         while pj < param.name_span.end {
@@ -1053,14 +1206,18 @@ fn codegen_function(g: @Codegen, p: @resolver::Project, fn_id: int, source: @arr
             var summary = semantic::make_empty_summary();
             pty = semantic::resolve_type_ref(p, param.type_ref, @errors, @summary);
         }
-        var alloca_reg = next_temp(g);
-        emit_alloca(g, alloca_reg, pty);
-        register_local(g, param.name_span, pty, alloca_reg);
+        var alloca_reg = 100 + pi;
+        if pty >= 1000 or pty >= 2000 or pty >= 3000 or pty >= 4000 {
+            emit_alloca_typed(g, alloca_reg, pty, p);
+        } else {
+            emit_alloca(g, alloca_reg, pty);
+        }
+        register_local(g, p, param.name_span, pty, alloca_reg);
         var load_reg = next_temp(g);
         emit(g, "    ");
         push_temp(g, load_reg);
         emit(g, "= add ");
-        emit(g, llvm_type(pty));
+        emit_type(g, pty, p);
         emit(g, " 0, %");
         var pj = param.name_span.start;
         while pj < param.name_span.end {
@@ -1068,12 +1225,18 @@ fn codegen_function(g: @Codegen, p: @resolver::Project, fn_id: int, source: @arr
             pj = pj + 1;
         }
         newline(g);
-        emit_store(g, load_reg, alloca_reg, pty);
+        if pty >= 1000 or pty >= 2000 or pty >= 3000 or pty >= 4000 {
+            emit_store_typed(g, load_reg, alloca_reg, pty, p);
+        } else {
+            emit_store(g, load_reg, alloca_reg, pty);
+        }
         pi = pi + 1;
     }
 
+    (*g).current_fn_id = fn_id;
     (*g).fn_return_type = ret_ty;
     (*g).block_terminated = false;
+    (*g).local_count = 0;
     codegen_block_flat(g, p, fn_info.body_block_id);
     if !(*g).block_terminated {
         if ret_ty == type_void_val() {
