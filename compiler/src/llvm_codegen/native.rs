@@ -854,7 +854,7 @@ impl NativeCodegen {
                     let (value, actual_ty) = self.emit_expr_coerced(arg, expected_ty)?;
                     if !is_assignable_to(expected_ty, &actual_ty) {
                         return Err(AtlasError::CodegenError {
-                            message: format!("call argument type mismatch for '{}'", resolved_callee),
+                            message: format!("call argument type mismatch for '{}': expected {:?}, found {:?}", resolved_callee, expected_ty, actual_ty),
                         });
                     }
                     rendered_args.push(format!("{} {}", map_type(expected_ty)?, value));
@@ -1187,7 +1187,7 @@ impl NativeCodegen {
             }
             Expr::Match { .. } => Ok(("0".to_string(), AtlasType::Void)),
             _ => Err(AtlasError::CodegenError {
-                message: "expression not yet supported by native codegen".to_string(),
+                message: format!("expression not yet supported by native codegen: {:?}", expr),
             }),
         }
     }
@@ -1878,10 +1878,13 @@ impl NativeCodegen {
         }
 
         let (value, ty) = self.emit_expr(object)?;
-        if let AtlasType::Pointer { target, .. } = ty {
+        if let AtlasType::Pointer { target, .. } = ty.clone() {
             if let AtlasType::Class(class_name) = *target {
                 return Ok((value, class_name));
             }
+        }
+        if let AtlasType::Class(class_name) = ty {
+            return Ok((value, class_name));
         }
 
         Err(AtlasError::CodegenError {

@@ -279,6 +279,7 @@ export struct Arena {
     classes: array::Array<ClassInfo>;
 
     items: array::Array<Item>;
+    file_infos: array::Array<FileInfo>;
 }
 
 export fn make_parse_error(kind: int, start: int, end: int): ParseError {
@@ -355,7 +356,8 @@ export fn make_empty_arena(): Arena {
         class_structs: array::Array(),
         classes: array::Array(),
 
-        items: array::Array()
+        items: array::Array(),
+        file_infos: array::Array()
     };
 }
 

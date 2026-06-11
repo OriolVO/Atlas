@@ -4,6 +4,8 @@ import error;
 import io;
 import lexer;
 import parser;
+import span;
+import resolver;
 import semantic;
 import token;
 
@@ -440,14 +442,32 @@ fn run_semantic_case(sample: []char) {
         return;
     }
     if !parser::parse_file(@arena, tokens.data, tokens.len, @file_info, @parse_errors) {
-        var p = 0;
-        while p < parse_errors.len {
-            print_parse_error(parse_errors[p]);
-            p = p + 1;
+        var p_idx = 0;
+        while p_idx < parse_errors.len {
+            print_parse_error(parse_errors[p_idx]);
+            p_idx = p_idx + 1;
         }
         return;
     }
-    semantic::analyze_file(sample, arena, file_info, @summary, @semantic_errors);
+    
+    var file_info_id = arena.file_infos.len;
+    arena.file_infos.push(file_info);
+    
+    var modules: array::Array<resolver::ModuleInterface> = array::Array();
+    modules.push(resolver::ModuleInterface {
+        name_span: span::make(0, 0),
+        file_info_id: file_info_id
+    });
+    
+    var p = resolver::Project {
+        arena: @arena,
+        source: @sample_arr,
+        modules: @modules
+    };
+    
+    resolver::resolve_names(@p, @parse_errors);
+    
+    semantic::analyze_file(@p, file_info, @summary, @semantic_errors);
     print_chars("fns ");
     io::print(summary.function_count);
     print_chars(" structs ");

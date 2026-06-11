@@ -1,3 +1,4 @@
+import span;
 import array;
 import ast;
 import error;
@@ -22,7 +23,7 @@ export struct Project {
 export fn load_and_resolve(entry_path: string::String, arena: @ast::Arena, source: @array::Array<char>, modules: @array::Array<ModuleInterface>, errors: @array::Array<ast::ParseError>): bool {
     var p = Project { arena: arena, source: source, modules: modules };
     
-    var entry_chars = array::Array<char>();
+    var entry_chars: array::Array<char> = array::Array();
     var i = 0;
     while i < entry_path.len {
         entry_chars.push(entry_path.data[i]);
@@ -34,8 +35,8 @@ export fn load_and_resolve(entry_path: string::String, arena: @ast::Arena, sourc
     return load_module(@p, entry_chars.data, entry_chars.len, entry_name, errors);
 }
 
-fn load_module(p: @Project, path_chars: []char, path_len: int, name_span: span::Span, errors: @array::Array<ast::ParseError>): bool {
-    var path_str = string::String::from(path_chars);
+fn load_module(p: @Project, path_chars: @char?, path_len: int, name_span: span::Span, errors: @array::Array<ast::ParseError>): bool {
+    var path_str = string::String::from_chars(path_chars, path_len);
     var start_offset = (*(*p).source).len;
     
     if !fs::read_file(path_str.c_str(), (*p).source) {
@@ -43,8 +44,8 @@ fn load_module(p: @Project, path_chars: []char, path_len: int, name_span: span::
     }
     var end_offset = (*(*p).source).len;
     
-    var tokens = array::Array<token::Token>();
-    var lex_errors = array::Array<error::LexError>();
+    var tokens: array::Array<token::Token> = array::Array();
+    var lex_errors: array::Array<error::LexError> = array::Array();
     
     lexer::tokenize((*p).source, start_offset, @tokens, @lex_errors);
     
@@ -71,15 +72,15 @@ fn load_module(p: @Project, path_chars: []char, path_len: int, name_span: span::
     var i = file_info.item_start;
     var end_i = file_info.item_start + file_info.item_len;
     while i < end_i {
-        var item_index = (*(*p).arena).top_level_items[i];
+        var item_index = i;
         var item = (*(*p).arena).items[item_index];
         if item.kind == 7 { // ast::ITEM_IMPORT
             // The name of the import is item.name_span
-            var import_name_span = item.name_span;
+            var import_name_span = get_item_name_span(p, item);
             
             // Build path: "src/" + name + ".atl"
                         var name_len = import_name_span.end - import_name_span.start;
-            var name_chars = array::Array<char>();
+            var name_chars: array::Array<char> = array::Array();
             var j = 0;
             while j < name_len {
                 name_chars.push((*(*p).source).data[import_name_span.start + j]);
@@ -129,7 +130,7 @@ fn load_module(p: @Project, path_chars: []char, path_len: int, name_span: span::
                 // Wait! full_path is a String, we can just use it directly!
                 
                 // Let's create an array of char from full_path
-                                var path_arr = array::Array<char>();
+                                var path_arr: array::Array<char> = array::Array();
                 j = 0;
                 while j < full_path.len {
                     path_arr.push(full_path.data[j]);
@@ -138,7 +139,7 @@ fn load_module(p: @Project, path_chars: []char, path_len: int, name_span: span::
                 if !load_module(p, path_arr.data, path_arr.len, import_name_span, errors) {
                     // Try stdlib fallback
                     var full_path_std = prefix_std.concat(@name_str).concat(@suffix);
-                    var path_arr_std = array::Array<char>();
+                    var path_arr_std: array::Array<char> = array::Array();
                     j = 0;
                     while j < full_path_std.len {
                         path_arr_std.push(full_path_std.data[j]);
@@ -159,20 +160,20 @@ fn load_module(p: @Project, path_chars: []char, path_len: int, name_span: span::
 export fn resolve_names(p: @Project, errors: @array::Array<ast::ParseError>): bool {
     var ok = true;
     var i = 0;
-    while i < (*p).modules.len {
-        var mod_iface = (*p).modules[i];
+    while i < (*(*p).modules).len {
+        var mod_iface = (*(*p).modules)[i];
         var file_info = (*(*p).arena).file_infos[mod_iface.file_info_id];
         
         var j = file_info.item_start;
         var end_j = file_info.item_start + file_info.item_len;
         while j < end_j {
-            var item_index = (*(*p).arena).top_level_items[j];
+            var item_index = j;
             var item = (*(*p).arena).items[item_index];
             if item.kind == 1 { // fn
                 if !resolve_function(p, i, item.function_id, errors) { ok = false; }
             } else if item.kind == 2 { // struct
                 if !resolve_struct(p, i, item.struct_id, errors) { ok = false; }
-            } else if item.kind == 8 { // class
+            } else if item.kind == 6 { // class
                 if !resolve_class(p, i, item.class_id, errors) { ok = false; }
             }
             // enum, choice later
@@ -196,7 +197,7 @@ fn resolve_function(p: @Project, mod_idx: int, func_id: int, errors: @array::Arr
     var i = func.param_start;
     var end_i = func.param_start + func.param_len;
     while i < end_i {
-        var param_idx = (*(*p).arena).function_params[i];
+        var param_idx = i;
         if !resolve_type_ref(p, mod_idx, @(*(*p).arena).params[param_idx].type_ref, errors) { ok = false; }
         i = i + 1;
     }
@@ -216,8 +217,8 @@ fn resolve_struct(p: @Project, mod_idx: int, struct_id: int, errors: @array::Arr
     var i = s.field_start;
     var end_i = s.field_start + s.field_len;
     while i < end_i {
-        var field_idx = (*(*p).arena).struct_fields[i];
-        if !resolve_type_ref(p, mod_idx, @(*(*p).arena).fields[field_idx].type_ref, errors) { ok = false; }
+        var field_idx = i;
+        if !resolve_type_ref(p, mod_idx, @(*(*p).arena).struct_fields[field_idx].type_ref, errors) { ok = false; }
         i = i + 1;
     }
     return ok;
@@ -230,16 +231,17 @@ fn resolve_class(p: @Project, mod_idx: int, class_id: int, errors: @array::Array
     var i = c.field_start;
     var end_i = c.field_start + c.field_len;
     while i < end_i {
-        var field_idx = (*(*p).arena).class_fields[i];
-        if !resolve_type_ref(p, mod_idx, @(*(*p).arena).fields[field_idx].type_ref, errors) { ok = false; }
+        var field_idx = i;
+        if !resolve_type_ref(p, mod_idx, @(*(*p).arena).class_fields[field_idx].type_ref, errors) { ok = false; }
         i = i + 1;
     }
     
     i = c.method_start;
     end_i = c.method_start + c.method_len;
     while i < end_i {
-        var method_idx = (*(*p).arena).class_methods[i];
-        if !resolve_function(p, mod_idx, method_idx, errors) { ok = false; }
+        var method_idx = i;
+        // Wait, class_methods array contains ClassMethod which has function_id!
+        if !resolve_function(p, mod_idx, (*(*p).arena).class_methods[method_idx].function_id, errors) { ok = false; }
         i = i + 1;
     }
     return ok;
@@ -248,20 +250,52 @@ fn resolve_class(p: @Project, mod_idx: int, class_id: int, errors: @array::Array
 fn resolve_block(p: @Project, mod_idx: int, block_id: int, errors: @array::Array<ast::ParseError>): bool {
     var block = (*(*p).arena).blocks[block_id];
     var ok = true;
-    var i = block.stmt_start;
-    var end_i = block.stmt_start + block.stmt_len;
+    var i = block.stmt_ref_start;
+    var end_i = block.stmt_ref_start + block.stmt_ref_len;
     while i < end_i {
-        var stmt_idx = (*(*p).arena).block_stmts[i];
+        var stmt_idx = (*(*p).arena).stmt_refs[i];
         var stmt = (*(*p).arena).stmts[stmt_idx];
-        if stmt.kind == 1 { // expr
+        if stmt.kind == 10 { // expr stmt
             if !resolve_expr(p, mod_idx, stmt.expr_id, errors) { ok = false; }
-        } else if stmt.kind == 2 { // let
-            var let_stmt = (*(*p).arena).let_stmts[stmt.let_stmt_id];
-            if let_stmt.has_type {
-                if !resolve_type_ref(p, mod_idx, @(*(*p).arena).let_stmts[stmt.let_stmt_id].type_ref, errors) { ok = false; }
+        } else if stmt.kind == 1 { // var decl
+            var let_stmt = stmt.var_decl;
+            if let_stmt.has_type_hint {
+                if !resolve_type_ref(p, mod_idx, @(*(*p).arena).stmts[stmt_idx].var_decl.type_ref, errors) { ok = false; }
             }
             if let_stmt.has_init {
                 if !resolve_expr(p, mod_idx, let_stmt.init_expr_id, errors) { ok = false; }
+            }
+        } else if stmt.kind == 2 { // const decl
+            var const_decl = stmt.const_decl;
+            if const_decl.has_type_hint {
+                if !resolve_type_ref(p, mod_idx, @(*(*p).arena).stmts[stmt_idx].const_decl.type_ref, errors) { ok = false; }
+            }
+            if !resolve_expr(p, mod_idx, const_decl.init_expr_id, errors) { ok = false; }
+        } else if stmt.kind == 3 { // assign
+            if !resolve_expr(p, mod_idx, stmt.assign_stmt.value_expr_id, errors) { ok = false; }
+        } else if stmt.kind == 4 { // nested block
+            if !resolve_block(p, mod_idx, stmt.block_id, errors) { ok = false; }
+        } else if stmt.kind == 5 { // if
+            if !resolve_expr(p, mod_idx, stmt.if_stmt.condition_expr_id, errors) { ok = false; }
+            if !resolve_block(p, mod_idx, stmt.if_stmt.then_block_id, errors) { ok = false; }
+            if stmt.if_stmt.has_else_block {
+                if !resolve_block(p, mod_idx, stmt.if_stmt.else_block_id, errors) { ok = false; }
+            }
+        } else if stmt.kind == 6 { // while
+            if !resolve_expr(p, mod_idx, stmt.while_stmt.condition_expr_id, errors) { ok = false; }
+            if !resolve_block(p, mod_idx, stmt.while_stmt.body_block_id, errors) { ok = false; }
+        } else if stmt.kind == 9 { // return
+            if stmt.return_stmt.has_value {
+                if !resolve_expr(p, mod_idx, stmt.return_stmt.value_expr_id, errors) { ok = false; }
+            }
+        } else if stmt.kind == 11 { // match
+            if !resolve_expr(p, mod_idx, stmt.match_stmt.value_expr_id, errors) { ok = false; }
+            var arm_idx = stmt.match_stmt.arm_start;
+            var arm_end = stmt.match_stmt.arm_start + stmt.match_stmt.arm_len;
+            while arm_idx < arm_end {
+                var arm = (*(*p).arena).match_arms[arm_idx];
+                if !resolve_block(p, mod_idx, arm.block_id, errors) { ok = false; }
+                arm_idx = arm_idx + 1;
             }
         }
         i = i + 1;
@@ -276,43 +310,44 @@ fn resolve_expr(p: @Project, mod_idx: int, expr_id: int, errors: @array::Array<a
     
     if expr.kind == 1 { // name
         var def_id = find_name(p, mod_idx, expr.name_span, expr.name_span);
-        // Only set it if found, otherwise leave as -1 for local variable resolution later
         if def_id != -1 {
             (*(*p).arena).exprs[expr_id].resolved_def_id = def_id;
         }
-    } else if expr.kind == 7 { // group
-        if !resolve_expr(p, mod_idx, expr.child_start, errors) { ok = false; }
-    } else if expr.kind == 8 { // binary
-        var lhs_id = (*(*p).arena).expr_children[expr.child_start];
-        var rhs_id = (*(*p).arena).expr_children[expr.child_start + 1];
-        if !resolve_expr(p, mod_idx, lhs_id, errors) { ok = false; }
-        if !resolve_expr(p, mod_idx, rhs_id, errors) { ok = false; }
-    } else if expr.kind == 9 { // unary
-        var child_id = (*(*p).arena).expr_children[expr.child_start];
-        if !resolve_expr(p, mod_idx, child_id, errors) { ok = false; }
-    } else if expr.kind == 10 { // call
-        var callee_id = (*(*p).arena).expr_children[expr.child_start];
+    } else if expr.kind == 4 { // group
+        if !resolve_expr(p, mod_idx, (*(*p).arena).expr_refs[expr.child_start], errors) { ok = false; }
+    } else if expr.kind == 5 { // binary/unary
+        if expr.child_len >= 2 {
+            var lhs_id = (*(*p).arena).expr_refs[expr.child_start];
+            var rhs_id = (*(*p).arena).expr_refs[expr.child_start + 1];
+            if !resolve_expr(p, mod_idx, lhs_id, errors) { ok = false; }
+            if !resolve_expr(p, mod_idx, rhs_id, errors) { ok = false; }
+        } else if expr.child_len == 1 {
+            var child_id = (*(*p).arena).expr_refs[expr.child_start];
+            if !resolve_expr(p, mod_idx, child_id, errors) { ok = false; }
+        }
+    } else if expr.kind == 6 { // call
+        var callee_id = (*(*p).arena).expr_refs[expr.child_start];
         if !resolve_expr(p, mod_idx, callee_id, errors) { ok = false; }
         var j = 1;
         while j < expr.child_len {
-            var arg_id = (*(*p).arena).expr_children[expr.child_start + j];
+            var arg_id = (*(*p).arena).expr_refs[expr.child_start + j];
             if !resolve_expr(p, mod_idx, arg_id, errors) { ok = false; }
             j = j + 1;
         }
-    } else if expr.kind == 11 { // member access
-        var base_id = (*(*p).arena).expr_children[expr.child_start];
+    } else if expr.kind == 9 { // member access
+        var base_id = (*(*p).arena).expr_refs[expr.child_start];
         if !resolve_expr(p, mod_idx, base_id, errors) { ok = false; }
-    } else if expr.kind == 12 { // struct literal
+    } else if expr.kind == 10 { // struct literal
         var j = 0;
         while j < expr.child_len {
-            var field_expr_id = (*(*p).arena).expr_children[expr.child_start + j];
+            var field_expr_id = (*(*p).arena).expr_refs[expr.child_start + j];
             if !resolve_expr(p, mod_idx, field_expr_id, errors) { ok = false; }
             j = j + 1;
         }
-    } else if expr.kind == 13 { // variant expr
+    } else if expr.kind == 11 { // variant expr
         var j = 0;
         while j < expr.child_len {
-            var child_expr_id = (*(*p).arena).expr_children[expr.child_start + j];
+            var child_expr_id = (*(*p).arena).expr_refs[expr.child_start + j];
             if !resolve_expr(p, mod_idx, child_expr_id, errors) { ok = false; }
             j = j + 1;
         }
@@ -329,10 +364,6 @@ fn resolve_type_ref(p: @Project, mod_idx: int, type_ref: @ast::TypeRef, errors: 
         }
     }
     return true;
-}
-
-fn find_name(p: @Project, mod_idx: int, qualifier: span::Span, name: span::Span): int {
-    return -1; // Placeholder
 }
 
 fn spans_equal(source: @array::Array<char>, a: span::Span, b: span::Span): bool {
@@ -352,21 +383,21 @@ fn find_name(p: @Project, mod_idx: int, qualifier: span::Span, name: span::Span)
     
     if has_qualifier {
         // Find the module corresponding to the qualifier in this file's imports
-        var mod_iface = (*p).modules[mod_idx];
+        var mod_iface = (*(*p).modules)[mod_idx];
         var file_info = (*(*p).arena).file_infos[mod_iface.file_info_id];
         
         var target_mod_idx = -1;
         var i = file_info.item_start;
         var end_i = file_info.item_start + file_info.item_len;
         while i < end_i {
-            var item_index = (*(*p).arena).top_level_items[i];
+            var item_index = i;
             var item = (*(*p).arena).items[item_index];
-            if item.kind == 7 { // import
-                if spans_equal((*p).source, item.name_span, qualifier) {
+            if item.kind == 5 { // import
+                if spans_equal((*p).source, get_item_name_span(p, item), qualifier) {
                     // Found the import! Find which module this corresponds to.
                     var j = 0;
-                    while j < (*p).modules.len {
-                        if spans_equal((*p).source, (*p).modules[j].name_span, qualifier) {
+                    while j < (*(*p).modules).len {
+                        if spans_equal((*p).source, (*(*p).modules)[j].name_span, qualifier) {
                             target_mod_idx = j;
                             break;
                         }
@@ -383,12 +414,12 @@ fn find_name(p: @Project, mod_idx: int, qualifier: span::Span, name: span::Span)
         }
         
         // Search the exported items of target_mod_idx
-        var target_mod = (*p).modules[target_mod_idx];
+        var target_mod = (*(*p).modules)[target_mod_idx];
         var target_file = (*(*p).arena).file_infos[target_mod.file_info_id];
         i = target_file.item_start;
         end_i = target_file.item_start + target_file.item_len;
         while i < end_i {
-            var item_index = (*(*p).arena).top_level_items[i];
+            var item_index = i;
             var item = (*(*p).arena).items[item_index];
             if item.is_export {
                 // Check name
@@ -401,14 +432,14 @@ fn find_name(p: @Project, mod_idx: int, qualifier: span::Span, name: span::Span)
         }
         return -1;
     } else {
-        // Unqualified. Search in local scope (variables) -> not implemented yet.
+        // Unqualified. Local variable resolution is handled by semantic analysis later.
         // Search in current file's global scope.
-        var mod_iface = (*p).modules[mod_idx];
+        var mod_iface = (*(*p).modules)[mod_idx];
         var file_info = (*(*p).arena).file_infos[mod_iface.file_info_id];
         var i = file_info.item_start;
         var end_i = file_info.item_start + file_info.item_len;
         while i < end_i {
-            var item_index = (*(*p).arena).top_level_items[i];
+            var item_index = i;
             var item = (*(*p).arena).items[item_index];
             var item_name_span = get_item_name_span(p, item);
             if spans_equal((*p).source, item_name_span, name) {
@@ -425,6 +456,7 @@ fn get_item_name_span(p: @Project, item: ast::Item): span::Span {
     if item.kind == 2 { return (*(*p).arena).structs[item.struct_id].name_span; }
     if item.kind == 3 { return (*(*p).arena).enums[item.enum_id].name_span; }
     if item.kind == 4 { return (*(*p).arena).choices[item.choice_id].name_span; }
-    if item.kind == 8 { return (*(*p).arena).classes[item.class_id].name_span; }
+    if item.kind == 6 { return (*(*p).arena).classes[item.class_id].name_span; }
+    if item.kind == 5 { return (*(*p).arena).imports[item.import_id].name_span; }
     return span::make(0, 0);
 }

@@ -107,4 +107,18 @@ export class String {
         }
         return true;
     }
+    public fn from_chars(chars: @char?, len: int): String {
+        var s = String();
+        memory::free(s.data);
+        
+        s.len = len;
+        s.data = memory::malloc(len + 1);
+        
+        if chars != null {
+            memory::memcpy(s.data, cast<@char>(chars), len);
+        }
+        s.data[len] = '\0';
+        
+        return s;
+    }
 }
