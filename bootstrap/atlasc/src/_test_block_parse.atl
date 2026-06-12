@@ -1,0 +1,40 @@
+import ast; import array; import error; import io; import lexer; import parser; import token;
+fn print_chars(chars: []char) { var i = 0; while i < chars.len { io::print_char(chars[i]); i = i + 1; } }
+fn main(): int {
+    var source: array::Array<char> = array::Array();
+    var s = "{ return 1; }";
+    var si = 0; while si < s.len { source.push(s[si]); si = si + 1; }
+    var tokens: array::Array<token::Token> = array::Array();
+    var lex_errors: array::Array<error::LexError> = array::Array();
+    lexer::tokenize(@source, 0, @tokens, @lex_errors);
+    var arena = ast::make_empty_arena();
+    var parse_errors: array::Array<ast::ParseError> = array::Array();
+    var block_id = -1; var index = 0;
+    block_id = -1;
+    var ok = parse_block_stub(@arena, tokens.data, tokens.len, @index, @block_id, @parse_errors);
+    print_chars("ok="); io::print(ok); print_chars(" errs="); io::print(parse_errors.len); print_chars("\n");
+    return 0;
+}
+
+fn parse_block_stub(arena: @ast::Arena, tokens: @token::Token?, count: int, index: @int, block_id: @int, errors: @array::Array<ast::ParseError>): bool {
+    var p = parser::Parser { tokens: tokens, count: count, cursor: *index, errors: errors };
+    var ok = parse_block_inline(@p, arena, block_id);
+    (*index) = p.cursor;
+    return ok;
+}
+
+fn parse_block_inline(p: @parser::Parser, arena: @ast::Arena, block_id: @int): bool {
+    var start = peek_span_start_2(p);
+    expect_72(p);
+    var stmts: array::Array<int> = array::Array();
+    while peek_kind_2(p) != 73 and peek_kind_2(p) != 76 {
+        var stmt_id = -1;
+        if parse_stmt_inline(p, arena, @stmt_id) { stmts.push(stmt_id); }
+        else { synchronize_2(p); }
+    }
+    var end_val = peek_span_end_2(p);
+    expect_72_73(p);
+    var ref_start = ast::append_stmt_refs(arena, @stmts);
+    (*block_id) = ast::push_block(arena, ast::make_block(ref_start, stmts.len, start, end_val));
+    return true;
+}

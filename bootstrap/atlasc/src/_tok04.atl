@@ -1,0 +1,17 @@
+import ast; import array; import error; import io; import lexer; import fs; import token;
+fn print_chars(chars: []char) { var i = 0; while i < chars.len { io::print_char(chars[i]); i = i + 1; } }
+fn main(): int {
+    var source: array::Array<char> = array::Array();
+    if !fs::read_file("compiler/tests/integration/04_relational.atl", @source) { return 1; }
+    var tokens: array::Array<token::Token> = array::Array();
+    var lex_errors: array::Array<error::LexError> = array::Array();
+    lexer::tokenize(@source, 0, @tokens, @lex_errors);
+    var i = 0;
+    while i < tokens.len {
+        var tok = tokens[i];
+        io::print(tok.kind); print_chars(" "); 
+        i = i + 1;
+    }
+    print_chars("\n");
+    return 0;
+}

@@ -252,6 +252,7 @@ export fn tokenize(source: @array::Array<char>, start_offset: int, tokens: @arra
         else if ch == '}' { tokens.push(token::make(73, i, i + 1)); i = i + 1; }
         else if ch == '[' { tokens.push(token::make(74, i, i + 1)); i = i + 1; }
         else if ch == ']' { tokens.push(token::make(75, i, i + 1)); i = i + 1; }
+        else if ch == '\0' { i = i + 1; }
         else {
             errors.push(error::make(5, i, i + 1));
             i = i + 1;

@@ -1,0 +1,30 @@
+import resolver;
+import ast;
+import array;
+import string;
+import io;
+
+fn print_chars(chars: []char) {
+    var i = 0;
+    while i < chars.len {
+        io::print_char(chars[i]);
+        i = i + 1;
+    }
+}
+
+fn main(): int {
+    var arena = ast::make_empty_arena();
+    var source: array::Array<char> = array::Array();
+    var modules: array::Array<resolver::ModuleInterface> = array::Array();
+    var errors: array::Array<ast::ParseError> = array::Array();
+    var path = string::String::from("compiler/tests/integration/13_char_string.atl");
+    
+    if !resolver::load_and_resolve(@path, @arena, @source, @modules, @errors) {
+        print_chars("LOAD_FAIL\n");
+        return 1;
+    }
+    print_chars("LOAD_OK modules=");
+    io::print(modules.len);
+    print_chars("\n");
+    return 0;
+}

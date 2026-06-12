@@ -1,0 +1,10 @@
+import ast; import array; import error; import io; import lexer; import parser; import span; import resolver; import semantic; import string; import token;
+fn main(): int {
+    var arena = ast::make_empty_arena(); var source_arr: array::Array<char> = array::Array();
+    var modules: array::Array<resolver::ModuleInterface> = array::Array();
+    var resolve_errors: array::Array<ast::ParseError> = array::Array();
+    var entry_path = string::String::from("compiler/tests/integration/24_enums.atl");
+    var ok = resolver::load_and_resolve(@entry_path, @arena, @source_arr, @modules, @resolve_errors);
+    if !ok { return 1; }
+    return modules.len;
+}

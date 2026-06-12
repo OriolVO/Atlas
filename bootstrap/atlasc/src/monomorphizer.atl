@@ -217,6 +217,7 @@ export fn instantiate_generic(
         has_return_type: func.has_return_type,
         return_type_ref: new_ret,
         body_block_id: func.body_block_id,
+        is_variadic: func.is_variadic,
         span: func.span
     });
 

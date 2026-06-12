@@ -1,0 +1,62 @@
+import ast;
+import array;
+import error;
+import io;
+import lexer;
+import llvm_codegen.native;
+import parser;
+import span;
+import resolver;
+import semantic;
+import string;
+import token;
+
+fn print_chars(chars: []char) {
+    var i = 0;
+    while i < chars.len {
+        io::print_char(chars[i]);
+        i = i + 1;
+    }
+}
+
+fn run_test(path: []char) {
+    print_chars("TEST:");
+    print_chars(path);
+    print_chars("\n");
+
+    var arena = ast::make_empty_arena();
+    var source_arr: array::Array<char> = array::Array();
+    var modules: array::Array<resolver::ModuleInterface> = array::Array();
+    var resolve_errors: array::Array<ast::ParseError> = array::Array();
+
+    var entry_path = string::String::from(path);
+
+    if !resolver::load_and_resolve(@entry_path, @arena, @source_arr, @modules, @resolve_errors) {
+        print_chars("RESULT:LOAD_FAIL\n");
+        return;
+    }
+
+    var proj = resolver::Project { arena: @arena, source: @source_arr, modules: @modules, prelude_count: 0 };
+    resolver::resolve_names(@proj, @resolve_errors);
+
+    var total_errors = 0;
+    var mi = 0;
+    while mi < modules.len {
+        var summary = semantic::make_empty_summary();
+        var semantic_errors: array::Array<semantic::SemanticError> = array::Array();
+        var file_info = (arena).file_infos[modules[mi].file_info_id];
+        var proj2 = resolver::Project { arena: @arena, source: @source_arr, modules: @modules, prelude_count: 0 };
+        semantic::analyze_file(@proj2, file_info, @summary, @semantic_errors);
+        total_errors = total_errors + semantic_errors.len;
+        mi = mi + 1;
+    }
+
+    var cg = llvm_codegen.native::make_empty_codegen();
+    var proj3 = resolver::Project { arena: @arena, source: @source_arr, modules: @modules, prelude_count: 0 };
+    llvm_codegen.native::generate(@cg, @proj3);
+
+    print_chars("RESULT:OK\n");
+}
+
+fn main(): int {
+ENDINT

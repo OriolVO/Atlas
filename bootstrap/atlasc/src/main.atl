@@ -458,13 +458,15 @@ fn run_semantic_case(sample: []char) {
     var modules: array::Array<resolver::ModuleInterface> = array::Array();
     modules.push(resolver::ModuleInterface {
         name_span: span::make(0, 0),
-        file_info_id: file_info_id
+        file_info_id: file_info_id,
+        import_module_indices: array::Array()
     });
     
     var p = resolver::Project {
         arena: @arena,
         source: @sample_arr,
-        modules: @modules
+        modules: @modules,
+        prelude_count: 0
     };
     
     resolver::resolve_names(@p, @parse_errors);
@@ -526,10 +528,10 @@ fn build_file(path: []char) {
     var modules: array::Array<resolver::ModuleInterface> = array::Array();
     var resolve_errors: array::Array<ast::ParseError> = array::Array();
 
-    var entry_path = string::String::from("src/main.atl");
+    var entry_path = string::String::from(path);
 
     if !resolver::load_and_resolve(@entry_path, @arena, @source, @modules, @resolve_errors) {
-        print_chars("failed to load modules\n");
+        print_chars("FAILED:LOAD\n");
         return;
     }
 
@@ -538,31 +540,38 @@ fn build_file(path: []char) {
     io::print(mcount);
     print_chars(" modules\n");
 
-    var proj = resolver::Project { arena: @arena, source: @source, modules: @modules };
+    var proj = resolver::Project { arena: @arena, source: @source, modules: @modules, prelude_count: 0 };
     resolver::resolve_names(@proj, @resolve_errors);
 
-    var summary = semantic::make_empty_summary();
-    var semantic_errors: array::Array<semantic::SemanticError> = array::Array();
-    var file_info = (arena).file_infos[0];
-    var proj2 = resolver::Project { arena: @arena, source: @source, modules: @modules };
-    semantic::analyze_file(@proj2, file_info, @summary, @semantic_errors);
+    var total_semantic_errors = 0;
+    var mi = 0;
+    while mi < modules.len {
+        var summary = semantic::make_empty_summary();
+        var semantic_errors: array::Array<semantic::SemanticError> = array::Array();
+        var file_info = (arena).file_infos[modules[mi].file_info_id];
+        var proj2 = resolver::Project { arena: @arena, source: @source, modules: @modules, prelude_count: 0 };
+        semantic::analyze_file(@proj2, file_info, @summary, @semantic_errors);
+        if semantic_errors.len > 0 {
+            var e = 0;
+            while e < semantic_errors.len {
+                print_semantic_error("", semantic_errors[e]);
+                e = e + 1;
+            }
+        }
+        total_semantic_errors = total_semantic_errors + semantic_errors.len;
+        mi = mi + 1;
+    }
 
-    var s_errs = semantic_errors.len;
     print_chars("semantic errors: ");
-    io::print(s_errs);
+    io::print(total_semantic_errors);
     print_chars("\n");
 
-    if s_errs > 0 {
-        var e = 0;
-        while e < s_errs {
-            print_semantic_error("", semantic_errors[e]);
-            e = e + 1;
-        }
+    if total_semantic_errors > 0 {
         return;
     }
 
     var cg = llvm_codegen.native::make_empty_codegen();
-    var proj3 = resolver::Project { arena: @arena, source: @source, modules: @modules };
+    var proj3 = resolver::Project { arena: @arena, source: @source, modules: @modules, prelude_count: 0 };
     llvm_codegen.native::generate(@cg, @proj3);
 
     print_chars("ir output:\n");

@@ -1,0 +1,77 @@
+import ast;
+import array;
+import error;
+import io;
+import lexer;
+import llvm_codegen.native;
+import parser;
+import span;
+import resolver;
+import semantic;
+import string;
+import token;
+
+fn print_chars(chars: []char) {
+    var i = 0;
+    while i < chars.len {
+        io::print_char(chars[i]);
+        i = i + 1;
+    }
+}
+fn print_range(source: []char, start: int, end: int) {
+    var i = start;
+    while i < end {
+        io::print_char(source[i]);
+        i = i + 1;
+    }
+}
+
+fn main(): int {
+    var arena = ast::make_empty_arena();
+    var source_arr: array::Array<char> = array::Array();
+    var modules: array::Array<resolver::ModuleInterface> = array::Array();
+    var resolve_errors: array::Array<ast::ParseError> = array::Array();
+    var entry_path = string::String::from("compiler/tests/integration/01_arithmetic.atl");
+    
+    if !resolver::load_and_resolve(@entry_path, @arena, @source_arr, @modules, @resolve_errors) {
+        print_chars("LOAD_FAIL\n");
+        return 1;
+    }
+    var proj = resolver::Project { arena: @arena, source: @source_arr, modules: @modules, prelude_count: 0 };
+    resolver::resolve_names(@proj, @resolve_errors);
+    
+    print_chars("modules=");
+    io::print(modules.len);
+    print_chars("\n");
+    
+    var mi = 0;
+    while mi < modules.len {
+        var summary = semantic::make_empty_summary();
+        var semantic_errors: array::Array<semantic::SemanticError> = array::Array();
+        var file_info = (arena).file_infos[modules[mi].file_info_id];
+        print_chars("module ");
+        io::print(mi);
+        print_chars(" items=");
+        io::print(file_info.item_len);
+        print_chars("\n");
+        var proj2 = resolver::Project { arena: @arena, source: @source_arr, modules: @modules, prelude_count: 0 };
+        semantic::analyze_file(@proj2, file_info, @summary, @semantic_errors);
+        var e = 0;
+        while e < semantic_errors.len {
+            var err = semantic_errors[e];
+            print_chars("ERR");
+            io::print(err.kind);
+            print_chars("@");
+            io::print(err.span.start);
+            print_chars(":");
+            io::print(err.span.end);
+            print_chars("='");
+            print_range("", err.span.start, err.span.end);
+            print_chars("'\n");
+            e = e + 1;
+        }
+        mi = mi + 1;
+    }
+    
+    return 0;
+}

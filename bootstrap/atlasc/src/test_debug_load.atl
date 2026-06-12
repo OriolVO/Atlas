@@ -1,0 +1,59 @@
+import resolver;
+import ast;
+import array;
+import string;
+import io;
+import fs;
+import lexer;
+import error;
+import token;
+import parser;
+
+fn print_chars(chars: []char) {
+    var i = 0;
+    while i < chars.len {
+        io::print_char(chars[i]);
+        i = i + 1;
+    }
+}
+
+fn main(): int {
+    var source: array::Array<char> = array::Array();
+    var path = string::String::from("compiler/tests/integration/01_arithmetic.atl");
+    
+    if !fs::read_file(path.c_str(), @source) {
+        print_chars("read_fail\n");
+        return 1;
+    }
+
+    var tokens: array::Array<token::Token> = array::Array();
+    var lex_errors: array::Array<error::LexError> = array::Array();
+    lexer::tokenize(@source, 0, @tokens, @lex_errors);
+    
+    var arena = ast::make_empty_arena();
+    var parse_errors: array::Array<ast::ParseError> = array::Array();
+    var file_info = ast::make_empty_file_info();
+    
+    parser::parse_file(@arena, tokens.data, tokens.len, @file_info, @parse_errors);
+    
+    print_chars("items=");
+    io::print(file_info.item_len);
+    print_chars(" parse_errs=");
+    io::print(parse_errors.len);
+    print_chars("\n");
+    
+    var e = 0;
+    while e < parse_errors.len {
+        var pe = parse_errors[e];
+        print_chars("perr kind=");
+        io::print(pe.kind);
+        print_chars(" at=");
+        io::print(pe.span.start);
+        print_chars(":");
+        io::print(pe.span.end);
+        print_chars("\n");
+        e = e + 1;
+    }
+    
+    return 0;
+}

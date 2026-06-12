@@ -1,0 +1,131 @@
+import ast;
+import array;
+import error;
+import io;
+import lexer;
+import llvm_codegen.native;
+import parser;
+import span;
+import resolver;
+import semantic;
+import string;
+import token;
+
+fn print_chars(chars: []char) {
+    var i = 0;
+    while i < chars.len {
+        io::print_char(chars[i]);
+        i = i + 1;
+    }
+}
+
+fn run_test(path: []char) {
+    print_chars("TEST:");
+    print_chars(path);
+    print_chars("\n");
+
+    var arena = ast::make_empty_arena();
+    var source_arr: array::Array<char> = array::Array();
+    var modules: array::Array<resolver::ModuleInterface> = array::Array();
+    var resolve_errors: array::Array<ast::ParseError> = array::Array();
+
+    var entry_path = string::String::from(path);
+
+    if !resolver::load_and_resolve(@entry_path, @arena, @source_arr, @modules, @resolve_errors) {
+        print_chars("RESULT:LOAD_FAIL\n");
+        return;
+    }
+
+    var proj = resolver::Project { arena: @arena, source: @source_arr, modules: @modules, prelude_count: 0 };
+    resolver::resolve_names(@proj, @resolve_errors);
+
+    var total_errors = 0;
+    var mi = 0;
+    while mi < modules.len {
+        var summary = semantic::make_empty_summary();
+        var semantic_errors: array::Array<semantic::SemanticError> = array::Array();
+        var file_info = (arena).file_infos[modules[mi].file_info_id];
+        var proj2 = resolver::Project { arena: @arena, source: @source_arr, modules: @modules, prelude_count: 0 };
+        semantic::analyze_file(@proj2, file_info, @summary, @semantic_errors);
+        total_errors = total_errors + semantic_errors.len;
+        mi = mi + 1;
+    }
+
+    var cg = llvm_codegen.native::make_empty_codegen();
+    var proj3 = resolver::Project { arena: @arena, source: @source_arr, modules: @modules, prelude_count: 0 };
+    llvm_codegen.native::generate(@cg, @proj3);
+
+    print_chars("RESULT:OK (sem_errs=");
+    io::print(total_errors);
+    print_chars(")\n");
+}
+
+fn main(): int {
+    run_test("compiler/tests/integration/01_arithmetic.atl");
+    run_test("compiler/tests/integration/02_control_flow.atl");
+    run_test("compiler/tests/integration/03_putchar.atl");
+    run_test("compiler/tests/integration/04_relational.atl");
+    run_test("compiler/tests/integration/05_relational_float.atl");
+    run_test("compiler/tests/integration/06_if_else_chain.atl");
+    run_test("compiler/tests/integration/07_while_nested.atl");
+    run_test("compiler/tests/integration/08_functions.atl");
+    run_test("compiler/tests/integration/09_shadowing.atl");
+    run_test("compiler/tests/integration/10_const.atl");
+    run_test("compiler/tests/integration/11_unary.atl");
+    run_test("compiler/tests/integration/12_logical.atl");
+    run_test("compiler/tests/integration/13_char_string.atl");
+    run_test("compiler/tests/integration/14_mandelbrot_stub.atl");
+    run_test("compiler/tests/integration/15_fibonacci.atl");
+    run_test("compiler/tests/integration/16_struct.atl");
+    run_test("compiler/tests/integration/17_pointers.atl");
+    run_test("compiler/tests/integration/18_classes.atl");
+    run_test("compiler/tests/integration/19_raii_heap.atl");
+    run_test("compiler/tests/integration/20_raii_stack.atl");
+    run_test("compiler/tests/integration/21_fixed_arrays.atl");
+    run_test("compiler/tests/integration/22_slices.atl");
+    run_test("compiler/tests/integration/23_strings.atl");
+    run_test("compiler/tests/integration/24_enums.atl");
+    run_test("compiler/tests/integration/25_choices.atl");
+    run_test("compiler/tests/integration/26_nullable.atl");
+    run_test("compiler/tests/integration/27_result.atl");
+    run_test("compiler/tests/integration/28_generics.atl");
+    run_test("compiler/tests/integration/29_clone.atl");
+    run_test("compiler/tests/integration/30_memory_destroy.atl");
+    run_test("compiler/tests/integration/31_dynamic_array.atl");
+    run_test("compiler/tests/integration/32_nested_structs.atl");
+    run_test("compiler/tests/integration/33_array_class.atl");
+    run_test("compiler/tests/integration/34_array_full.atl");
+    run_test("compiler/tests/integration/35_box_class.atl");
+    run_test("compiler/tests/integration/36_addressof.atl");
+    run_test("compiler/tests/integration/37_memcpy.atl");
+    run_test("compiler/tests/integration/38_operator_overloading.atl");
+    run_test("compiler/tests/integration/39_hashmap.atl");
+    run_test("compiler/tests/integration/40_io.atl");
+    run_test("compiler/tests/integration/41_generic_print.atl");
+    run_test("compiler/tests/integration/42_manual_method_destroy.atl");
+    run_test("compiler/tests/integration/43_default_nested_destroy.atl");
+    run_test("compiler/tests/integration/44_numeric_aliases.atl");
+    run_test("compiler/tests/integration/45_numeric_conversion_requires_cast.atl");
+    run_test("compiler/tests/integration/46_signed_unsigned_requires_cast.atl");
+    run_test("compiler/tests/integration/47_explicit_numeric_casts.atl");
+    run_test("compiler/tests/integration/48_string_literal_slice_and_from.atl");
+    run_test("compiler/tests/integration/49_uninitialized_locals.atl");
+    run_test("compiler/tests/integration/50_match_literal_patterns.atl");
+    run_test("compiler/tests/integration/51_unknown_static_method.atl");
+    run_test("compiler/tests/integration/52_invalid_error_propagate.atl");
+    run_test("compiler/tests/integration/53_unknown_type_annotation.atl");
+    run_test("compiler/tests/integration/54_invalid_index_operator_shape.atl");
+    run_test("compiler/tests/integration/55_missing_index_operator.atl");
+    run_test("compiler/tests/integration/56_variadic_extern.atl");
+    run_test("compiler/tests/integration/57_class_copy_forbidden.atl");
+    run_test("compiler/tests/integration/58_nullable_method_requires_check.atl");
+    run_test("compiler/tests/integration/59_non_exhaustive_match.atl");
+    run_test("compiler/tests/integration/60_recursive_struct_rejected.atl");
+    run_test("compiler/tests/integration/61_recursive_struct_pointer_ok.atl");
+    run_test("compiler/tests/integration/62_break_continue.atl");
+    run_test("compiler/tests/integration/63_break_outside_loop.atl");
+    run_test("compiler/tests/integration/64_continue_outside_loop.atl");
+    run_test("compiler/tests/integration/65_same_module_enum_struct_field.atl");
+    run_test("compiler/tests/integration/66_same_module_enum_class_field.atl");
+    return 0;
+}

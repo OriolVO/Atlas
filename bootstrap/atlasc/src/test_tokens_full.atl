@@ -1,0 +1,40 @@
+import resolver;
+import ast;
+import array;
+import string;
+import io;
+import lexer;
+import error;
+import token;
+import parser;
+
+fn print_chars(chars: []char) {
+    var i = 0;
+    while i < chars.len {
+        io::print_char(chars[i]);
+        i = i + 1;
+    }
+}
+
+fn main(): int {
+    var source: array::Array<char> = array::Array();
+    var s = "fn main(): int { var a = 10; var b = 32; return a + b; }";
+    var si = 0;
+    while si < s.len {
+        source.push(s[si]);
+        si = si + 1;
+    }
+    var tokens: array::Array<token::Token> = array::Array();
+    var lex_errors: array::Array<error::LexError> = array::Array();
+    lexer::tokenize(@source, 0, @tokens, @lex_errors);
+    
+    var i = 0;
+    while i < tokens.len {
+        var tok = tokens[i];
+        io::print(tok.kind);
+        print_chars(" ");
+        i = i + 1;
+    }
+    print_chars("\n");
+    return 0;
+}
