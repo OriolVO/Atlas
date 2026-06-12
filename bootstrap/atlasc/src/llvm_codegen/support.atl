@@ -1,0 +1,98 @@
+import array;
+
+export fn map_type_to_llvm(ty: int): []char {
+    if ty == types::type_int() or types::is_integer_type(ty) { return "i64"; }
+    if ty == types::type_uint() { return "i64"; }
+    if ty == types::type_int8() or ty == types::type_uint8() { return "i8"; }
+    if ty == types::type_int16() or ty == types::type_uint16() { return "i16"; }
+    if ty == types::type_int32() or ty == types::type_uint32() { return "i32"; }
+    if ty == types::type_int64() or ty == types::type_uint64() { return "i64"; }
+    if ty == types::type_float() or ty == types::type_float64() { return "double"; }
+    if ty == types::type_float32() { return "float"; }
+    if ty == types::type_bool() { return "i1"; }
+    if ty == types::type_char() { return "i8"; }
+    if ty == types::type_void() { return "void"; }
+    if types::is_pointer_type(ty) { return "ptr"; }
+    if types::is_slice_type(ty) { return "i64"; }
+    if types::is_array_type(ty) { return "i64"; }
+    if types::is_struct_type(ty) { return "i64"; }
+    if types::is_enum_type(ty) { return "i64"; }
+    if types::is_choice_type(ty) { return "i64"; }
+    if types::is_class_type(ty) { return "i64"; }
+    return "i64";
+}
+
+export fn map_type_size(ty: int): int {
+    if ty == types::type_int8() or ty == types::type_uint8() or ty == types::type_bool() or ty == types::type_char() { return 1; }
+    if ty == types::type_int16() or ty == types::type_uint16() { return 2; }
+    if ty == types::type_int32() or ty == types::type_uint32() or ty == types::type_float32() { return 4; }
+    if types::is_integer_type(ty) or ty == types::type_float() or ty == types::type_float64() { return 8; }
+    if types::is_pointer_type(ty) { return 8; }
+    return 8;
+}
+
+export fn is_float_llvm_type(ty: int): bool {
+    return ty == types::type_float() or ty == types::type_float32() or ty == types::type_float64();
+}
+
+export fn compare_opcode(op: int, ty: int): []char {
+    if ty == types::type_float() or ty == types::type_float64() or ty == types::type_float32() {
+        if op == 55 { return "olt"; }
+        if op == 56 { return "ogt"; }
+        if op == 53 { return "ole"; }
+        if op == 54 { return "oge"; }
+        if op == 51 { return "oeq"; }
+        if op == 52 { return "one"; }
+        return "oeq";
+    }
+    if op == 55 { return "slt"; }
+    if op == 56 { return "sgt"; }
+    if op == 53 { return "sle"; }
+    if op == 54 { return "sge"; }
+    if op == 51 { return "eq"; }
+    if op == 52 { return "ne"; }
+    return "eq";
+}
+
+export fn binary_op_llvm_name(op: int, ty: int): []char {
+    if is_float_llvm_type(ty) {
+        if op == 46 { return "fadd"; }
+        if op == 47 { return "fsub"; }
+        if op == 48 { return "fmul"; }
+        if op == 49 { return "fdiv"; }
+        if op == 50 { return "frem"; }
+        return "fadd";
+    }
+    if op == 46 { return "add"; }
+    if op == 47 { return "sub"; }
+    if op == 48 { return "mul"; }
+    if op == 49 { return "sdiv"; }
+    if op == 50 { return "srem"; }
+    return "add";
+}
+
+export fn cast_llvm_op(from_ty: int, to_ty: int): []char {
+    if types::is_integer_type(from_ty) and types::is_integer_type(to_ty) {
+        if map_type_size(to_ty) > map_type_size(from_ty) {
+            if types::is_signed_integer_type(from_ty) { return "sext"; }
+            return "zext";
+        }
+        return "trunc";
+    }
+    if is_float_llvm_type(from_ty) and is_float_llvm_type(to_ty) {
+        if map_type_size(to_ty) > map_type_size(from_ty) { return "fpext"; }
+        return "fptrunc";
+    }
+    if types::is_integer_type(from_ty) and is_float_llvm_type(to_ty) {
+        if types::is_signed_integer_type(from_ty) { return "sitofp"; }
+        return "uitofp";
+    }
+    if is_float_llvm_type(from_ty) and types::is_integer_type(to_ty) {
+        if types::is_signed_integer_type(to_ty) { return "fptosi"; }
+        return "fptoui";
+    }
+    if types::is_pointer_type(from_ty) and types::is_pointer_type(to_ty) { return "bitcast"; }
+    if types::is_pointer_type(from_ty) and types::is_integer_type(to_ty) { return "ptrtoint"; }
+    if types::is_integer_type(from_ty) and types::is_pointer_type(to_ty) { return "inttoptr"; }
+    return "trunc";
+}

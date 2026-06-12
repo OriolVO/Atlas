@@ -1,0 +1,162 @@
+import array;
+import span;
+
+export fn type_unknown(): int { return 0; }
+export fn type_null(): int { return 1; }
+export fn type_void(): int { return 2; }
+
+export fn type_int(): int { return 31; }
+export fn type_uint(): int { return 32; }
+export fn type_int8(): int { return 33; }
+export fn type_int16(): int { return 34; }
+export fn type_int32(): int { return 35; }
+export fn type_int64(): int { return 36; }
+export fn type_uint8(): int { return 37; }
+export fn type_uint16(): int { return 38; }
+export fn type_uint32(): int { return 39; }
+export fn type_uint64(): int { return 40; }
+export fn type_float(): int { return 41; }
+export fn type_float32(): int { return 42; }
+export fn type_float64(): int { return 43; }
+export fn type_bool(): int { return 44; }
+export fn type_char(): int { return 45; }
+export fn type_string_literal(): int { return 100; }
+
+export fn type_struct(idx: int): int {
+    if idx < 0 { return type_unknown(); }
+    return 1000 + idx;
+}
+export fn type_enum(idx: int): int {
+    if idx < 0 { return type_unknown(); }
+    return 2000 + idx;
+}
+export fn type_choice(idx: int): int {
+    if idx < 0 { return type_unknown(); }
+    return 3000 + idx;
+}
+export fn type_class(idx: int): int {
+    if idx < 0 { return type_unknown(); }
+    return 4000 + idx;
+}
+export fn type_pointer(target: int, nullable: bool): int {
+    var extra = 0;
+    if nullable { extra = 1; }
+    return 10000 + target * 2 + extra;
+}
+export fn type_slice(element: int): int { return 50000 + element; }
+export fn type_array(element: int, size: int): int { return 60000 + element * 10000 + size; }
+
+export fn is_primitive_type(ty: int): bool { return ty >= 31 and ty <= 45; }
+export fn is_integer_type(ty: int): bool { return ty >= 31 and ty <= 40; }
+export fn is_signed_integer_type(ty: int): bool { return ty == 31 or (ty >= 33 and ty <= 36); }
+export fn is_unsigned_integer_type(ty: int): bool { return ty == 32 or (ty >= 37 and ty <= 40); }
+export fn is_float_type(ty: int): bool { return ty >= 41 and ty <= 43; }
+export fn is_numeric_type(ty: int): bool { return is_integer_type(ty) or is_float_type(ty); }
+export fn is_struct_type(ty: int): bool { return ty >= 1000 and ty < 2000; }
+export fn is_enum_type(ty: int): bool { return ty >= 2000 and ty < 3000; }
+export fn is_choice_type(ty: int): bool { return ty >= 3000 and ty < 4000; }
+export fn is_class_type(ty: int): bool { return ty >= 4000 and ty < 10000; }
+
+export fn is_pointer_type(ty: int): bool { return ty >= 10000; }
+export fn is_nullable_pointer(ty: int): bool {
+    if ty < 10000 { return false; }
+    return (ty - 10000) % 2 == 1;
+}
+export fn type_dereference(ptr_ty: int): int {
+    if ptr_ty < 10000 { return type_unknown(); }
+    return (ptr_ty - 10000) / 2;
+}
+
+export fn is_slice_type(ty: int): bool { return ty >= 50000 and ty < 60000; }
+export fn is_array_type(ty: int): bool { return ty >= 60000; }
+export fn slice_element_type(ty: int): int {
+    if !is_slice_type(ty) { return type_unknown(); }
+    return ty - 50000;
+}
+export fn array_element_type(ty: int): int {
+    if !is_array_type(ty) { return type_unknown(); }
+    return (ty - 60000) / 10000;
+}
+export fn array_element_count(ty: int): int {
+    if !is_array_type(ty) { return 0; }
+    return (ty - 60000) % 10000;
+}
+
+export fn struct_index(ty: int): int {
+    if !is_struct_type(ty) { return -1; }
+    return ty - 1000;
+}
+export fn enum_index(ty: int): int {
+    if !is_enum_type(ty) { return -1; }
+    return ty - 2000;
+}
+export fn choice_index(ty: int): int {
+    if !is_choice_type(ty) { return -1; }
+    return ty - 3000;
+}
+export fn class_index(ty: int): int {
+    if !is_class_type(ty) { return -1; }
+    return ty - 4000;
+}
+
+export fn type_to_token_kind(ty: int): int {
+    if is_primitive_type(ty) { return ty; }
+    if ty == type_null() { return 30; }
+    if ty == type_void() { return 0; }
+    return 0;
+}
+
+export fn is_assignable_to(from_ty: int, to_ty: int): bool {
+    if from_ty == to_ty { return true; }
+    if from_ty == type_unknown() or to_ty == type_unknown() { return true; }
+    if from_ty == type_null() and is_nullable_pointer(to_ty) { return true; }
+    if is_pointer_type(from_ty) and is_pointer_type(to_ty) {
+        return type_dereference(from_ty) == type_dereference(to_ty);
+    }
+    if is_integer_type(from_ty) and is_integer_type(to_ty) { return true; }
+    if is_float_type(from_ty) and is_float_type(to_ty) { return true; }
+    return false;
+}
+
+export fn same_runtime_type(a: int, b: int): bool {
+    if a == b { return true; }
+    if is_integer_type(a) and is_integer_type(b) { return true; }
+    if is_float_type(a) and is_float_type(b) { return true; }
+    return false;
+}
+
+export struct FnSignature {
+    param_types: array::Array<int>;
+    return_type: int;
+    is_extern: bool;
+    is_variadic: bool;
+    has_body: bool;
+}
+
+export fn make_empty_fn_signature(): FnSignature {
+    return FnSignature {
+        param_types: array::Array(),
+        return_type: type_void(),
+        is_extern: false,
+        is_variadic: false,
+        has_body: false
+    };
+}
+
+export struct TypedAST {
+    fn_count: int;
+    struct_count: int;
+    class_count: int;
+    enum_count: int;
+    choice_count: int;
+}
+
+export fn make_empty_typed_ast(): TypedAST {
+    return TypedAST {
+        fn_count: 0,
+        struct_count: 0,
+        class_count: 0,
+        enum_count: 0,
+        choice_count: 0
+    };
+}

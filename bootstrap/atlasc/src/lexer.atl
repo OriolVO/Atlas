@@ -89,6 +89,7 @@ fn push_keyword_or_identifier(source: @array::Array<char>, start: int, end: int,
     if slice_equals(source, start, end, "float64") { tokens.push(token::make(43, start, end)); return; }
     if slice_equals(source, start, end, "bool") { tokens.push(token::make(44, start, end)); return; }
     if slice_equals(source, start, end, "char") { tokens.push(token::make(45, start, end)); return; }
+    if slice_equals(source, start, end, "operator") { tokens.push(token::make(79, start, end)); return; }
     tokens.push(token::make(6, start, end));
 }
 

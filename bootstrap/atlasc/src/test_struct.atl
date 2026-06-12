@@ -35,15 +35,15 @@ fn main(): int {
     if !parser::parse_file(@arena, tokens.data, tokens.len, @file_info, @parse_errors) { return 2; }
     var fid = arena.file_infos.len; arena.file_infos.push(file_info);
     var modules: array::Array<resolver::ModuleInterface> = array::Array();
-    modules.push(resolver::ModuleInterface { name_span: span::make(0, 0), file_info_id: fid });
-    var proj = resolver::Project { arena: @arena, source: @src_arr, modules: @modules };
+    modules.push(resolver::ModuleInterface { name_span: span::make(0, 0), file_info_id: fid, import_module_indices: array::Array() });
+    var proj = resolver::Project { arena: @arena, source: @src_arr, modules: @modules, prelude_count: 0 };
     resolver::resolve_names(@proj, @parse_errors);
     var summary = semantic::make_empty_summary();
     var sem_errs: array::Array<semantic::SemanticError> = array::Array();
     semantic::analyze_file(@proj, file_info, @summary, @sem_errs);
     if sem_errs.len > 0 { return 3; }
     var cg = llvm_codegen.native::make_empty_codegen();
-    var proj2 = resolver::Project { arena: @arena, source: @src_arr, modules: @modules };
+    var proj2 = resolver::Project { arena: @arena, source: @src_arr, modules: @modules, prelude_count: 0 };
     llvm_codegen.native::generate(@cg, @proj2);
     var ci = 0;
     while ci < cg.output.len { io::print_char(cg.output.data[ci]); ci = ci + 1; }

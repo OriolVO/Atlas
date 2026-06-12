@@ -1,5 +1,6 @@
 import array;
 import ast;
+import monomorphizer;
 import resolver;
 import semantic;
 import span;
@@ -24,6 +25,9 @@ export struct Codegen {
     loop_continue: int;
     scope_depth: int;
     scope_saved_counts: array::Array<int>;
+    cleanup_regs: array::Array<int>;
+    cleanup_classes: array::Array<int>;
+    cleanup_depths: array::Array<int>;
 }
 
 export fn make_empty_codegen(): Codegen {
@@ -44,7 +48,10 @@ export fn make_empty_codegen(): Codegen {
         loop_break: -1,
         loop_continue: -1,
         scope_depth: 0,
-        scope_saved_counts: array::Array()
+        scope_saved_counts: array::Array(),
+        cleanup_regs: array::Array(),
+        cleanup_classes: array::Array(),
+        cleanup_depths: array::Array()
     };
 }
 
@@ -91,11 +98,6 @@ fn push_reg(g: @Codegen, reg: int) {
     emit_int(g, reg);
 }
 
-fn push_label(g: @Codegen, prefix: []char, num: int) {
-    emit(g, prefix);
-    emit_int(g, num);
-}
-
 fn llvm_type(ty: int): []char {
     if ty == semantic::type_int() { return "i64"; }
     if ty == semantic::type_bool() { return "i1"; }
@@ -103,10 +105,21 @@ fn llvm_type(ty: int): []char {
     if ty == semantic::type_float() { return "double"; }
     if ty == semantic::type_float32() { return "float"; }
     if ty == semantic::type_float64() { return "double"; }
-    if ty == semantic::type_null() { return "i8*"; }
+    if ty == semantic::type_int8() or ty == semantic::type_uint8() { return "i8"; }
+    if ty == semantic::type_int16() or ty == semantic::type_uint16() { return "i16"; }
+    if ty == semantic::type_int32() or ty == semantic::type_uint32() { return "i32"; }
+    if ty == semantic::type_int64() or ty == semantic::type_uint64() { return "i64"; }
+    if ty == semantic::type_uint() { return "i64"; }
+    if ty == semantic::type_void() { return "void"; }
     if semantic::is_pointer_type(ty) { return "ptr"; }
     return "i64";
 }
+
+fn push_label(g: @Codegen, prefix: []char, num: int) {
+    emit(g, prefix);
+    emit_int(g, num);
+}
+
 
 fn llvm_type_str(ty: int, p: @resolver::Project, out: @array::Array<char>) {
     if ty >= 1000 and ty < 2000 {
@@ -441,11 +454,46 @@ fn push_scope(g: @Codegen) { (*g).scope_saved_counts.push((*g).local_count); (*g
 
 fn pop_scope(g: @Codegen) { if (*g).scope_depth > 0 { (*g).scope_depth = (*g).scope_depth - 1; (*g).local_count = (*g).scope_saved_counts[(*g).scope_depth]; } }
 
-fn emit_alloca(g: @Codegen, dest_reg: int, atype: int) { push_temp(g, dest_reg); emit(g, "= alloca "); if atype == semantic::type_float() or atype == semantic::type_float64() { emit(g, "double"); } else if atype == semantic::type_float32() { emit(g, "float"); } else if atype == semantic::type_bool() { emit(g, "i1"); } else if semantic::is_pointer_type(atype) { emit(g, "ptr"); } else { emit(g, "i64"); } newline(g); }
+fn register_cleanup(g: @Codegen, reg: int, class_ty: int) {
+    (*g).cleanup_regs.push(reg);
+    (*g).cleanup_classes.push(class_ty);
+    (*g).cleanup_depths.push((*g).scope_depth);
+}
 
-fn emit_store(g: @Codegen, src_reg: int, dst_reg: int, atype: int) { emit(g, "    store "); if atype == semantic::type_float() or atype == semantic::type_float64() { emit(g, "double"); } else if atype == semantic::type_float32() { emit(g, "float"); } else if atype == semantic::type_bool() { emit(g, "i1"); } else if semantic::is_pointer_type(atype) { emit(g, "ptr"); } else { emit(g, "i64"); } emit(g, " "); push_reg(g, src_reg); emit(g, ", "); if atype == semantic::type_float() or atype == semantic::type_float64() { emit(g, "double"); } else if atype == semantic::type_float32() { emit(g, "float"); } else if atype == semantic::type_bool() { emit(g, "i1"); } else if semantic::is_pointer_type(atype) { emit(g, "ptr"); } else { emit(g, "i64"); } emit(g, "* "); push_reg(g, dst_reg); newline(g); }
+fn emit_cleanups_to_depth(g: @Codegen, p: @resolver::Project, min_depth: int) {
+    while (*g).cleanup_regs.len > 0 {
+        var last_idx = (*g).cleanup_regs.len - 1;
+        var cleanup_depth = (*g).cleanup_depths[last_idx];
+        if cleanup_depth < min_depth { break; }
+        var reg = (*g).cleanup_regs[last_idx];
+        var class_ty = (*g).cleanup_classes[last_idx];
+        var ci = class_ty - 4000;
+        if ci >= 0 and ci < (*p).arena.classes.len {
+            var class_info = (*p).arena.classes[ci];
+            emit(g, "    call void @\"");
+            emit_name(@(*g).output, p, class_info.name_span);
+            emit(g, ".destroy\"(");
+            emit_type(g, class_ty, p);
+            emit(g, "* ");
+            push_reg(g, reg);
+            emit(g, ")");
+            newline(g);
+        }
+        (*g).cleanup_regs.len = (*g).cleanup_regs.len - 1;
+        (*g).cleanup_classes.len = (*g).cleanup_classes.len - 1;
+        (*g).cleanup_depths.len = (*g).cleanup_depths.len - 1;
+    }
+}
 
-fn emit_load(g: @Codegen, dest_reg: int, src_reg: int, atype: int) { push_temp(g, dest_reg); emit(g, "= load "); if atype == semantic::type_float() or atype == semantic::type_float64() { emit(g, "double"); } else if atype == semantic::type_float32() { emit(g, "float"); } else if atype == semantic::type_bool() { emit(g, "i1"); } else if semantic::is_pointer_type(atype) { emit(g, "ptr"); } else { emit(g, "i64"); } emit(g, ", "); if atype == semantic::type_float() or atype == semantic::type_float64() { emit(g, "double"); } else if atype == semantic::type_float32() { emit(g, "float"); } else if atype == semantic::type_bool() { emit(g, "i1"); } else if semantic::is_pointer_type(atype) { emit(g, "ptr"); } else { emit(g, "i64"); } emit(g, "* "); push_reg(g, src_reg); newline(g); }
+fn emit_all_cleanups(g: @Codegen, p: @resolver::Project) {
+    emit_cleanups_to_depth(g, p, 0);
+}
+
+fn emit_alloca(g: @Codegen, dest_reg: int, atype: int) { push_temp(g, dest_reg); emit(g, "= alloca "); emit(g, llvm_type(atype)); newline(g); }
+
+fn emit_store(g: @Codegen, src_reg: int, dst_reg: int, atype: int) { emit(g, "    store "); emit(g, llvm_type(atype)); emit(g, " "); push_reg(g, src_reg); emit(g, ", "); emit(g, llvm_type(atype)); emit(g, "* "); push_reg(g, dst_reg); newline(g); }
+
+fn emit_load(g: @Codegen, dest_reg: int, src_reg: int, atype: int) { push_temp(g, dest_reg); emit(g, "= load "); emit(g, llvm_type(atype)); emit(g, ", "); emit(g, llvm_type(atype)); emit(g, "* "); push_reg(g, src_reg); newline(g); }
 
 fn emit_binop(g: @Codegen, dest_reg: int, op: []char, atype: int, lhs_reg: int, rhs_reg: int) {
     push_temp(g, dest_reg);
@@ -581,7 +629,7 @@ fn emit_module_header(g: @Codegen, source_name: []char) {
     newline(g);
 }
 
-fn codegen_expr(g: @Codegen, p: @resolver::Project, expr_id: int): int {
+fn codegen_expr(g: @Codegen, p: @resolver::Project, expr_id: int, source: @array::Array<char>): int {
     if expr_id < 0 { return -1; }
     var expr = (*(*p).arena).exprs[expr_id];
 
@@ -614,6 +662,426 @@ fn codegen_expr(g: @Codegen, p: @resolver::Project, expr_id: int): int {
         emit(g, "= fadd double 0.0, "); var fi = expr.span.start; while fi < expr.span.end { (*g).output.push((*(*p).source).data[fi]); fi = fi + 1; } newline(g); set_last(g, semantic::type_float()); return r;
     }
 
+    if expr.kind == 13 {
+        if expr.child_len == 0 {
+            var r = next_temp(g);
+            emit(g, "    ");
+            push_temp(g, r);
+            emit(g, "= add i64 0, 0");
+            newline(g);
+            set_last(g, semantic::type_int());
+            return r;
+        }
+        var elem_type = semantic::type_int();
+        {
+            var errors: array::Array<semantic::SemanticError> = array::Array();
+            var summary = semantic::make_empty_summary();
+            var first_child = (*(*p).arena).exprs[(*(*p).arena).expr_refs[expr.child_start]];
+            if first_child.kind == 2 { elem_type = semantic::type_int(); }
+            else if first_child.kind == 3 { elem_type = semantic::type_bool(); }
+            else if first_child.kind == 7 { elem_type = semantic::type_char(); }
+            else if first_child.kind == 12 { elem_type = semantic::type_float(); }
+        }
+        var arr_ptr = next_temp(g);
+        emit_alloca(g, arr_ptr, elem_type);
+        var i = 0;
+        while i < expr.child_len {
+            var elem_reg = codegen_expr(g, p, (*(*p).arena).expr_refs[expr.child_start + i], source);
+            var elem_ptr = next_temp(g);
+            emit_gep(g, elem_ptr, elem_type, p, arr_ptr, 0, i);
+            if elem_type >= 1000 {
+                emit_store_typed(g, elem_reg, elem_ptr, elem_type, p);
+            } else {
+                emit_store(g, elem_reg, elem_ptr, elem_type);
+            }
+            i = i + 1;
+        }
+        set_last(g, elem_type);
+        return arr_ptr;
+    }
+
+    if expr.kind == 14 {
+        if expr.child_len == 0 {
+            var r = next_temp(g);
+            emit(g, "    ");
+            push_temp(g, r);
+            emit(g, "= add i64 0, 0");
+            newline(g);
+            set_last(g, semantic::type_int());
+            return r;
+        }
+        var receiver_reg = codegen_expr(g, p, (*(*p).arena).expr_refs[expr.child_start], source);
+
+        var method_fn_id = -1;
+        var found_class_id = -1;
+        var ci = 0;
+        while ci < (*p).arena.classes.len and method_fn_id < 0 {
+            var cl = (*p).arena.classes[ci];
+            var mi = 0;
+            while mi < cl.method_len {
+                var cm = (*p).arena.class_methods[cl.method_start + mi];
+                var mfunc = (*p).arena.functions[cm.function_id];
+                if semantic::name_equals((*(*p).source).data, mfunc.name_span, expr.name_span) {
+                    method_fn_id = cm.function_id;
+                    found_class_id = ci;
+                    break;
+                }
+                mi = mi + 1;
+            }
+            ci = ci + 1;
+        }
+
+        if method_fn_id < 0 {
+            var r = next_temp(g);
+            emit(g, "    ");
+            push_temp(g, r);
+            emit(g, "= add i64 0, 0");
+            newline(g);
+            set_last(g, semantic::type_int());
+            return r;
+        }
+
+        var method_info = (*p).arena.functions[method_fn_id];
+
+        var param_regs: array::Array<int> = array::Array();
+        var param_tys: array::Array<int> = array::Array();
+        param_regs.push(receiver_reg);
+        var recv_ty = 4000 + found_class_id;
+        param_tys.push(recv_ty);
+
+        var ai = 1;
+        while ai < expr.child_len {
+            var arg_reg = codegen_expr(g, p, (*(*p).arena).expr_refs[expr.child_start + ai], source);
+            param_regs.push(arg_reg);
+            param_tys.push(get_last(g));
+            ai = ai + 1;
+        }
+
+        var ret_ty = semantic::type_int();
+        if method_info.has_return_type {
+            var errors: array::Array<semantic::SemanticError> = array::Array();
+            var summary = semantic::make_empty_summary();
+            ret_ty = semantic::resolve_type_ref(p, method_info.return_type_ref, @errors, @summary);
+        }
+
+        var ret_reg = next_temp(g);
+        var fn_chars: array::Array<char> = array::Array();
+        var csi = method_info.name_span.start;
+        while csi < method_info.name_span.end {
+            fn_chars.push((*(*p).source).data[csi]);
+            csi = csi + 1;
+        }
+        emit_call(g, ret_reg, fn_chars.data, fn_chars.len, ret_ty, @param_regs, @param_tys, p);
+        set_last(g, ret_ty);
+        return ret_reg;
+    }
+
+    if expr.kind == 15 {
+        if expr.child_len == 0 { return -1; }
+        var src_reg = codegen_expr(g, p, (*(*p).arena).expr_refs[expr.child_start], source);
+        var from_ty = get_last(g);
+        var to_ty = resolve_type_simple(p, ast::make_type_ref(6, expr.name_span.start, expr.name_span.end));
+        if to_ty == semantic::type_unknown() {
+            to_ty = semantic::type_int();
+        }
+        var r = next_temp(g);
+        var cast_op = "trunc";
+        emit(g, "    ");
+        push_temp(g, r);
+        emit(g, "= ");
+        emit(g, cast_op);
+        emit(g, " ");
+        emit_type(g, from_ty, p);
+        emit(g, " ");
+        push_reg(g, src_reg);
+        emit(g, " to ");
+        emit_type(g, to_ty, p);
+        newline(g);
+        set_last(g, to_ty);
+        return r;
+    }
+
+    if expr.kind == 16 {
+        var ty = resolve_type_simple(p, ast::make_type_ref(6, expr.name_span.start, expr.name_span.end));
+        var size = semantic::type_int(ty);
+        var r = next_temp(g);
+        emit(g, "    ");
+        push_temp(g, r);
+        emit(g, "= add i64 0, ");
+        emit_int(g, size);
+        newline(g);
+        set_last(g, semantic::type_int());
+        return r;
+    }
+
+    if expr.kind == 17 {
+        if expr.child_len == 0 { return -1; }
+        var target_reg = codegen_expr(g, p, (*(*p).arena).expr_refs[expr.child_start], source);
+        var ty = resolve_type_simple(p, ast::make_type_ref(6, expr.name_span.start, expr.name_span.end));
+        emit(g, "    call void @\"");
+        {
+            var errors: array::Array<semantic::SemanticError> = array::Array();
+            var summary = semantic::make_empty_summary();
+        }
+        var ni = expr.name_span.start;
+        while ni < expr.name_span.end {
+            (*g).output.push(source.data[ni]);
+            ni = ni + 1;
+        }
+        emit(g, ".destroy\"(");
+        emit_type(g, ty, p);
+        emit(g, "* ");
+        push_reg(g, target_reg);
+        emit(g, ")");
+        newline(g);
+        set_last(g, semantic::type_int());
+        return target_reg;
+    }
+
+    if expr.kind == 18 {
+        var type_name = expr.callee_span;
+        var method_name = expr.name_span;
+        var ci = 0;
+        var found_fn_id = -1;
+        while ci < (*p).arena.classes.len and found_fn_id < 0 {
+            var class_info = (*p).arena.classes[ci];
+            if semantic::name_equals((*(*p).source).data, class_info.name_span, type_name) {
+                var mi = 0;
+                while mi < class_info.method_len {
+                    var cm = (*p).arena.class_methods[class_info.method_start + mi];
+                    var mfunc = (*p).arena.functions[cm.function_id];
+                    if semantic::name_equals((*(*p).source).data, mfunc.name_span, method_name) {
+                        found_fn_id = cm.function_id;
+                        break;
+                    }
+                    mi = mi + 1;
+                }
+            }
+            ci = ci + 1;
+        }
+        if found_fn_id >= 0 {
+            var method_info = (*p).arena.functions[found_fn_id];
+            var param_regs: array::Array<int> = array::Array();
+            var param_tys: array::Array<int> = array::Array();
+            var ai = 0;
+            while ai < expr.child_len {
+                var arg_reg = codegen_expr(g, p, (*(*p).arena).expr_refs[expr.child_start + ai], source);
+                param_regs.push(arg_reg);
+                param_tys.push(get_last(g));
+                ai = ai + 1;
+            }
+            var ret_ty = semantic::type_int();
+            if method_info.has_return_type {
+                var errors: array::Array<semantic::SemanticError> = array::Array();
+                var summary = semantic::make_empty_summary();
+                ret_ty = semantic::resolve_type_ref(p, method_info.return_type_ref, @errors, @summary);
+            }
+            var ret_reg = next_temp(g);
+            var fn_chars: array::Array<char> = array::Array();
+            var csi = method_info.name_span.start;
+            while csi < method_info.name_span.end {
+                fn_chars.push(source.data[csi]);
+                csi = csi + 1;
+            }
+            emit_call(g, ret_reg, fn_chars.data, fn_chars.len, ret_ty, @param_regs, @param_tys, p);
+            set_last(g, ret_ty);
+            return ret_reg;
+        }
+        var enum_idx = -1;
+        var ei = 0;
+        while ei < (*p).arena.enums.len {
+            var ei2 = (*p).arena.enums[ei];
+            if semantic::name_equals((*(*p).source).data, ei2.name_span, type_name) { enum_idx = ei; break; }
+            ei = ei + 1;
+        }
+        if enum_idx >= 0 {
+            var r = next_temp(g);
+            emit(g, "    ");
+            push_temp(g, r);
+            emit(g, "= add i64 0, 0");
+            newline(g);
+            set_last(g, 2000 + enum_idx);
+            return r;
+        }
+        var choice_idx = -1;
+        var chi = 0;
+        while chi < (*p).arena.choices.len {
+            var chi2 = (*p).arena.choices[chi];
+            if semantic::name_equals((*(*p).source).data, chi2.name_span, type_name) { choice_idx = chi; break; }
+            chi = chi + 1;
+        }
+        if choice_idx >= 0 {
+            var variant_idx = -1;
+            var choice_info = (*p).arena.choices[choice_idx];
+            var vi = 0;
+            while vi < choice_info.variant_len {
+                var v = (*p).arena.choice_variants[choice_info.variant_start + vi];
+                if semantic::name_equals((*(*p).source).data, v.name_span, method_name) { variant_idx = vi; break; }
+                vi = vi + 1;
+            }
+            var r = next_temp(g);
+            if variant_idx >= 0 {
+                var payload_reg = -1;
+                if expr.child_len > 0 {
+                    payload_reg = codegen_expr(g, p, (*(*p).arena).expr_refs[expr.child_start], source);
+                }
+                emit(g, "    ");
+                push_temp(g, r);
+                emit(g, "= insertvalue ");
+                emit_type(g, 3000 + choice_idx, p);
+                emit(g, " undef, i64 ");
+                emit_int(g, variant_idx);
+                emit(g, ", 0");
+                newline(g);
+                if payload_reg >= 0 {
+                    emit(g, "    ");
+                    push_temp(g, r);
+                    emit(g, "= insertvalue ");
+                    emit_type(g, 3000 + choice_idx, p);
+                    emit(g, " ");
+                    push_reg(g, r);
+                    emit(g, ", i64 ");
+                    push_reg(g, payload_reg);
+                    emit(g, ", 1");
+                    newline(g);
+                }
+            } else {
+                emit(g, "    ");
+                push_temp(g, r);
+                emit(g, "= add i64 0, 0");
+                newline(g);
+            }
+            set_last(g, 3000 + choice_idx);
+            return r;
+        }
+        var struct_idx = -1;
+        var si = 0;
+        while si < (*p).arena.structs.len {
+            var si2 = (*p).arena.structs[si];
+            if semantic::name_equals((*(*p).source).data, si2.name_span, type_name) { struct_idx = si; break; }
+            si = si + 1;
+        }
+        if struct_idx >= 0 {
+            var si2 = (*p).arena.structs[struct_idx];
+            var r = next_temp(g);
+            emit(g, "    ");
+            push_temp(g, r);
+            emit(g, "= insertvalue ");
+            emit_type(g, 1000 + struct_idx, p);
+            emit(g, " undef, ");
+            var fi = 0;
+            while fi < expr.child_len and fi < si2.field_len {
+                var field_reg = codegen_expr(g, p, (*(*p).arena).expr_refs[expr.child_start + fi], source);
+                if fi > 0 {
+                    emit(g, "    ");
+                    push_temp(g, r);
+                    emit(g, "= insertvalue ");
+                    emit_type(g, 1000 + struct_idx, p);
+                    emit(g, " ");
+                    push_reg(g, r);
+                    emit(g, ", ");
+                }
+                emit_type(g, 1000 + struct_idx, p);
+                emit(g, " ");
+                push_reg(g, field_reg);
+                emit(g, ", ");
+                emit_int(g, fi);
+                newline(g);
+                fi = fi + 1;
+            }
+            set_last(g, 1000 + struct_idx);
+            return r;
+        }
+        var r = next_temp(g);
+        emit(g, "    ");
+        push_temp(g, r);
+        emit(g, "= add i64 0, 0");
+        newline(g);
+        set_last(g, semantic::type_int());
+        return r;
+    }
+
+    if expr.kind == 19 {
+        var type_name = expr.callee_span;
+        var member_name = expr.name_span;
+        var r = next_temp(g);
+        emit(g, "    ");
+        push_temp(g, r);
+        emit(g, "= add i64 0, 0");
+        newline(g);
+        var enum_idx = -1;
+        var ei = 0;
+        while ei < (*p).arena.enums.len {
+            var ei2 = (*p).arena.enums[ei];
+            if semantic::name_equals((*(*p).source).data, ei2.name_span, type_name) { enum_idx = ei; break; }
+            ei = ei + 1;
+        }
+        if enum_idx >= 0 {
+            var vi = 0;
+            var enum_info = (*p).arena.enums[enum_idx];
+            while vi < enum_info.variant_len {
+                var v = (*p).arena.enum_variants[enum_info.variant_start + vi];
+                if semantic::name_equals((*(*p).source).data, v.name_span, member_name) {
+                    emit(g, "    ");
+                    push_temp(g, r);
+                    emit(g, "= add i64 0, ");
+                    emit_int(g, vi);
+                    newline(g);
+                    break;
+                }
+                vi = vi + 1;
+            }
+            set_last(g, 2000 + enum_idx);
+            return r;
+        }
+        set_last(g, semantic::type_int());
+        return r;
+    }
+
+    if expr.kind == 20 {
+        var param_regs: array::Array<int> = array::Array();
+        var param_tys: array::Array<int> = array::Array();
+        var ai = 0;
+        while ai < expr.child_len {
+            var arg_reg = codegen_expr(g, p, (*(*p).arena).expr_refs[expr.child_start + ai], source);
+            param_regs.push(arg_reg);
+            param_tys.push(get_last(g));
+            ai = ai + 1;
+        }
+
+        var fn_name_span = expr.callee_span;
+        var fn_index = -1;
+        var ni = 0;
+        while ni < (*(*p).arena).functions.len {
+            var fn2 = (*(*p).arena).functions[ni];
+            if fn2.name_span.start == fn_name_span.start and fn2.name_span.end == fn_name_span.end {
+                fn_index = ni;
+                break;
+            }
+            ni = ni + 1;
+        }
+
+        if fn_index >= 0 and expr.int_value > 0 {
+            var type_arg_span = (*(*p).arena).name_refs[expr.name_ref_start];
+            var concrete_fn_id = monomorphizer::instantiate_generic(p, fn_index, type_arg_span);
+            if concrete_fn_id >= 0 {
+                var concrete_func = (*(*p).arena).functions[concrete_fn_id];
+                fn_name_span = concrete_func.name_span;
+            }
+        }
+
+        var fn_chars: array::Array<char> = array::Array();
+        var csi = fn_name_span.start;
+        while csi < fn_name_span.end {
+            fn_chars.push(source.data[csi]);
+            csi = csi + 1;
+        }
+        var ret_reg = next_temp(g);
+        emit_call(g, ret_reg, fn_chars.data, fn_chars.len, semantic::type_int(), @param_regs, @param_tys, p);
+        set_last(g, semantic::type_int());
+        return ret_reg;
+    }
+
     if expr.kind == 7 {
         var r = next_temp(g);
         emit(g, "    ");
@@ -626,7 +1094,6 @@ fn codegen_expr(g: @Codegen, p: @resolver::Project, expr_id: int): int {
     }
 
     if expr.kind == 8 {
-        var r = next_temp(g);
         var sc = (*g).str_counter;
         (*g).str_counter = sc + 1;
         emit(g, "@.str.");
@@ -648,8 +1115,10 @@ fn codegen_expr(g: @Codegen, p: @resolver::Project, expr_id: int): int {
         }
         emit(g, "\\00\"");
         newline(g);
+
+        var ptr_reg = next_temp(g);
         emit(g, "    ");
-        push_temp(g, r);
+        push_temp(g, ptr_reg);
         emit(g, "= getelementptr inbounds [");
         emit_int(g, slen + 1);
         emit(g, " x i8], [");
@@ -658,6 +1127,30 @@ fn codegen_expr(g: @Codegen, p: @resolver::Project, expr_id: int): int {
         emit_int(g, sc);
         emit(g, ", i64 0, i64 0");
         newline(g);
+
+        var len_reg = next_temp(g);
+        emit(g, "    ");
+        push_temp(g, len_reg);
+        emit(g, "= add i64 0, ");
+        emit_int(g, slen);
+        newline(g);
+
+        var r = next_temp(g);
+        emit(g, "    ");
+        push_temp(g, r);
+        emit(g, "= insertvalue { i8*, i64 } undef, i8* ");
+        push_reg(g, ptr_reg);
+        emit(g, ", 0");
+        newline(g);
+        emit(g, "    ");
+        push_temp(g, r);
+        emit(g, "= insertvalue { i8*, i64 } ");
+        push_reg(g, r);
+        emit(g, ", i64 ");
+        push_reg(g, len_reg);
+        emit(g, ", 1");
+        newline(g);
+        set_last(g, semantic::type_string_literal());
         return r;
     }
 
@@ -705,6 +1198,10 @@ fn codegen_expr(g: @Codegen, p: @resolver::Project, expr_id: int): int {
         var aty = semantic::type_int();
 
         if op == 46 or op == 49 or op == 50 {
+            if !is_unary and try_emit_overloaded_binary_op(g, p, op, lhs_reg, rhs_reg, source) {
+                set_last(g, semantic::type_int());
+                return r;
+            }
             var opstr = "add";
             if op == 49 { opstr = "sdiv"; }
             if op == 50 { opstr = "srem"; }
@@ -732,6 +1229,14 @@ fn codegen_expr(g: @Codegen, p: @resolver::Project, expr_id: int): int {
         }
         if op == 48 {
             if is_unary {
+                var ptr_ty = get_last(g);
+                if semantic::is_pointer_type(ptr_ty) {
+                    var target_ty = semantic::type_dereference(ptr_ty);
+                    var r = next_temp(g);
+                    emit_load_typed(g, r, lhs_reg, target_ty, p);
+                    set_last(g, target_ty);
+                    return r;
+                }
                 return lhs_reg;
             }
             var arith_ty = get_last(g);
@@ -758,6 +1263,44 @@ fn codegen_expr(g: @Codegen, p: @resolver::Project, expr_id: int): int {
                         return r;
                     }
                 }
+                if child_expr.kind == 9 and child_expr.child_len > 0 {
+                    var base_expr = (*(*p).arena).exprs[(*(*p).arena).expr_refs[child_expr.child_start]];
+                    if base_expr.kind == 1 {
+                        var base_reg = lookup_local(g, p, base_expr.name_span);
+                        if base_reg >= 0 {
+                            var field_idx = -1;
+                            var base_ty = semantic::type_int();
+                            var si = 0;
+                            while si < (*p).arena.structs.len and field_idx < 0 {
+                                var st = (*p).arena.structs[si];
+                                var fi = 0;
+                                while fi < st.field_len {
+                                    var f = (*p).arena.struct_fields[st.field_start + fi];
+                                    if semantic::name_equals((*(*p).source).data, f.name_span, child_expr.name_span) {
+                                        field_idx = fi;
+                                        base_ty = 1000 + si;
+                                        break;
+                                    }
+                                    fi = fi + 1;
+                                }
+                                si = si + 1;
+                            }
+                            if field_idx >= 0 {
+                                var gep_reg = next_temp(g);
+                                emit_gep(g, gep_reg, base_ty, p, base_reg, 0, field_idx);
+                                var r = next_temp(g);
+                                emit(g, "    ");
+                                push_temp(g, r);
+                                emit(g, "= ptrtoint ptr ");
+                                push_reg(g, gep_reg);
+                                emit(g, " to i64");
+                                newline(g);
+                                set_last(g, semantic::type_int());
+                                return r;
+                            }
+                        }
+                    }
+                }
             }
             return lhs_reg;
         }
@@ -768,15 +1311,8 @@ fn codegen_expr(g: @Codegen, p: @resolver::Project, expr_id: int): int {
             emit_load_typed(g, tag_reg, tag_gep, semantic::type_int(), p);
             var ok_label = next_label(g);
             var err_label = next_label(g);
-            emit(g, "    br i1 ");
-            push_reg(g, tag_reg);
-            emit(g, ", label %");
-            emit(g, "block");
-            emit_int(g, ok_label);
-            emit(g, ", label %");
-            emit(g, "block");
-            emit_int(g, err_label);
-            newline(g);
+            var end_label = next_label(g);
+            emit_cond_br(g, tag_reg, ok_label, err_label);
 
             (*g).block_terminated = false;
             emit_label(g, ok_label);
@@ -784,7 +1320,34 @@ fn codegen_expr(g: @Codegen, p: @resolver::Project, expr_id: int): int {
             emit_gep(g, payload_gep, 3000, p, lhs_reg, 0, 1);
             var payload_reg = next_temp(g);
             emit_load_typed(g, payload_reg, payload_gep, semantic::type_int(), p);
+            emit_br(g, end_label);
+
+            (*g).block_terminated = false;
+            emit_label(g, err_label);
+            var save_ret = (*g).fn_return_type;
+            (*g).fn_return_type = 3000;
+            emit_ret(g, lhs_reg, 3000);
+            (*g).fn_return_type = save_ret;
+
+            (*g).block_terminated = false;
+            emit_label(g, end_label);
             return payload_reg;
+        }
+        if op == 74 {
+            var base_ty = get_last(g);
+            if base_ty >= 4000 and !is_unary {
+                if try_emit_overloaded_binary_op(g, p, 74, lhs_reg, rhs_reg, source) {
+                    return r;
+                }
+            }
+            var ptr_reg = lhs_reg;
+            var idx_reg = rhs_reg;
+            var elem_ptr = next_temp(g);
+            emit_gep(g, elem_ptr, base_ty, p, ptr_reg, 0, 0);
+            var loaded = next_temp(g);
+            emit_load_typed(g, loaded, elem_ptr, base_ty, p);
+            set_last(g, base_ty);
+            return loaded;
         }
         if op == 55 or op == 56 or op == 53 or op == 54 {
             var cmp = "slt";
@@ -1063,6 +1626,69 @@ fn codegen_expr(g: @Codegen, p: @resolver::Project, expr_id: int): int {
     return -1;
 }
 
+fn operator_method_name(op_kind: int): []char {
+    if op_kind == 46 { return "operator_add"; }
+    if op_kind == 47 { return "operator_sub"; }
+    if op_kind == 48 { return "operator_mul"; }
+    if op_kind == 49 { return "operator_div"; }
+    if op_kind == 50 { return "operator_rem"; }
+    if op_kind == 51 { return "operator_eq"; }
+    if op_kind == 52 { return "operator_neq"; }
+    if op_kind == 55 { return "operator_lt"; }
+    if op_kind == 56 { return "operator_gt"; }
+    if op_kind == 53 { return "operator_lte"; }
+    if op_kind == 54 { return "operator_gte"; }
+    if op_kind == 74 { return "operator_index"; }
+    return "";
+}
+
+fn try_emit_overloaded_binary_op(g: @Codegen, p: @resolver::Project, op_kind: int, lhs_reg: int, rhs_reg: int, source: @array::Array<char>): bool {
+    var lhs_ty = get_last(g);
+    if lhs_ty < 4000 { return false; }
+    var ci = lhs_ty - 4000;
+    if ci < 0 or ci >= (*p).arena.classes.len { return false; }
+    var class_info = (*p).arena.classes[ci];
+    var op_name = operator_method_name(op_kind);
+    if op_name.len == 0 { return false; }
+    var mi = 0;
+    while mi < class_info.method_len {
+        var cm = (*p).arena.class_methods[class_info.method_start + mi];
+        var mfunc = (*p).arena.functions[cm.function_id];
+        var matched = true;
+        var oni = 0;
+        while oni < op_name.len {
+            if oni >= mfunc.name_span.end - mfunc.name_span.start { matched = false; break; }
+            if source.data[mfunc.name_span.start + oni] != op_name[oni] { matched = false; break; }
+            oni = oni + 1;
+        }
+        if matched and oni == mfunc.name_span.end - mfunc.name_span.start {
+            var r = next_temp(g);
+            var param_regs: array::Array<int> = array::Array();
+            var param_tys: array::Array<int> = array::Array();
+            param_regs.push(lhs_reg);
+            param_tys.push(lhs_ty);
+            param_regs.push(rhs_reg);
+            param_tys.push(get_last(g));
+            var ret_ty = semantic::type_int();
+            if mfunc.has_return_type {
+                var errors: array::Array<semantic::SemanticError> = array::Array();
+                var summary = semantic::make_empty_summary();
+                ret_ty = semantic::resolve_type_ref(p, mfunc.return_type_ref, @errors, @summary);
+            }
+            var fn_chars: array::Array<char> = array::Array();
+            var csi = mfunc.name_span.start;
+            while csi < mfunc.name_span.end {
+                fn_chars.push(source.data[csi]);
+                csi = csi + 1;
+            }
+            emit_call(g, r, fn_chars.data, fn_chars.len, ret_ty, @param_regs, @param_tys, p);
+            return true;
+        }
+        mi = mi + 1;
+    }
+    return false;
+}
+
 fn find_struct_field_index_for_codegen(p: @resolver::Project, member: span::Span): int {
     var si = 0;
     while si < (*(*p).arena).structs.len {
@@ -1095,9 +1721,11 @@ fn find_struct_field_index_for_codegen(p: @resolver::Project, member: span::Span
 
 fn emit_binop_with_zero(g: @Codegen, dest_reg: int, op: []char, rhs_reg: int) {
     var ty = get_last(g);
-    if ty == semantic::type_float() or ty == semantic::type_float64() {
+    if (ty == semantic::type_float() or ty == semantic::type_float32() or ty == semantic::type_float64()) {
         push_temp(g, dest_reg);
-        emit(g, "= fsub double 0.0, ");
+        emit(g, "= fsub ");
+        emit(g, llvm_type(ty));
+        emit(g, " 0.0, ");
         push_reg(g, rhs_reg);
         newline(g);
         return;
@@ -1105,7 +1733,9 @@ fn emit_binop_with_zero(g: @Codegen, dest_reg: int, op: []char, rhs_reg: int) {
     var zero_reg = next_temp(g);
     emit(g, "    ");
     push_temp(g, zero_reg);
-    emit(g, "= add i64 0, 0");
+    emit(g, "= add ");
+    emit(g, llvm_type(ty));
+    emit(g, " 0, 0");
     newline(g);
     push_temp(g, dest_reg);
     emit(g, "= ");
@@ -1115,25 +1745,23 @@ fn emit_binop_with_zero(g: @Codegen, dest_reg: int, op: []char, rhs_reg: int) {
     newline(g);
 }
 
-fn semantic_type_void_val(): int { return 99; }
-
-fn type_void_val(): int { return 99; }
+fn type_void_val(): int { return semantic::type_void(); }
 
 fn llvm_fn_ty(return_ty: int): []char {
     if return_ty == type_void_val() { return "void"; }
     return llvm_type(return_ty);
 }
 
-fn codegen_stmt(g: @Codegen, p: @resolver::Project, stmt: ast::Stmt) {
+fn codegen_stmt(g: @Codegen, p: @resolver::Project, stmt: ast::Stmt, source: @array::Array<char>) {
     if (*g).block_terminated { return; }
 
     if stmt.kind == 10 {
-        codegen_expr(g, p, stmt.expr_id);
+        codegen_expr(g, p, stmt.expr_id, source);
     } else if stmt.kind == 1 {
         var init_reg = -1;
         var ty = semantic::type_int();
         if stmt.var_decl.has_init {
-            init_reg = codegen_expr(g, p, stmt.var_decl.init_expr_id);
+            init_reg = codegen_expr(g, p, stmt.var_decl.init_expr_id, source);
             ty = get_last(g);
         }
         var reg = next_temp(g);
@@ -1150,8 +1778,9 @@ fn codegen_stmt(g: @Codegen, p: @resolver::Project, stmt: ast::Stmt) {
             }
         }
         register_local(g, p, stmt.var_decl.name_span, ty, reg);
+        if ty >= 4000 { register_cleanup(g, reg, ty); }
     } else if stmt.kind == 2 {
-        var init_reg = codegen_expr(g, p, stmt.const_decl.init_expr_id);
+        var init_reg = codegen_expr(g, p, stmt.const_decl.init_expr_id, source);
         var ty = get_last(g);
         var reg = next_temp(g);
         if ty >= 1000 or ty >= 2000 or ty >= 3000 or ty >= 4000 {
@@ -1167,12 +1796,14 @@ fn codegen_stmt(g: @Codegen, p: @resolver::Project, stmt: ast::Stmt) {
             }
         }
         register_local(g, p, stmt.const_decl.name_span, ty, reg);
+        if ty >= 4000 { register_cleanup(g, reg, ty); }
     } else if stmt.kind == 4 {
         push_scope(g);
-        codegen_block_flat(g, p, stmt.block_id);
+        codegen_block_flat(g, p, stmt.block_id, source);
+        emit_cleanups_to_depth(g, p, (*g).scope_depth);
         pop_scope(g);
     } else if stmt.kind == 3 {
-        var value_reg = codegen_expr(g, p, stmt.assign_stmt.value_expr_id);
+        var value_reg = codegen_expr(g, p, stmt.assign_stmt.value_expr_id, source);
         var is_deref = false;
         var is_deref_member = false;
         if (*(*p).source).data[stmt.assign_stmt.span.start] == '*' { is_deref = true; }
@@ -1241,14 +1872,15 @@ fn codegen_stmt(g: @Codegen, p: @resolver::Project, stmt: ast::Stmt) {
         }
         }
     } else if stmt.kind == 9 {
+        emit_all_cleanups(g, p);
         if stmt.return_stmt.has_value {
-            var ret_reg = codegen_expr(g, p, stmt.return_stmt.value_expr_id);
+            var ret_reg = codegen_expr(g, p, stmt.return_stmt.value_expr_id, source);
             emit_ret(g, ret_reg, (*g).fn_return_type);
         } else {
             emit_ret(g, -1, (*g).fn_return_type);
         }
     } else if stmt.kind == 5 {
-        var cond_reg = codegen_expr(g, p, stmt.if_stmt.condition_expr_id);
+        var cond_reg = codegen_expr(g, p, stmt.if_stmt.condition_expr_id, source);
         var then_label = next_label(g);
         var else_label = next_label(g);
         var end_label = next_label(g);
@@ -1256,13 +1888,13 @@ fn codegen_stmt(g: @Codegen, p: @resolver::Project, stmt: ast::Stmt) {
 
         (*g).block_terminated = false;
         emit_label(g, then_label);
-        codegen_block_flat(g, p, stmt.if_stmt.then_block_id);
+        codegen_block_flat(g, p, stmt.if_stmt.then_block_id, source);
         if !(*g).block_terminated { emit_br(g, end_label); }
 
         (*g).block_terminated = false;
         emit_label(g, else_label);
         if stmt.if_stmt.has_else_block {
-            codegen_block_flat(g, p, stmt.if_stmt.else_block_id);
+            codegen_block_flat(g, p, stmt.if_stmt.else_block_id, source);
         }
         if !(*g).block_terminated { emit_br(g, end_label); }
 
@@ -1279,23 +1911,23 @@ fn codegen_stmt(g: @Codegen, p: @resolver::Project, stmt: ast::Stmt) {
 
         emit_br(g, cond_label);
         emit_label(g, cond_label);
-        var cond_reg = codegen_expr(g, p, stmt.while_stmt.condition_expr_id);
+        var cond_reg = codegen_expr(g, p, stmt.while_stmt.condition_expr_id, source);
         emit_cond_br(g, cond_reg, body_label, end_label);
 
         (*g).block_terminated = false;
         emit_label(g, body_label);
-        codegen_block_flat(g, p, stmt.while_stmt.body_block_id);
+        codegen_block_flat(g, p, stmt.while_stmt.body_block_id, source);
         if !(*g).block_terminated { emit_br(g, cond_label); }
 
         (*g).block_terminated = false;
         emit_label(g, end_label);
         pop_loop(g, old_break, old_continue);
     } else if stmt.kind == 7 {
-        if (*g).loop_break >= 0 { emit_br(g, (*g).loop_break); (*g).block_terminated = true; }
+        if (*g).loop_break >= 0 { emit_all_cleanups(g, p); emit_br(g, (*g).loop_break); (*g).block_terminated = true; }
     } else if stmt.kind == 8 {
-        if (*g).loop_continue >= 0 { emit_br(g, (*g).loop_continue); (*g).block_terminated = true; }
+        if (*g).loop_continue >= 0 { emit_all_cleanups(g, p); emit_br(g, (*g).loop_continue); (*g).block_terminated = true; }
     } else if stmt.kind == 11 {
-        var val_reg = codegen_expr(g, p, stmt.match_stmt.value_expr_id);
+        var val_reg = codegen_expr(g, p, stmt.match_stmt.value_expr_id, source);
         var val_ty = get_last(g);
         var end_label = next_label(g);
         var tag_reg = val_reg;
@@ -1349,7 +1981,7 @@ fn codegen_stmt(g: @Codegen, p: @resolver::Project, stmt: ast::Stmt) {
                 emit_store(g, payload_raw, binding_alloca, semantic::type_int());
                 register_local(g, p, arm.binding_span, semantic::type_int(), binding_alloca);
             }
-            codegen_block_flat(g, p, arm.block_id);
+            codegen_block_flat(g, p, arm.block_id, source);
             if !(*g).block_terminated { emit_br(g, end_label); }
             (*g).block_terminated = false;
             emit_label(g, next_check_label);
@@ -1361,21 +1993,20 @@ fn codegen_stmt(g: @Codegen, p: @resolver::Project, stmt: ast::Stmt) {
     }
 }
 
-fn codegen_block_flat(g: @Codegen, p: @resolver::Project, block_id: int) {
+fn codegen_block_flat(g: @Codegen, p: @resolver::Project, block_id: int, source: @array::Array<char>) {
     if block_id < 0 { return; }
     var block = (*(*p).arena).blocks[block_id];
     var i = 0;
     while i < block.stmt_ref_len {
         if (*g).block_terminated { break; }
         var stmt = (*(*p).arena).stmts[(*(*p).arena).stmt_refs[block.stmt_ref_start + i]];
-        codegen_stmt(g, p, stmt);
+        codegen_stmt(g, p, stmt, source);
         i = i + 1;
     }
 }
 
 fn codegen_function(g: @Codegen, p: @resolver::Project, fn_id: int, source: @array::Array<char>) {
     var fn_info = (*(*p).arena).functions[fn_id];
-    if fn_info.generic_param_len > 0 { return; }
 
     var ret_ty: int;
     ret_ty = semantic::type_int();
@@ -1385,7 +2016,7 @@ fn codegen_function(g: @Codegen, p: @resolver::Project, fn_id: int, source: @arr
         ret_ty = semantic::resolve_type_ref(p, fn_info.return_type_ref, @errors, @summary);
     }
 
-    if fn_info.body_block_id < 0 {
+    if fn_info.generic_param_len > 0 {
         emit(g, "declare ");
         emit_type(g, ret_ty, p);
         emit(g, " @\"");
@@ -1408,6 +2039,48 @@ fn codegen_function(g: @Codegen, p: @resolver::Project, fn_id: int, source: @arr
             emit_type(g, pty, p);
             pi = pi + 1;
         }
+        emit(g, ")");
+        newline(g);
+        newline(g);
+        return;
+    }
+
+    if fn_info.body_block_id < 0 {
+        var is_variadic = false;
+        {
+            var param_end = fn_info.span.end;
+            var scan = fn_info.name_span.end;
+            while scan < param_end - 1 {
+                if source.data[scan] == '.' and source.data[scan+1] == '.' and source.data[scan+2] == '.' {
+                    is_variadic = true;
+                    break;
+                }
+                scan = scan + 1;
+            }
+        }
+        emit(g, "declare ");
+        emit_type(g, ret_ty, p);
+        emit(g, " @\"");
+        var ni = fn_info.name_span.start;
+        while ni < fn_info.name_span.end {
+            (*g).output.push(source.data[ni]);
+            ni = ni + 1;
+        }
+        emit(g, "\"(");
+        var pi = 0;
+        while pi < fn_info.param_len {
+            var param = (*(*p).arena).params[fn_info.param_start + pi];
+            var pty = semantic::type_int();
+            if param.has_type_hint {
+                var errors: array::Array<semantic::SemanticError> = array::Array();
+                var summary = semantic::make_empty_summary();
+                pty = semantic::resolve_type_ref(p, param.type_ref, @errors, @summary);
+            }
+            if pi > 0 { emit(g, ", "); }
+            emit_type(g, pty, p);
+            pi = pi + 1;
+        }
+        if is_variadic { emit(g, ", ..."); }
         emit(g, ")");
         newline(g);
         newline(g);
@@ -1503,7 +2176,7 @@ fn codegen_function(g: @Codegen, p: @resolver::Project, fn_id: int, source: @arr
     (*g).fn_return_type = ret_ty;
     (*g).block_terminated = false;
     (*g).local_count = 0;
-    codegen_block_flat(g, p, fn_info.body_block_id);
+    codegen_block_flat(g, p, fn_info.body_block_id, source);
     if !(*g).block_terminated {
         if ret_ty == type_void_val() {
             emit_ret_void(g);
@@ -1548,6 +2221,30 @@ export fn generate(g: @Codegen, p: @resolver::Project) {
         }
         i = i + 1;
     }
+
+    var fi = 0;
+    while fi < (*(*p).arena).functions.len {
+        var fn2 = (*(*p).arena).functions[fi];
+        if fn2.generic_param_len == 0 and fn2.body_block_id >= 0 {
+            var is_from_item = false;
+            var gi = 0;
+            while gi < (*(*p).modules).len and !is_from_item {
+                var mod_iface2 = (*(*p).modules)[gi];
+                var file_info2 = (*(*p).arena).file_infos[mod_iface2.file_info_id];
+                var ij = file_info2.item_start;
+                while ij < file_info2.item_start + file_info2.item_len and !is_from_item {
+                    var item2 = (*(*p).arena).items[ij];
+                    if item2.kind == 1 and item2.function_id == fi { is_from_item = true; }
+                    ij = ij + 1;
+                }
+                gi = gi + 1;
+            }
+            if !is_from_item {
+                codegen_function(g, p, fi, (*(*p).source));
+            }
+        }
+        fi = fi + 1;
+    }
 }
 
 fn emit_class_init(g: @Codegen, p: @resolver::Project, class_id: int) {
@@ -1583,6 +2280,32 @@ fn emit_class_destroy(g: @Codegen, p: @resolver::Project, class_id: int) {
     newline(g);
     emit(g, "entry:");
     newline(g);
+
+    var fi = 0;
+    while fi < ci.field_len {
+        var field = (*(*p).arena).class_fields[ci.field_start + fi];
+        var fty = resolve_type_simple(p, field.type_ref);
+        if fty >= 4000 {
+            var fci = fty - 4000;
+            if fci >= 0 and fci < (*(*p).arena).classes.len {
+                var fclass = (*(*p).arena).classes[fci];
+                var gep_reg = next_temp(g);
+                emit_gep(g, gep_reg, 4000 + class_id, p, 0, 0, fi);
+                var loaded = next_temp(g);
+                emit_load_typed(g, loaded, gep_reg, fty, p);
+                emit(g, "    call void @\"");
+                emit_name(@(*g).output, p, fclass.name_span);
+                emit(g, ".destroy\"(");
+                emit_type(g, fty, p);
+                emit(g, "* ");
+                push_reg(g, loaded);
+                emit(g, ")");
+                newline(g);
+            }
+        }
+        fi = fi + 1;
+    }
+
     emit(g, "    ret void");
     newline(g);
     emit(g, "}");

@@ -1,0 +1,338 @@
+import array;
+import ast;
+import span;
+import resolver;
+
+fn spans_equal(source: []char, a: span::Span, b: span::Span): bool {
+    var len_a = a.end - a.start;
+    if len_a != b.end - b.start { return false; }
+    var i = 0;
+    while i < len_a {
+        if source[a.start + i] != source[b.start + i] { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn resolve_type_arg(p: @resolver::Project, type_arg_span: span::Span): int {
+    var source = (*(*p).source).data;
+    var len = type_arg_span.end - type_arg_span.start;
+
+    if len == 3 {
+        if source[type_arg_span.start] == 'i' and source[type_arg_span.start+1] == 'n' and source[type_arg_span.start+2] == 't' { return 31; }
+    }
+    if len == 4 {
+        if source[type_arg_span.start] == 'b' and source[type_arg_span.start+1] == 'o' and source[type_arg_span.start+2] == 'o' and source[type_arg_span.start+3] == 'l' { return 44; }
+        if source[type_arg_span.start] == 'c' and source[type_arg_span.start+1] == 'h' and source[type_arg_span.start+2] == 'a' and source[type_arg_span.start+3] == 'r' { return 45; }
+    }
+    if len == 5 {
+        if source[type_arg_span.start] == 'f' and source[type_arg_span.start+1] == 'l' and source[type_arg_span.start+2] == 'o' and source[type_arg_span.start+3] == 'a' and source[type_arg_span.start+4] == 't' { return 41; }
+    }
+
+    var i = 0;
+    while i < (*(*p).arena).items.len {
+        var item = (*(*p).arena).items[i];
+        var item_name = span::make(0, 0);
+        if item.kind == 2 { item_name = (*(*p).arena).structs[item.struct_id].name_span; }
+        else if item.kind == 3 { item_name = (*(*p).arena).enums[item.enum_id].name_span; }
+        else if item.kind == 4 { item_name = (*(*p).arena).choices[item.choice_id].name_span; }
+        else if item.kind == 6 { item_name = (*(*p).arena).classes[item.class_id].name_span; }
+
+        if spans_equal(source, item_name, type_arg_span) {
+            if item.kind == 2 { return 1000 + item.struct_id; }
+            if item.kind == 3 { return 2000 + item.enum_id; }
+            if item.kind == 4 { return 3000 + item.choice_id; }
+            if item.kind == 6 { return 4000 + item.class_id; }
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+fn mangle_name_into_source(source: @array::Array<char>, func_name_span: span::Span, type_arg_span: span::Span): span::Span {
+    var name_start = (*source).len;
+    var i = func_name_span.start;
+    while i < func_name_span.end {
+        (*source).push((*source).data[i]);
+        i = i + 1;
+    }
+    (*source).push('_');
+
+    i = type_arg_span.start;
+    while i < type_arg_span.end {
+        (*source).push((*source).data[i]);
+        i = i + 1;
+    }
+
+    return span::make(name_start, (*source).len);
+}
+
+fn find_generic_param_index(p: @resolver::Project, func_id: int, param_name: span::Span): int {
+    var func = (*p).arena.functions[func_id];
+    var i = 0;
+    while i < func.generic_param_len {
+        var gp = (*p).arena.generic_params[func.generic_param_start + i];
+        if spans_equal((*(*p).source).data, gp.name_span, param_name) {
+            return i;
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+fn find_class_generic_param_index(p: @resolver::Project, class_id: int, param_name: span::Span): int {
+    var cl = (*p).arena.classes[class_id];
+    var i = 0;
+    while i < cl.generic_param_len {
+        var gp = (*p).arena.generic_params[cl.generic_param_start + i];
+        if spans_equal((*(*p).source).data, gp.name_span, param_name) {
+            return i;
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+fn find_choice_generic_param_index(p: @resolver::Project, choice_id: int, param_name: span::Span): int {
+    var ch = (*p).arena.choices[choice_id];
+    var i = 0;
+    while i < ch.generic_param_len {
+        var gp = (*p).arena.generic_params[ch.generic_param_start + i];
+        if spans_equal((*(*p).source).data, gp.name_span, param_name) {
+            return i;
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+fn is_type_var(p: @resolver::Project, func_id: int, type_span: span::Span): bool {
+    return find_generic_param_index(p, func_id, type_span) >= 0;
+}
+
+fn is_class_type_var(p: @resolver::Project, class_id: int, type_span: span::Span): bool {
+    return find_class_generic_param_index(p, class_id, type_span) >= 0;
+}
+
+fn is_choice_type_var(p: @resolver::Project, choice_id: int, type_span: span::Span): bool {
+    return find_choice_generic_param_index(p, choice_id, type_span) >= 0;
+}
+
+fn find_existing_mono_fn(p: @resolver::Project, mangled_name: span::Span): int {
+    var i = 0;
+    while i < (*p).arena.functions.len {
+        var fn2 = (*p).arena.functions[i];
+        if spans_equal((*(*p).source).data, fn2.name_span, mangled_name) {
+            return i;
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+fn find_existing_mono_class(p: @resolver::Project, mangled_name: span::Span): int {
+    var i = 0;
+    while i < (*p).arena.classes.len {
+        var cl = (*p).arena.classes[i];
+        if spans_equal((*(*p).source).data, cl.name_span, mangled_name) {
+            return i;
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+fn find_existing_mono_choice(p: @resolver::Project, mangled_name: span::Span): int {
+    var i = 0;
+    while i < (*p).arena.choices.len {
+        var ch = (*p).arena.choices[i];
+        if spans_equal((*(*p).source).data, ch.name_span, mangled_name) {
+            return i;
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+export fn instantiate_generic(
+    p: @resolver::Project,
+    generic_fn_id: int,
+    type_arg_span: span::Span
+): int {
+    var func = (*(*p).arena).functions[generic_fn_id];
+    if func.generic_param_len == 0 { return generic_fn_id; }
+
+    var concrete_type = resolve_type_arg(p, type_arg_span);
+    if concrete_type < 0 { return -1; }
+
+    var mangled_name = mangle_name_into_source((*p).source, func.name_span, type_arg_span);
+    var existing = find_existing_mono_fn(p, mangled_name);
+    if existing >= 0 { return existing; }
+
+    var new_param_start = (*(*p).arena).params.len;
+    var pi = 0;
+    while pi < func.param_len {
+        var orig = (*(*p).arena).params[func.param_start + pi];
+        var new_type = orig.type_ref;
+        if orig.has_type_hint {
+            if is_type_var(p, generic_fn_id, new_type.name_span) {
+                new_type = ast::TypeRef {
+                    token_kind: new_type.token_kind,
+                    has_qualifier: false,
+                    qualifier_span: span::make(0, 0),
+                    name_span: new_type.name_span,
+                    resolved_def_id: concrete_type
+                };
+            }
+        }
+        ast::push_param((*p).arena, ast::ParamInfo {
+            name_span: orig.name_span,
+            has_type_hint: orig.has_type_hint,
+            type_ref: new_type
+        });
+        pi = pi + 1;
+    }
+
+    var new_ret = func.return_type_ref;
+    if func.has_return_type {
+        if is_type_var(p, generic_fn_id, new_ret.name_span) {
+            new_ret = ast::TypeRef {
+                token_kind: new_ret.token_kind,
+                has_qualifier: false,
+                qualifier_span: span::make(0, 0),
+                name_span: new_ret.name_span,
+                resolved_def_id: concrete_type
+            };
+        }
+    }
+
+    var new_fn_id = ast::push_function((*p).arena, ast::FunctionInfo {
+        name_span: mangled_name,
+        generic_param_start: 0,
+        generic_param_len: 0,
+        where_clause_start: 0,
+        where_clause_len: 0,
+        param_start: new_param_start,
+        param_len: func.param_len,
+        has_return_type: func.has_return_type,
+        return_type_ref: new_ret,
+        body_block_id: func.body_block_id,
+        span: func.span
+    });
+
+    return new_fn_id;
+}
+
+export fn instantiate_class(
+    p: @resolver::Project,
+    generic_class_id: int,
+    type_arg_span: span::Span
+): int {
+    var cl = (*(*p).arena).classes[generic_class_id];
+    if cl.generic_param_len == 0 { return generic_class_id; }
+
+    var concrete_type = resolve_type_arg(p, type_arg_span);
+    if concrete_type < 0 { return -1; }
+
+    var mangled_name = mangle_name_into_source((*p).source, cl.name_span, type_arg_span);
+    var existing = find_existing_mono_class(p, mangled_name);
+    if existing >= 0 { return existing; }
+
+    var field_start = (*(*p).arena).class_fields.len;
+    var fi = 0;
+    while fi < cl.field_len {
+        var orig_field = (*(*p).arena).class_fields[cl.field_start + fi];
+        var new_type_ref = orig_field.type_ref;
+        if is_class_type_var(p, generic_class_id, new_type_ref.name_span) {
+            new_type_ref.resolved_def_id = concrete_type;
+        }
+        ast::push_class_field((*p).arena, ast::ClassField {
+            visibility: orig_field.visibility,
+            is_const: orig_field.is_const,
+            name_span: orig_field.name_span,
+            type_ref: new_type_ref,
+            span: orig_field.span
+        });
+        fi = fi + 1;
+    }
+
+    var new_cl_id = ast::push_class((*p).arena, ast::ClassInfo {
+        name_span: mangled_name,
+        generic_param_start: 0,
+        generic_param_len: 0,
+        where_clause_start: 0,
+        where_clause_len: 0,
+        field_start: field_start,
+        field_len: cl.field_len,
+        method_start: cl.method_start,
+        method_len: cl.method_len,
+        struct_start: cl.struct_start,
+        struct_len: cl.struct_len,
+        span: cl.span
+    });
+
+    var mi = 0;
+    while mi < cl.method_len {
+        var orig_method = (*(*p).arena).class_methods[cl.method_start + mi];
+        var concrete_fn_id = instantiate_generic(p, orig_method.function_id, type_arg_span);
+        if concrete_fn_id >= 0 and concrete_fn_id != orig_method.function_id {
+            ast::push_class_method((*p).arena, ast::ClassMethod {
+                visibility: orig_method.visibility,
+                function_id: concrete_fn_id,
+                span: (*(*p).arena).functions[concrete_fn_id].span
+            });
+        }
+        mi = mi + 1;
+    }
+
+    var method_start = (*(*p).arena).class_methods.len - cl.method_len;
+    if method_start < 0 { method_start = 0; }
+    (*(*p).arena).classes[new_cl_id].method_start = method_start;
+    (*(*p).arena).classes[new_cl_id].method_len = cl.method_len;
+
+    return new_cl_id;
+}
+
+export fn instantiate_choice(
+    p: @resolver::Project,
+    generic_choice_id: int,
+    type_arg_span: span::Span
+): int {
+    var ch = (*(*p).arena).choices[generic_choice_id];
+    if ch.generic_param_len == 0 { return generic_choice_id; }
+
+    var concrete_type = resolve_type_arg(p, type_arg_span);
+    if concrete_type < 0 { return -1; }
+
+    var mangled_name = mangle_name_into_source((*p).source, ch.name_span, type_arg_span);
+    var existing = find_existing_mono_choice(p, mangled_name);
+    if existing >= 0 { return existing; }
+
+    var variant_start = (*(*p).arena).choice_variants.len;
+    var vi = 0;
+    while vi < ch.variant_len {
+        var orig_v = (*(*p).arena).choice_variants[ch.variant_start + vi];
+        var new_payload_ref = orig_v.payload_type_ref;
+        if orig_v.has_payload {
+            if is_choice_type_var(p, generic_choice_id, new_payload_ref.name_span) {
+                new_payload_ref.resolved_def_id = concrete_type;
+            }
+        }
+        ast::push_choice_variant((*p).arena, ast::ChoiceVariant {
+            name_span: orig_v.name_span,
+            has_payload: orig_v.has_payload,
+            payload_type_ref: new_payload_ref,
+            span: orig_v.span
+        });
+        vi = vi + 1;
+    }
+
+    return ast::push_choice((*p).arena, ast::ChoiceInfo {
+        name_span: mangled_name,
+        generic_param_start: 0,
+        generic_param_len: 0,
+        variant_start: variant_start,
+        variant_len: ch.variant_len,
+        span: ch.span
+    });
+}

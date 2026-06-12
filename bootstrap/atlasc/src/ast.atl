@@ -712,6 +712,108 @@ export fn make_variant_expr(type_start: int, type_end: int, variant_start: int, 
     };
 }
 
+export fn make_cast_expr(type_name_start: int, type_name_end: int, child_start: int, child_len: int, start: int, end: int): Expr {
+    return Expr {
+        kind: 15,
+        name_span: span::make(type_name_start, type_name_end),
+        name_ref_start: 0,
+        int_value: 0,
+        bool_value: false,
+        char_value: '\0',
+        op_kind: 0,
+        callee_span: span::make(0, 0),
+        child_start: child_start,
+        child_len: child_len,
+        resolved_def_id: -1,
+        span: span::make(start, end)
+    };
+}
+
+export fn make_sizeof_expr(type_name_start: int, type_name_end: int, start: int, end: int): Expr {
+    return Expr {
+        kind: 16,
+        name_span: span::make(type_name_start, type_name_end),
+        name_ref_start: 0,
+        int_value: 0,
+        bool_value: false,
+        char_value: '\0',
+        op_kind: 0,
+        callee_span: span::make(0, 0),
+        child_start: 0,
+        child_len: 0,
+        resolved_def_id: -1,
+        span: span::make(start, end)
+    };
+}
+
+export fn make_destroy_expr(type_name_start: int, type_name_end: int, child_start: int, child_len: int, start: int, end: int): Expr {
+    return Expr {
+        kind: 17,
+        name_span: span::make(type_name_start, type_name_end),
+        name_ref_start: 0,
+        int_value: 0,
+        bool_value: false,
+        char_value: '\0',
+        op_kind: 0,
+        callee_span: span::make(0, 0),
+        child_start: child_start,
+        child_len: child_len,
+        resolved_def_id: -1,
+        span: span::make(start, end)
+    };
+}
+
+export fn make_static_call_expr(type_start: int, type_end: int, method_start: int, method_end: int, child_start: int, child_len: int, start: int, end: int): Expr {
+    return Expr {
+        kind: 18,
+        name_span: span::make(method_start, method_end),
+        name_ref_start: 0,
+        int_value: 0,
+        bool_value: false,
+        char_value: '\0',
+        op_kind: 0,
+        callee_span: span::make(type_start, type_end),
+        child_start: child_start,
+        child_len: child_len,
+        resolved_def_id: -1,
+        span: span::make(start, end)
+    };
+}
+
+export fn make_static_member_expr(type_start: int, type_end: int, member_start: int, member_end: int, start: int, end: int): Expr {
+    return Expr {
+        kind: 19,
+        name_span: span::make(member_start, member_end),
+        name_ref_start: 0,
+        int_value: 0,
+        bool_value: false,
+        char_value: '\0',
+        op_kind: 0,
+        callee_span: span::make(type_start, type_end),
+        child_start: 0,
+        child_len: 0,
+        resolved_def_id: -1,
+        span: span::make(start, end)
+    };
+}
+
+export fn make_generic_call_expr(callee_start: int, callee_end: int, child_start: int, child_len: int, start: int, end: int): Expr {
+    return Expr {
+        kind: 20,
+        name_span: span::make(0, 0),
+        name_ref_start: 0,
+        int_value: 0,
+        bool_value: false,
+        char_value: '\0',
+        op_kind: 0,
+        callee_span: span::make(callee_start, callee_end),
+        child_start: child_start,
+        child_len: child_len,
+        resolved_def_id: -1,
+        span: span::make(start, end)
+    };
+}
+
 export fn make_empty_var_decl(): VarDecl {
     return VarDecl {
         name_span: span::make(0, 0),

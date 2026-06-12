@@ -2,6 +2,7 @@ import array;
 import ast;
 import span;
 import resolver;
+import monomorphizer;
 
 export struct SemanticError {
     kind: int;
@@ -32,41 +33,54 @@ export struct Summary {
 
 export fn type_unknown(): int { return 0; }
 export fn type_null(): int { return 1; }
+export fn type_void(): int { return 2; }
 export fn type_int(): int { return 31; }
-export fn type_bool(): int { return 44; }
-export fn type_char(): int { return 45; }
+export fn type_uint(): int { return 32; }
+export fn type_int8(): int { return 33; }
+export fn type_int16(): int { return 34; }
+export fn type_int32(): int { return 35; }
+export fn type_int64(): int { return 36; }
+export fn type_uint8(): int { return 37; }
+export fn type_uint16(): int { return 38; }
+export fn type_uint32(): int { return 39; }
+export fn type_uint64(): int { return 40; }
 export fn type_float(): int { return 41; }
 export fn type_float32(): int { return 42; }
 export fn type_float64(): int { return 43; }
+export fn type_bool(): int { return 44; }
+export fn type_char(): int { return 45; }
 export fn type_string_literal(): int { return 100; }
+export fn type_struct(idx: int): int { if idx < 0 { return type_unknown(); } return 1000 + idx; }
+export fn type_enum(idx: int): int { if idx < 0 { return type_unknown(); } return 2000 + idx; }
+export fn type_choice(idx: int): int { if idx < 0 { return type_unknown(); } return 3000 + idx; }
+export fn type_class(idx: int): int { if idx < 0 { return type_unknown(); } return 4000 + idx; }
+export fn type_pointer(target: int, nullable: bool): int { var e = 0; if nullable { e = 1; } return 10000 + target * 2 + e; }
 
-export fn type_pointer(target: int, nullable: bool): int {
-    var extra = 0;
-    if nullable { extra = 1; }
-    return 10000 + target * 2 + extra;
+export fn is_pointer_type(ty: int): bool { return ty >= 10000; }
+export fn is_nullable_pointer(ty: int): bool { if ty < 10000 { return false; } return (ty - 10000) % 2 == 1; }
+export fn type_dereference(ptr_ty: int): int { if ptr_ty < 10000 { return type_unknown(); } return (ptr_ty - 10000) / 2; }
+export fn is_integer_type(ty: int): bool { return ty >= 31 and ty <= 40; }
+export fn is_numeric_type(ty: int): bool { return is_integer_type(ty) or ty == type_float() or ty == type_float32() or ty == type_float64(); }
+export fn is_struct_type(ty: int): bool { return ty >= 1000 and ty < 2000; }
+export fn is_enum_type(ty: int): bool { return ty >= 2000 and ty < 3000; }
+export fn is_choice_type(ty: int): bool { return ty >= 3000 and ty < 4000; }
+export fn is_class_type(ty: int): bool { return ty >= 4000 and ty < 10000; }
+export fn is_slice_type(ty: int): bool { return ty >= 50000 and ty < 60000; }
+export fn is_array_type(ty: int): bool { return ty >= 60000; }
+export fn slice_element_type(ty: int): int { if !is_slice_type(ty) { return type_unknown(); } return ty - 50000; }
+export fn array_element_type(ty: int): int { if !is_array_type(ty) { return type_unknown(); } return (ty - 60000) / 10000; }
+export fn array_element_count(ty: int): int { if !is_array_type(ty) { return 0; } return (ty - 60000) % 10000; }
+export fn is_assignable_to(from_ty: int, to_ty: int): bool {
+    if from_ty == to_ty { return true; }
+    if from_ty == type_unknown() or to_ty == type_unknown() { return true; }
+    if from_ty == type_null() and is_nullable_pointer(to_ty) { return true; }
+    if is_pointer_type(from_ty) and is_pointer_type(to_ty) { return type_dereference(from_ty) == type_dereference(to_ty); }
+    if is_integer_type(from_ty) and is_integer_type(to_ty) { return true; }
+    if is_float_type(from_ty) and is_float_type(to_ty) { return true; }
+    return false;
 }
-
-export fn is_pointer_type(ty: int): bool {
-    return ty >= 10000;
-}
-
-export fn type_dereference(ptr_ty: int): int {
-    if ptr_ty < 10000 { return type_unknown(); }
-    return (ptr_ty - 10000) / 2;
-}
-
-export fn is_nullable_pointer(ptr_ty: int): bool {
-    if ptr_ty < 10000 { return false; }
-    return (ptr_ty - 10000) % 2 == 1;
-}
-
-export fn is_integer_type(ty: int): bool {
-    return ty == 31 or (ty >= 32 and ty <= 40) or (ty >= 33 and ty <= 36) or (ty >= 37 and ty <= 40);
-}
-
-export fn is_numeric_type(ty: int): bool {
-    return is_integer_type(ty) or ty == type_float() or ty == type_float32() or ty == type_float64();
-}
+export fn is_float_type(ty: int): bool { return ty >= 41 and ty <= 43; }
+export fn same_runtime_type(a: int, b: int): bool { if a == b { return true; } if is_integer_type(a) and is_integer_type(b) { return true; } return false; }
 
 export fn make_error(kind: int, start: int, end: int): SemanticError {
     return SemanticError { kind: kind, span: span::make(start, end) };
@@ -385,23 +399,19 @@ export fn resolve_type_ref(
     errors: @array::Array<SemanticError>,
     summary: @Summary
 ): int {
-    if type_ref.token_kind == 31 {
+    if type_ref.token_kind >= 31 and type_ref.token_kind <= 40 {
         return type_int();
+    }
+    if type_ref.token_kind >= 41 and type_ref.token_kind <= 43 {
+        if type_ref.token_kind == 42 { return type_float32(); }
+        if type_ref.token_kind == 43 { return type_float64(); }
+        return type_float();
     }
     if type_ref.token_kind == 44 {
         return type_bool();
     }
     if type_ref.token_kind == 45 {
         return type_char();
-    }
-    if type_ref.token_kind == 41 {
-        return type_float();
-    }
-    if type_ref.token_kind == 42 {
-        return type_float32();
-    }
-    if type_ref.token_kind == 43 {
-        return type_float64();
     }
     if type_ref.token_kind == 61 {
         var inner = resolve_inner_type_for_pointer(p, type_ref);
@@ -412,6 +422,23 @@ export fn resolve_type_ref(
         return type_pointer(inner, true);
     }
     if type_ref.token_kind == 6 {
+        if type_ref.has_qualifier and type_ref.resolved_def_id >= 0 {
+            var item = (*(*p).arena).items[type_ref.resolved_def_id];
+            if item.kind == 6 {
+                var type_arg_span = type_ref.qualifier_span;
+                var concrete_class_id = monomorphizer::instantiate_class(p, item.class_id, type_arg_span);
+                if concrete_class_id >= 0 {
+                    return 4000 + concrete_class_id;
+                }
+            }
+            if item.kind == 4 {
+                var type_arg_span = type_ref.qualifier_span;
+                var concrete_choice_id = monomorphizer::instantiate_choice(p, item.choice_id, type_arg_span);
+                if concrete_choice_id >= 0 {
+                    return 3000 + concrete_choice_id;
+                }
+            }
+        }
         if type_ref.resolved_def_id >= 0 {
             var item = (*(*p).arena).items[type_ref.resolved_def_id];
             if item.kind == 2 {
@@ -603,6 +630,11 @@ fn compatible_type(expected: int, actual: int): bool {
     if is_pointer_type(expected) and is_nullable_pointer(expected) and actual == type_null() {
         return true;
     }
+    if is_slice_type(expected) and slice_element_type(expected) == type_char() and actual == type_string_literal() {
+        return true;
+    }
+    if is_integer_type(expected) and is_integer_type(actual) { return true; }
+    if is_float_type(expected) and is_float_type(actual) { return true; }
     return false;
 }
 
@@ -682,6 +714,281 @@ fn infer_expr_type(
 
     if expr.kind == 12 {
         return type_float();
+    }
+
+    if expr.kind == 13 {
+        var elem_type = type_unknown();
+        var i = 0;
+        while i < expr.child_len {
+            var child_type = infer_expr_type(p, (*(*p).arena).expr_refs[expr.child_start + i], locals, depths, local_types, local_count, depth, errors, summary);
+            if elem_type == type_unknown() {
+                elem_type = child_type;
+            } else if child_type != type_unknown() and !compatible_type(elem_type, child_type) {
+                errors.push(make_error(8, expr.span.start, expr.span.end));
+                (*summary).type_mismatch_count = (*summary).type_mismatch_count + 1;
+            }
+            i = i + 1;
+        }
+        if elem_type == type_unknown() {
+            return type_int();
+        }
+        return elem_type;
+    }
+
+    if expr.kind == 14 {
+        if expr.child_len < 1 {
+            return type_unknown();
+        }
+        var receiver_type = infer_expr_type(p, (*(*p).arena).expr_refs[expr.child_start], locals, depths, local_types, local_count, depth, errors, summary);
+        var arg_count = expr.child_len - 1;
+
+        var target_type = receiver_type;
+        if is_pointer_type(receiver_type) {
+            if is_nullable_pointer(receiver_type) {
+                errors.push(make_error(17, expr.span.start, expr.span.end));
+                (*summary).type_mismatch_count = (*summary).type_mismatch_count + 1;
+                target_type = type_dereference(receiver_type);
+            } else {
+                target_type = type_dereference(receiver_type);
+            }
+        }
+
+        if target_type >= 4000 {
+            var class_idx = target_type - 4000;
+            if class_idx < (*(*p).arena).classes.len {
+                var class_info = (*(*p).arena).classes[class_idx];
+                var m = 0;
+                while m < class_info.method_len {
+                    var method = (*(*p).arena).class_methods[class_info.method_start + m];
+                    var method_info = (*(*p).arena).functions[method.function_id];
+                    if name_equals((*(*p).source).data, method_info.name_span, expr.name_span) {
+                        if arg_count != method_info.param_len {
+                            errors.push(make_error(7, expr.span.start, expr.span.end));
+                            (*summary).wrong_arg_count_count = (*summary).wrong_arg_count_count + 1;
+                        }
+                        var ai = 1;
+                        while ai < expr.child_len {
+                            var arg_type = infer_expr_type(p, (*(*p).arena).expr_refs[expr.child_start + ai], locals, depths, local_types, local_count, depth, errors, summary);
+                            var param_idx = ai - 1;
+                            if param_idx < method_info.param_len {
+                                var param = (*(*p).arena).params[method_info.param_start + param_idx];
+                                if param.has_type_hint {
+                                    expect_type(resolve_type_ref(p, param.type_ref, errors, summary), arg_type, 8, expr.span, errors, summary);
+                                }
+                            }
+                            ai = ai + 1;
+                        }
+                        if method_info.has_return_type {
+                            return resolve_type_ref(p, method_info.return_type_ref, errors, summary);
+                        }
+                        return type_unknown();
+                    }
+                    m = m + 1;
+                }
+            }
+        }
+
+        var ai2 = 1;
+        while ai2 < expr.child_len {
+            infer_expr_type(p, (*(*p).arena).expr_refs[expr.child_start + ai2], locals, depths, local_types, local_count, depth, errors, summary);
+            ai2 = ai2 + 1;
+        }
+        return type_unknown();
+    }
+
+    if expr.kind == 15 {
+        if expr.child_len > 0 {
+            infer_expr_type(p, (*(*p).arena).expr_refs[expr.child_start], locals, depths, local_types, local_count, depth, errors, summary);
+        }
+        var target_type = resolve_type_ref_from_name(p, expr.name_span);
+        if target_type == type_unknown() {
+            errors.push(make_error(10, expr.name_span.start, expr.name_span.end));
+            (*summary).unknown_type_count = (*summary).unknown_type_count + 1;
+            return type_unknown();
+        }
+        return target_type;
+    }
+
+    if expr.kind == 16 {
+        var target_type = resolve_type_ref_from_name(p, expr.name_span);
+        if target_type == type_unknown() {
+            errors.push(make_error(10, expr.name_span.start, expr.name_span.end));
+            (*summary).unknown_type_count = (*summary).unknown_type_count + 1;
+        }
+        return type_int();
+    }
+
+    if expr.kind == 17 {
+        if expr.child_len > 0 {
+            infer_expr_type(p, (*(*p).arena).expr_refs[expr.child_start], locals, depths, local_types, local_count, depth, errors, summary);
+        }
+        resolve_type_ref_from_name(p, expr.name_span);
+        return type_unknown();
+    }
+
+    if expr.kind == 18 {
+        var type_name = expr.callee_span;
+        var method_name = expr.name_span;
+        var enum_idx = find_enum_index(p, type_name);
+        if enum_idx >= 0 {
+            if expr.child_len != 0 {
+                errors.push(make_error(7, expr.span.start, expr.span.end));
+                (*summary).wrong_arg_count_count = (*summary).wrong_arg_count_count + 1;
+            }
+            if find_enum_variant_index(p, enum_idx, method_name) < 0 {
+                errors.push(make_error(16, method_name.start, method_name.end));
+                (*summary).unknown_field_count = (*summary).unknown_field_count + 1;
+            }
+            return 2000 + enum_idx;
+        }
+        var choice_idx = find_choice_index(p, type_name);
+        if choice_idx >= 0 {
+            var variant_idx = find_choice_variant_index(p, choice_idx, method_name);
+            if variant_idx < 0 {
+                errors.push(make_error(16, method_name.start, method_name.end));
+                (*summary).unknown_field_count = (*summary).unknown_field_count + 1;
+                return 3000 + choice_idx;
+            }
+            var choice_info = (*(*p).arena).choices[choice_idx];
+            var variant = (*(*p).arena).choice_variants[choice_info.variant_start + variant_idx];
+            if variant.has_payload {
+                if expr.child_len != 1 {
+                    errors.push(make_error(7, expr.span.start, expr.span.end));
+                    (*summary).wrong_arg_count_count = (*summary).wrong_arg_count_count + 1;
+                } else {
+                    var payload_type = infer_expr_type(p, (*(*p).arena).expr_refs[expr.child_start], locals, depths, local_types, local_count, depth, errors, summary);
+                    expect_type(resolve_type_ref(p, variant.payload_type_ref, errors, summary), payload_type, 8, expr.span, errors, summary);
+                }
+            } else if expr.child_len != 0 {
+                errors.push(make_error(7, expr.span.start, expr.span.end));
+                (*summary).wrong_arg_count_count = (*summary).wrong_arg_count_count + 1;
+            }
+            return 3000 + choice_idx;
+        }
+        var class_idx = find_class_index(p, type_name);
+        if class_idx >= 0 {
+            var class_info = (*(*p).arena).classes[class_idx];
+            var m = 0;
+            while m < class_info.method_len {
+                var method = (*(*p).arena).class_methods[class_info.method_start + m];
+                var method_info = (*(*p).arena).functions[method.function_id];
+                if name_equals((*(*p).source).data, method_info.name_span, method_name) {
+                    if expr.child_len != method_info.param_len {
+                        errors.push(make_error(7, expr.span.start, expr.span.end));
+                        (*summary).wrong_arg_count_count = (*summary).wrong_arg_count_count + 1;
+                    }
+                    var ai = 0;
+                    while ai < expr.child_len {
+                        var arg_type = infer_expr_type(p, (*(*p).arena).expr_refs[expr.child_start + ai], locals, depths, local_types, local_count, depth, errors, summary);
+                        if ai < method_info.param_len {
+                            var param = (*(*p).arena).params[method_info.param_start + ai];
+                            if param.has_type_hint {
+                                expect_type(resolve_type_ref(p, param.type_ref, errors, summary), arg_type, 8, expr.span, errors, summary);
+                            }
+                        }
+                        ai = ai + 1;
+                    }
+                    if method_info.has_return_type {
+                        return resolve_type_ref(p, method_info.return_type_ref, errors, summary);
+                    }
+                    return type_unknown();
+                }
+                m = m + 1;
+            }
+        }
+        var struct_idx = find_struct_index(p, type_name);
+        if struct_idx >= 0 {
+            var struct_info = (*(*p).arena).structs[struct_idx];
+            if expr.child_len != struct_info.field_len {
+                errors.push(make_error(7, expr.span.start, expr.span.end));
+                (*summary).wrong_arg_count_count = (*summary).wrong_arg_count_count + 1;
+            }
+            var fi = 0;
+            while fi < expr.child_len {
+                var arg_type = infer_expr_type(p, (*(*p).arena).expr_refs[expr.child_start + fi], locals, depths, local_types, local_count, depth, errors, summary);
+                if fi < struct_info.field_len {
+                    var field = (*(*p).arena).struct_fields[struct_info.field_start + fi];
+                    expect_type(resolve_type_ref(p, field.type_ref, errors, summary), arg_type, 8, expr.span, errors, summary);
+                }
+                fi = fi + 1;
+            }
+            return 1000 + struct_idx;
+        }
+        errors.push(make_error(10, type_name.start, type_name.end));
+        (*summary).unknown_type_count = (*summary).unknown_type_count + 1;
+        return type_unknown();
+    }
+
+    if expr.kind == 19 {
+        var type_name = expr.callee_span;
+        var member_name = expr.name_span;
+        var enum_idx = find_enum_index(p, type_name);
+        if enum_idx >= 0 {
+            if find_enum_variant_index(p, enum_idx, member_name) < 0 {
+                errors.push(make_error(16, member_name.start, member_name.end));
+                (*summary).unknown_field_count = (*summary).unknown_field_count + 1;
+            }
+            return 2000 + enum_idx;
+        }
+        var choice_idx = find_choice_index(p, type_name);
+        if choice_idx >= 0 {
+            if find_choice_variant_index(p, choice_idx, member_name) < 0 {
+                errors.push(make_error(16, member_name.start, member_name.end));
+                (*summary).unknown_field_count = (*summary).unknown_field_count + 1;
+            }
+            return 3000 + choice_idx;
+        }
+        return type_unknown();
+    }
+
+    if expr.kind == 20 {
+        var fn_index = find_function_index(p, expr.callee_span);
+        var i = 0;
+        if fn_index < 0 {
+            errors.push(make_error(5, expr.callee_span.start, expr.callee_span.end));
+            (*summary).unknown_function_count = (*summary).unknown_function_count + 1;
+            while i < expr.child_len {
+                infer_expr_type(p, (*(*p).arena).expr_refs[expr.child_start + i], locals, depths, local_types, local_count, depth, errors, summary);
+                i = i + 1;
+            }
+            return type_unknown();
+        }
+        var function_info = (*(*p).arena).functions[fn_index];
+
+        if function_info.generic_param_len > 0 and expr.int_value > 0 {
+            var type_arg_span = (*(*p).arena).name_refs[expr.name_ref_start];
+            var concrete_fn_id = monomorphizer::instantiate_generic(p, fn_index, type_arg_span);
+            if concrete_fn_id >= 0 {
+                var concrete_func = (*(*p).arena).functions[concrete_fn_id];
+                if expr.child_len != concrete_func.param_len {
+                    errors.push(make_error(7, expr.span.start, expr.span.end));
+                    (*summary).wrong_arg_count_count = (*summary).wrong_arg_count_count + 1;
+                }
+                while i < expr.child_len {
+                    var arg_type = infer_expr_type(p, (*(*p).arena).expr_refs[expr.child_start + i], locals, depths, local_types, local_count, depth, errors, summary);
+                    if i < concrete_func.param_len {
+                        var param = (*(*p).arena).params[concrete_func.param_start + i];
+                        if param.has_type_hint {
+                            expect_type(resolve_type_ref(p, param.type_ref, errors, summary), arg_type, 8, expr.span, errors, summary);
+                        }
+                    }
+                    i = i + 1;
+                }
+                if concrete_func.has_return_type {
+                    return resolve_type_ref(p, concrete_func.return_type_ref, errors, summary);
+                }
+                return type_unknown();
+            }
+        }
+
+        while i < expr.child_len {
+            infer_expr_type(p, (*(*p).arena).expr_refs[expr.child_start + i], locals, depths, local_types, local_count, depth, errors, summary);
+            i = i + 1;
+        }
+        if function_info.has_return_type {
+            return resolve_type_ref(p, function_info.return_type_ref, errors, summary);
+        }
+        return type_unknown();
     }
 
     if expr.kind == 9 {
@@ -868,6 +1175,13 @@ fn infer_expr_type(
             }
             errors.push(make_error(8, expr.span.start, expr.span.end));
             (*summary).type_mismatch_count = (*summary).type_mismatch_count + 1;
+            return type_unknown();
+        }
+        if expr.op_kind == 74 {
+            expect_type(type_int(), rhs_type, 8, expr.span, errors, summary);
+            if is_pointer_type(lhs_type) {
+                return type_dereference(lhs_type);
+            }
             return type_unknown();
         }
         if expr.op_kind == 58 or expr.op_kind == 27 {
@@ -1126,12 +1440,9 @@ fn analyze_block(
                 record_name(locals, local_depths, local_types, stmt.const_decl.name_span, depth, const_type);
             }
         } else if stmt.kind == 3 {
+            var value_type = infer_expr_type(p, stmt.assign_stmt.value_expr_id, locals.data, local_depths.data, local_types.data, locals.len, depth, errors, summary);
             var target_index = find_visible_name_index((*(*p).source).data, locals.data, local_depths.data, locals.len, stmt.assign_stmt.target_name_span, depth);
-            var value_type = infer_expr_type(p, stmt.assign_stmt.value_expr_id, locals.data, local_depths.data, local_types.data, locals.len,     depth, errors, summary);
-            if target_index < 0 {
-                errors.push(make_error(4, stmt.assign_stmt.target_name_span.start, stmt.assign_stmt.target_name_span.end));
-                (*summary).unknown_variable_count = (*summary).unknown_variable_count + 1;
-            } else {
+            if target_index >= 0 {
                 expect_type(local_types[target_index], value_type, 8, stmt.assign_stmt.span, errors, summary);
             }
         } else if stmt.kind == 4 {
@@ -1269,10 +1580,37 @@ export fn analyze_file(p: @resolver::Project, file_info: ast::FileInfo, summary:
     }
 
     i = 0;
+    while i < choice_ids.len {
+        var choice_info = (*(*p).arena).choices[choice_ids[i]];
+        var v = 0;
+        while v < choice_info.variant_len {
+            var variant = (*(*p).arena).choice_variants[choice_info.variant_start + v];
+            if variant.has_payload {
+                resolve_type_ref(p, variant.payload_type_ref, errors, summary);
+            }
+            v = v + 1;
+        }
+        i = i + 1;
+    }
+
+    i = 0;
     while i < file_info.item_len {
         var item = (*(*p).arena).items[file_info.item_start + i];
         if item.kind == 1 {
             var function_info = (*(*p).arena).functions[item.function_id];
+
+            if function_info.has_return_type {
+                resolve_type_ref(p, function_info.return_type_ref, errors, summary);
+            }
+            var param_i = 0;
+            while param_i < function_info.param_len {
+                var param = (*(*p).arena).params[function_info.param_start + param_i];
+                if param.has_type_hint {
+                    resolve_type_ref(p, param.type_ref, errors, summary);
+                }
+                param_i = param_i + 1;
+            }
+
             if function_info.generic_param_len > 0 {
                 i = i + 1;
                 continue;
@@ -1341,6 +1679,14 @@ export fn analyze_file(p: @resolver::Project, file_info: ast::FileInfo, summary:
                         var param_type = type_unknown();
                         if param.has_type_hint {
                             param_type = resolve_type_ref(p, param.type_ref, errors, summary);
+                        } else {
+                            var sspan = param.name_span;
+                            if sspan.end - sspan.start == 4 {
+                                var src = (*(*p).source).data;
+                                if src[sspan.start] == 's' and src[sspan.start+1] == 'e' and src[sspan.start+2] == 'l' and src[sspan.start+3] == 'f' {
+                                    param_type = 4000 + item.class_id;
+                                }
+                            }
                         }
                         record_name(@locals, @local_depths, @local_types, param.name_span, 1, param_type);
                     }

@@ -23,34 +23,34 @@ fn is_binary_op(kind: int): bool {
 
 fn peek_kind(p: @Parser): int {
     if (*p).cursor < (*p).count {
-        return (*p).tokens[(*p).cursor].kind;
+        return (*(*p).tokens[(*p).cursor].kind;
     }
     return 76;
 }
 
 fn peek_nth_kind(p: @Parser, n: int): int {
     if (*p).cursor + n < (*p).count {
-        return (*p).tokens[(*p).cursor + n].kind;
+        return (*(*p).tokens[(*p).cursor + n].kind;
     }
     return 76;
 }
 
 fn peek_span_start(p: @Parser): int {
     if (*p).cursor < (*p).count {
-        return (*p).tokens[(*p).cursor].span.start;
+        return (*(*p).tokens[(*p).cursor].span.start;
     }
     if (*p).count > 0 {
-        return (*p).tokens[(*p).count - 1].span.end;
+        return (*(*p).tokens[(*p).count - 1].span.end;
     }
     return 0;
 }
 
 fn peek_span_end(p: @Parser): int {
     if (*p).cursor < (*p).count {
-        return (*p).tokens[(*p).cursor].span.end;
+        return (*(*p).tokens[(*p).cursor].span.end;
     }
     if (*p).count > 0 {
-        return (*p).tokens[(*p).count - 1].span.end;
+        return (*(*p).tokens[(*p).count - 1].span.end;
     }
     return 0;
 }
@@ -64,11 +64,11 @@ fn advance(p: @Parser): bool {
 }
 
 fn current_token_ptr(p: @Parser): @token::Token? {
-    return @(*p).tokens[(*p).cursor];
+    return @(*(*p).tokens[(*p).cursor];
 }
 
 fn token_at_ptr(p: @Parser, idx: int): @token::Token? {
-    return @(*p).tokens[idx];
+    return @(*(*p).tokens[idx];
 }
 
 fn expect(p: @Parser, kind: int): int {

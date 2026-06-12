@@ -116,8 +116,8 @@ fn main(): int {
     
     var fid = arena.file_infos.len; arena.file_infos.push(file_info);
     var modules: array::Array<resolver::ModuleInterface> = array::Array();
-    modules.push(resolver::ModuleInterface { name_span: span::make(0, 0), file_info_id: fid });
-    var proj = resolver::Project { arena: @arena, source: @src, modules: @modules };
+    modules.push(resolver::ModuleInterface { name_span: span::make(0, 0), file_info_id: fid, import_module_indices: array::Array() });
+    var proj = resolver::Project { arena: @arena, source: @src, modules: @modules, prelude_count: 0 };
     resolver::resolve_names(@proj, @parse_errors);
     return 0;
 }

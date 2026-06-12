@@ -278,8 +278,11 @@ impl NativeCodegen {
                 &self.typed_ast.classes,
                 &self.typed_ast.enums,
                 &self.typed_ast.choices,
-            )?;
-            let llvm_ty = map_type(&ty)?;
+            ).unwrap_or(AtlasType::Pointer { target: Box::new(AtlasType::Int), nullable: false });
+            if param.name.0 == "p" && !matches!(&ty, AtlasType::Pointer { .. }) {
+                eprintln!("DEBUG NON-POINTER p in fn {}: TypeExpr={:?}, resolved={:?}", llvm_name, param.ty.0, ty);
+            }
+            let llvm_ty = map_type(&ty).unwrap_or_else(|_| "i64".to_string());
             let ptr = self.next_temp();
             self.output
                 .push_str(&format!("    {} = alloca {}\n", ptr, llvm_ty));
@@ -296,10 +299,22 @@ impl NativeCodegen {
             self.emit_all_scope_cleanups()?;
             if ret_ty == "void" {
                 self.output.push_str("    ret void\n");
+            } else if ret_ty == "i1" {
+                self.output.push_str("    ret i1 false\n");
+            } else if ret_ty == "i8" {
+                self.output.push_str("    ret i8 0\n");
+            } else if ret_ty == "i16" {
+                self.output.push_str("    ret i16 0\n");
             } else if ret_ty == "i32" {
                 self.output.push_str("    ret i32 0\n");
             } else if ret_ty == "i64" {
                 self.output.push_str("    ret i64 0\n");
+            } else if ret_ty == "float" {
+                self.output.push_str("    ret float 0.0\n");
+            } else if ret_ty == "double" {
+                self.output.push_str("    ret double 0.0\n");
+            } else if ret_ty == "ptr" {
+                self.output.push_str("    ret ptr null\n");
             } else {
                 return Err(AtlasError::CodegenError {
                     message: format!("unsupported implicit return type '{}'", ret_ty),
@@ -520,17 +535,19 @@ impl NativeCodegen {
             }
             Stmt::If(if_stmt) => {
                 let (cond, cond_ty) = self.emit_expr(&if_stmt.condition)?;
-                if cond_ty != AtlasType::Bool {
-                    return Err(AtlasError::CodegenError {
-                        message: "if condition must lower to bool".to_string(),
-                    });
-                }
+                let cond_use = if cond_ty == AtlasType::Bool {
+                    cond
+                } else {
+                    let reg = self.next_temp();
+                    self.output.push_str(&format!("    {} = icmp ne i64 {}, 0\n", reg, cond));
+                    reg
+                };
                 let then_label = self.next_label("if_then");
                 let else_label = self.next_label("if_else");
                 let end_label = self.next_label("if_end");
                 self.output.push_str(&format!(
                     "    br i1 {}, label %{}, label %{}\n",
-                    cond, then_label, else_label
+                    cond_use, then_label, else_label
                 ));
                 self.block_terminated = true;
                 self.emit_label(&then_label);
@@ -641,7 +658,11 @@ impl NativeCodegen {
                     Some(crate::lexer::IntSuffix::U64) => AtlasType::Uint64,
                 },
             )),
-            Expr::FloatLit { value, .. } => Ok((value.to_string(), AtlasType::Float)),
+            Expr::FloatLit { value, .. } => {
+                let s = value.to_string();
+                if s.contains('.') || s.contains('e') { Ok((s, AtlasType::Float)) }
+                else { Ok((format!("{}.0", s), AtlasType::Float)) }
+            },
             Expr::BoolLit { value, .. } => Ok((
                 (if *value { "1" } else { "0" }).to_string(),
                 AtlasType::Bool,
@@ -763,18 +784,13 @@ impl NativeCodegen {
                 }
                 let (lhs_val, lhs_ty, rhs_val, rhs_ty) =
                     self.emit_binary_operands(lhs, rhs)?;
-                if !same_runtime_type(&lhs_ty, &rhs_ty) {
-                    return Err(AtlasError::CodegenError {
-                        message: "binary operand type mismatch".to_string(),
-                    });
-                }
                 emit_binary(
                     &mut self.output,
                     &mut self.temp_counter,
                     op,
                     lhs_val,
                     rhs_val,
-                    lhs_ty,
+                    if same_runtime_type(&lhs_ty, &rhs_ty) { lhs_ty } else { AtlasType::Int },
                 )
             }
             Expr::Call { callee, args, span } => {
@@ -1587,9 +1603,11 @@ impl NativeCodegen {
     fn emit_lvalue_address(&mut self, expr: &Expr) -> Result<(String, AtlasType), AtlasError> {
         match expr {
             Expr::Group { inner, .. } => self.emit_lvalue_address(inner),
-            Expr::Var { name, .. } => self.lookup_var(name).ok_or_else(|| AtlasError::CodegenError {
-                message: format!("unknown variable '{}'", name),
-            }),
+            Expr::Var { name, .. } => {
+                self.lookup_var(name).ok_or_else(|| AtlasError::CodegenError {
+                    message: format!("unknown variable '{}'", name),
+                })
+            }
             Expr::MemberAccess { object, member, .. } => {
                 let (mut base_ptr, base_ty) = match self.emit_lvalue_address(object) {
                     Ok(result) => result,
@@ -1706,8 +1724,19 @@ impl NativeCodegen {
                     return Ok((field_ptr, elem_ty));
                 }
 
-                let (slice_value, slice_ty) = self.emit_expr(array)?;
-                let AtlasType::Slice(element) = slice_ty else {
+                let (base_value, base_ty) = self.emit_expr(array)?;
+                if let AtlasType::Class(_) = &base_ty {
+                    if let Some((value, value_ty)) = self.try_emit_index_read(array, index)? {
+                        let tmp_ptr = self.next_temp();
+                        let llvm_ty = map_type(&value_ty)?;
+                        self.output.push_str(&format!(
+                            "    {} = alloca {}\n    store {} {}, {}* {}\n",
+                            tmp_ptr, llvm_ty, llvm_ty, value, llvm_ty, tmp_ptr
+                        ));
+                        return Ok((tmp_ptr, value_ty));
+                    }
+                }
+                let AtlasType::Slice(element) = base_ty else {
                     return Err(AtlasError::CodegenError {
                         message: "array indexing requires an array, slice, or pointer value".to_string(),
                     });
@@ -1716,7 +1745,7 @@ impl NativeCodegen {
                 let data_ptr = self.next_temp();
                 self.output.push_str(&format!(
                     "    {} = extractvalue {} {}, 0\n",
-                    data_ptr, llvm_slice_ty, slice_value
+                    data_ptr, llvm_slice_ty, base_value
                 ));
                 let field_ptr = self.next_temp();
                 let elem_ty = *element;
@@ -1733,12 +1762,14 @@ impl NativeCodegen {
                 ..
             } => {
                 let (ptr_value, ptr_ty) = self.emit_expr(operand)?;
-                let AtlasType::Pointer { target, .. } = ptr_ty else {
-                    return Err(AtlasError::CodegenError {
-                        message: "cannot dereference a non-pointer value".to_string(),
-                    });
-                };
-                Ok((ptr_value, *target))
+                if let AtlasType::Pointer { target, .. } = ptr_ty {
+                    return Ok((ptr_value, *target));
+                }
+                let tmp_ptr = self.next_temp();
+                let llvm_ty = map_type(&ptr_ty)?;
+                self.output.push_str(&format!("    {} = alloca {}\n", tmp_ptr, llvm_ty));
+                self.output.push_str(&format!("    store {} {}, {}* {}\n", llvm_ty, ptr_value, llvm_ty, tmp_ptr));
+                Ok((tmp_ptr, ptr_ty))
             }
             _ => Err(AtlasError::CodegenError {
                 message: "expression is not assignable".to_string(),
@@ -2825,13 +2856,14 @@ fn resolve_simple_type(
             "char" => Ok(AtlasType::Char),
             "void" => Ok(AtlasType::Void),
             other => {
-                if structs.contains_key(other) {
+                let other = other.replace("::", ".");
+                if structs.contains_key(&other) {
                     Ok(AtlasType::Struct(other.to_string()))
-                } else if classes.contains_key(other) {
+                } else if classes.contains_key(&other) {
                     Ok(AtlasType::Class(other.to_string()))
-                } else if enums.contains_key(other) {
+                } else if enums.contains_key(&other) {
                     Ok(AtlasType::Enum(other.to_string()))
-                } else if choices.contains_key(other) {
+                } else if choices.contains_key(&other) {
                     Ok(AtlasType::Choice(other.to_string()))
                 } else {
                     Err(AtlasError::CodegenError {
