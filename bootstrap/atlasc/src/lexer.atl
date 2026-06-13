@@ -254,11 +254,10 @@ export fn tokenize(source: @array::Array<char>, start_offset: int, tokens: @arra
         else if ch == ']' { tokens.push(token::make(75, i, i + 1)); i = i + 1; }
         else if ch == '\0' { i = i + 1; }
         else {
-            errors.push(error::make(5, i, i + 1));
+            errors.push(error::make(cast<int>(ch), i, i + 1));
             i = i + 1;
         }
     }
 
     tokens.push(token::make(76, (*source).len, (*source).len));
 }
-

@@ -149,6 +149,10 @@ export fn parse_type_expr(p: @parser_types::Parser, arena: @ast::Arena, type_ref
         }
         var nullable = false;
         var end_val = target_ref.name_span.end;
+        if target_ref.type_arg_len > 0 {
+            var last_type_arg = (*arena).name_refs[target_ref.type_arg_start + target_ref.type_arg_len - 1];
+            end_val = last_type_arg.end + 1;
+        }
         if parser_types::peek_kind(p) == 62 {
             end_val = parser_types::peek_span_end(p);
             parser_types::advance(p);
@@ -159,6 +163,8 @@ export fn parse_type_expr(p: @parser_types::Parser, arena: @ast::Arena, type_ref
         } else {
             (*type_ref) = ast::make_type_ref(61, start, end_val);
         }
+        (*type_ref).type_arg_start = target_ref.type_arg_start;
+        (*type_ref).type_arg_len = target_ref.type_arg_len;
         return true;
     }
 
@@ -230,9 +236,9 @@ export fn parse_type_expr(p: @parser_types::Parser, arena: @ast::Arena, type_ref
             parser_types::expect(p, 56);
             var ta_start_idx = ast::append_name_refs(arena, @type_arg_spans);
             if is_qual {
-                (*type_ref) = ast::make_qualified_type_ref(ref_kind, qual_start, qual_end, name_start, end_val);
+                (*type_ref) = ast::make_qualified_type_ref(ref_kind, qual_start, qual_end, name_start, name_end);
             } else {
-                (*type_ref) = ast::make_type_ref(ref_kind, name_start, end_val);
+                (*type_ref) = ast::make_type_ref(ref_kind, name_start, name_end);
             }
             (*type_ref).type_arg_start = ta_start_idx;
             (*type_ref).type_arg_len = type_arg_spans.len;
@@ -525,6 +531,15 @@ export fn parse_expr(p: @parser_types::Parser, arena: @ast::Arena, min_bp: int, 
             var type_end = name_end;
             var variant_start2 = name_start;
             var variant_end2 = name_end;
+            while parser_types::peek_kind(p) == 68 and parser_types::peek_nth_kind(p, 2) == 63 {
+                parser_types::advance(p);
+                type_end = variant_end2;
+                variant_start2 = 0;
+                variant_end2 = 0;
+                if !parser_types::expect_identifier(p, @variant_start2, @variant_end2) {
+                    return false;
+                }
+            }
             while parser_types::peek_kind(p) == 63 {
                 parser_types::advance(p);
                 type_end = variant_end2;
@@ -618,7 +633,7 @@ export fn parse_expr(p: @parser_types::Parser, arena: @ast::Arena, min_bp: int, 
 
                 var name_ref_start = ast::append_name_refs(arena, @field_names);
                 var child_start2 = ast::append_expr_refs(arena, @field_vals);
-                var e = ast::make_struct_literal_expr(type_start, type_end, name_ref_start, child_start2, field_vals.len, start, rb_end);
+                var e = ast::make_struct_literal_expr(type_start, variant_end2, name_ref_start, child_start2, field_vals.len, start, rb_end);
                 lhs_id = ast::push_expr(arena, e);
             } else {
                 var e = ast::make_variant_expr(type_start, type_end, variant_start2, variant_end2, 0, 0, start, end_val);

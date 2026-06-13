@@ -12,640 +12,205 @@ import semantic;
 import semantic.analysis;
 import string;
 import token;
+import memory;
 
-fn print_chars(chars: []char) {
+extern "C" fn system(cmd: @char): int32;
+
+fn c_str_len(s: @char): int {
     var i = 0;
-    while i < chars.len {
-        io::print_char(chars[i]);
+    while s[i] != '\0' {
         i = i + 1;
     }
+    return i;
 }
 
-fn print_range(source: []char, start: int, end: int) {
-    var i = start;
-    while i < end {
-        io::print_char(source[i]);
+fn c_str_eq(a: @char, b: []char): bool {
+    var len = c_str_len(a);
+    if len != b.len { return false; }
+    var i = 0;
+    while i < len {
+        if a[i] != b[i] { return false; }
         i = i + 1;
     }
+    return true;
 }
 
-fn print_token(tok: token::Token) {
-    io::print(tok.kind);
-    print_chars("@");
-    io::print(tok.span.start);
-    print_chars(":");
-    io::print(tok.span.end);
-    if tok.kind == 1 {
-        print_chars("=");
-        io::print(tok.int_value);
-    }
-    if tok.kind == 3 {
-        print_chars("=");
-        if tok.bool_value {
-            print_chars("true");
-        } else {
-            print_chars("false");
-        }
-    }
-    if tok.kind == 4 {
-        print_chars("=");
-        io::print_char(tok.char_value);
-    }
-    print_chars("\n");
-}
+export fn main(argc: int32, argv: @@char): int {
+    var stdlib_path = string::String::from("stdlib/");
+    var entry_file = string::String::from("");
+    var output_name = string::String::from("output");
+    var is_build = false;
 
-fn print_error(err: error::LexError) {
-    print_chars("ERR ");
-    io::print(err.kind);
-    print_chars("@");
-    io::print(err.span.start);
-    print_chars(":");
-    io::print(err.span.end);
-    print_chars("\n");
-}
-
-fn print_parse_error(err: ast::ParseError) {
-    print_chars("PERR ");
-    io::print(err.kind);
-    print_chars("@");
-    io::print(err.span.start);
-    print_chars(":");
-    io::print(err.span.end);
-    print_chars("\n");
-}
-
-fn print_semantic_error(source: []char, err: semantic::SemanticError) {
-    if err.kind == 1 {
-        print_chars("SERR duplicate fn ");
-    } else if err.kind == 2 {
-        print_chars("SERR duplicate local ");
-    } else if err.kind == 3 {
-        print_chars("SERR duplicate param ");
-    } else if err.kind == 4 {
-        print_chars("SERR unknown var ");
-    } else if err.kind == 5 {
-        print_chars("SERR unknown fn ");
-    } else if err.kind == 6 {
-        print_chars("SERR bad return ");
-    } else if err.kind == 7 {
-        print_chars("SERR wrong arg count ");
-    } else if err.kind == 8 {
-        print_chars("SERR type mismatch ");
-    } else if err.kind == 9 {
-        print_chars("SERR bad condition ");
-    } else if err.kind == 10 {
-        print_chars("SERR unknown type ");
-    } else if err.kind == 11 {
-        print_chars("SERR duplicate type ");
-    } else if err.kind == 12 {
-        print_chars("SERR unknown field ");
-    } else if err.kind == 13 {
-        print_chars("SERR bad member base ");
-    } else if err.kind == 14 {
-        print_chars("SERR missing field ");
-    } else if err.kind == 15 {
-        print_chars("SERR duplicate field init ");
-    } else if err.kind == 16 {
-        print_chars("SERR unknown variant ");
-    } else {
-        print_chars("SERR ");
-    }
-    print_range(source, err.span.start, err.span.end);
-    print_chars("\n");
-}
-
-fn print_type_ref(source: []char, type_ref: ast::TypeRef) {
-    if type_ref.token_kind == 0 {
-        print_chars("?");
-    } else if type_ref.has_qualifier {
-        print_range(source, type_ref.qualifier_span.start, type_ref.qualifier_span.end);
-        print_chars("::");
-        print_range(source, type_ref.name_span.start, type_ref.name_span.end);
-    } else if type_ref.name_span.end > type_ref.name_span.start {
-        print_range(source, type_ref.name_span.start, type_ref.name_span.end);
-    } else {
-        io::print(type_ref.token_kind);
-    }
-}
-
-fn print_expr(source: []char, arena: ast::Arena, expr_id: int) {
-    if expr_id < 0 {
-        print_chars("?");
-        return;
-    }
-    var expr = arena.exprs[expr_id];
-    if expr.kind == 1 {
-        print_range(source, expr.name_span.start, expr.name_span.end);
-    } else if expr.kind == 2 {
-        io::print(expr.int_value);
-    } else if expr.kind == 3 {
-        if expr.bool_value {
-            print_chars("true");
-        } else {
-            print_chars("false");
-        }
-    } else if expr.kind == 7 {
-        print_chars("'");
-        io::print_char(expr.char_value);
-        print_chars("'");
-    } else if expr.kind == 8 {
-        print_range(source, expr.span.start, expr.span.end);
-    } else if expr.kind == 4 or expr.kind == 5 or expr.kind == 6 or expr.kind == 9 or expr.kind == 10 or expr.kind == 11 {
-        print_range(source, expr.span.start, expr.span.end);
-    } else {
-        print_chars("?");
-    }
-}
-
-fn print_stmt(source: []char, arena: ast::Arena, stmt_id: int) {
-    var stmt = arena.stmts[stmt_id];
-    if stmt.kind == 1 {
-        print_chars("var ");
-        print_range(source, stmt.var_decl.name_span.start, stmt.var_decl.name_span.end);
-        if stmt.var_decl.has_type_hint {
-            print_chars(" :");
-            print_type_ref(source, stmt.var_decl.type_ref);
-        }
-        if stmt.var_decl.has_init {
-            print_chars(" =");
-            print_expr(source, arena, stmt.var_decl.init_expr_id);
-        }
-        print_chars("\n");
-    } else if stmt.kind == 2 {
-        print_chars("const ");
-        print_range(source, stmt.const_decl.name_span.start, stmt.const_decl.name_span.end);
-        if stmt.const_decl.has_type_hint {
-            print_chars(" :");
-            print_type_ref(source, stmt.const_decl.type_ref);
-        }
-        print_chars(" =");
-        print_expr(source, arena, stmt.const_decl.init_expr_id);
-        print_chars("\n");
-    } else if stmt.kind == 3 {
-        print_chars("assign ");
-        print_range(source, stmt.assign_stmt.target_name_span.start, stmt.assign_stmt.target_name_span.end);
-        print_chars(" =");
-        print_expr(source, arena, stmt.assign_stmt.value_expr_id);
-        print_chars("\n");
-    } else if stmt.kind == 4 {
-        var block = arena.blocks[stmt.block_id];
-        print_chars("block ");
-        io::print(block.stmt_ref_len);
-        print_chars("\n");
-    } else if stmt.kind == 5 {
-        var if_stmt = stmt.if_stmt;
-        print_chars("if ");
-        print_expr(source, arena, if_stmt.condition_expr_id);
-        print_chars(" then ");
-        io::print(arena.blocks[if_stmt.then_block_id].stmt_ref_len);
-        if if_stmt.has_else_block {
-            print_chars(" else ");
-            io::print(arena.blocks[if_stmt.else_block_id].stmt_ref_len);
-        }
-        print_chars("\n");
-    } else if stmt.kind == 6 {
-        var while_stmt = stmt.while_stmt;
-        print_chars("while ");
-        print_expr(source, arena, while_stmt.condition_expr_id);
-        print_chars(" do ");
-        io::print(arena.blocks[while_stmt.body_block_id].stmt_ref_len);
-        print_chars("\n");
-    } else if stmt.kind == 11 {
-        var match_stmt = stmt.match_stmt;
-        print_chars("match ");
-        print_expr(source, arena, match_stmt.value_expr_id);
-        print_chars(" arms ");
-        io::print(match_stmt.arm_len);
-        print_chars("\n");
-    } else if stmt.kind == 7 {
-        print_chars("break\n");
-    } else if stmt.kind == 8 {
-        print_chars("continue\n");
-    } else if stmt.kind == 9 {
-        print_chars("return");
-        if stmt.return_stmt.has_value {
-            print_chars(" ");
-            print_expr(source, arena, stmt.return_stmt.value_expr_id);
-        }
-        print_chars("\n");
-    } else if stmt.kind == 10 {
-        print_chars("expr ");
-        print_expr(source, arena, stmt.expr_id);
-        print_chars("\n");
-    } else {
-        print_chars("stmt?\n");
-    }
-}
-
-fn print_param(source: []char, param: ast::ParamInfo) {
-    print_range(source, param.name_span.start, param.name_span.end);
-    if param.has_type_hint {
-        print_chars(":");
-        print_type_ref(source, param.type_ref);
-    }
-}
-
-fn print_item(source: []char, arena: ast::Arena, item_id: int) {
-    var item = arena.items[item_id];
-    if item.kind == 1 {
-        var function_info = arena.functions[item.function_id];
-        print_chars("fn ");
-        print_range(source, function_info.name_span.start, function_info.name_span.end);
-        print_chars("(");
-        var i = 0;
-        while i < function_info.param_len {
-            if i > 0 {
-                print_chars(", ");
+    var i = 1i32;
+    while i < argc {
+        var arg = argv[i];
+        if c_str_eq(arg, "build") {
+            is_build = true;
+        } else if c_str_eq(arg, "--stdlib") {
+            i = i + 1i32;
+            if i < argc {
+                memory::free(stdlib_path.data);
+                stdlib_path = string::String::from_chars(argv[i], c_str_len(argv[i]));
+                if stdlib_path.data[stdlib_path.len - 1] != '/' {
+                    stdlib_path.append_chars("/");
+                }
             }
-            print_param(source, arena.params[function_info.param_start + i]);
-            i = i + 1;
+        } else if c_str_eq(arg, "--project") {
+        } else {
+            memory::free(entry_file.data);
+            entry_file = string::String::from_chars(arg, c_str_len(arg));
+            
+            var len = entry_file.len;
+            if len > 4 and entry_file.data[len - 4] == '.' and entry_file.data[len - 3] == 'a' and entry_file.data[len - 2] == 't' and entry_file.data[len - 1] == 'l' {
+                memory::free(output_name.data);
+                output_name = string::String::from_chars(entry_file.data, len - 4);
+            } else {
+                memory::free(output_name.data);
+                output_name = string::String::from_chars(entry_file.data, len);
+            }
         }
-        print_chars(")");
-        if function_info.has_return_type {
-            print_chars(":");
-            print_type_ref(source, function_info.return_type_ref);
-        }
-        print_chars(" body ");
-        io::print(arena.blocks[function_info.body_block_id].stmt_ref_len);
-        print_chars("\n");
-    } else if item.kind == 2 {
-        var struct_info = arena.structs[item.struct_id];
-        print_chars("struct ");
-        print_range(source, struct_info.name_span.start, struct_info.name_span.end);
-        print_chars(" fields ");
-        io::print(struct_info.field_len);
-        print_chars("\n");
-    } else if item.kind == 3 {
-        var enum_info = arena.enums[item.enum_id];
-        print_chars("enum ");
-        print_range(source, enum_info.name_span.start, enum_info.name_span.end);
-        print_chars(" variants ");
-        io::print(enum_info.variant_len);
-        print_chars("\n");
-    } else if item.kind == 4 {
-        var choice_info = arena.choices[item.choice_id];
-        print_chars("choice ");
-        print_range(source, choice_info.name_span.start, choice_info.name_span.end);
-        print_chars(" variants ");
-        io::print(choice_info.variant_len);
-        print_chars("\n");
-    } else if item.kind == 5 {
-        var import_info = arena.imports[item.import_id];
-        print_chars("import ");
-        print_range(source, import_info.name_span.start, import_info.name_span.end);
-        print_chars("\n");
-    } else {
-        print_chars("item?\n");
+        i = i + 1i32;
     }
-}
 
-fn print_file_info(source: []char, arena: ast::Arena, file_info: ast::FileInfo) {
-    print_chars("file ");
-    io::print(file_info.item_len);
-    print_chars("\n");
-    var i = 0;
-    while i < file_info.item_len {
-        print_chars("  ");
-        print_item(source, arena, file_info.item_start + i);
-        i = i + 1;
+    if entry_file.len == 0 {
+        var usage = string::String::from("Usage: atlas build [--stdlib <path>] <file.atl>");
+        io::puts(usage.data);
+        return 1;
     }
-}
-
-fn run_lexer_case(name: []char, sample: []char) {
-    print_chars("== lex ");
-    print_chars(name);
-    print_chars("\n");
-    var tokens: array::Array<token::Token> = array::Array();
-    var errors: array::Array<error::LexError> = array::Array();
-        var sample_arr: array::Array<char> = array::Array();
-    var si = 0;
-    while si < sample.len {
-        sample_arr.push(sample[si]);
-        si = si + 1;
-    }
-    lexer::tokenize(@sample_arr, 0, @tokens, @errors);
-    var i = 0;
-    while i < tokens.len {
-        print_token(tokens[i]);
-        i = i + 1;
-    }
-    i = 0;
-    while i < errors.len {
-        print_error(errors[i]);
-        i = i + 1;
-    }
-}
-
-fn run_parser_case(sample: []char) {
-    print_chars("== parse\n");
-    var arena = ast::make_empty_arena();
-    var tokens: array::Array<token::Token> = array::Array();
-    var lex_errors: array::Array<error::LexError> = array::Array();
-    var parse_errors: array::Array<ast::ParseError> = array::Array();
-    var stmt_id = -1;
-    var index = 0;
-        var sample_arr: array::Array<char> = array::Array();
-    var si = 0;
-    while si < sample.len {
-        sample_arr.push(sample[si]);
-        si = si + 1;
-    }
-    lexer::tokenize(@sample_arr, 0, @tokens, @lex_errors);
-    if lex_errors.len > 0 {
-        print_chars("lexer failed\n");
-        return;
-    }
-    if parser::parse_first_stmt(@arena, tokens.data, tokens.len, @index, @stmt_id, @parse_errors) {
-        print_stmt(sample, arena, stmt_id);
-    } else {
-        var i = 0;
-        while i < parse_errors.len {
-            print_parse_error(parse_errors[i]);
-            i = i + 1;
-        }
-    }
-}
-
-fn run_item_parser_case(sample: []char) {
-    print_chars("== item\n");
-    var arena = ast::make_empty_arena();
-    var tokens: array::Array<token::Token> = array::Array();
-    var lex_errors: array::Array<error::LexError> = array::Array();
-    var parse_errors: array::Array<ast::ParseError> = array::Array();
-    var item_id = -1;
-    var index = 0;
-        var sample_arr: array::Array<char> = array::Array();
-    var si = 0;
-    while si < sample.len {
-        sample_arr.push(sample[si]);
-        si = si + 1;
-    }
-    lexer::tokenize(@sample_arr, 0, @tokens, @lex_errors);
-    if lex_errors.len > 0 {
-        print_chars("lexer failed\n");
-        return;
-    }
-    if parser::parse_first_item(@arena, tokens.data, tokens.len, @index, @item_id, @parse_errors) {
-        print_item(sample, arena, item_id);
-    } else {
-        var i = 0;
-        while i < parse_errors.len {
-            print_parse_error(parse_errors[i]);
-            i = i + 1;
-        }
-    }
-}
-
-fn run_file_parser_case(sample: []char) {
-    print_chars("== file\n");
-    var arena = ast::make_empty_arena();
-    var tokens: array::Array<token::Token> = array::Array();
-    var lex_errors: array::Array<error::LexError> = array::Array();
-    var parse_errors: array::Array<ast::ParseError> = array::Array();
-    var file_info = ast::make_empty_file_info();
-        var sample_arr: array::Array<char> = array::Array();
-    var si = 0;
-    while si < sample.len {
-        sample_arr.push(sample[si]);
-        si = si + 1;
-    }
-    lexer::tokenize(@sample_arr, 0, @tokens, @lex_errors);
-    if lex_errors.len > 0 {
-        print_chars("lexer failed\n");
-        return;
-    }
-    if parser::parse_file(@arena, tokens.data, tokens.len, @file_info, @parse_errors) {
-        print_file_info(sample, arena, file_info);
-    } else {
-        var i = 0;
-        while i < parse_errors.len {
-            print_parse_error(parse_errors[i]);
-            i = i + 1;
-        }
-    }
-}
-
-fn run_semantic_case(sample: []char) {
-    print_chars("== semantic\n");
-    var arena = ast::make_empty_arena();
-    var tokens: array::Array<token::Token> = array::Array();
-    var lex_errors: array::Array<error::LexError> = array::Array();
-    var parse_errors: array::Array<ast::ParseError> = array::Array();
-    var semantic_errors: array::Array<semantic::SemanticError> = array::Array();
-    var summary = semantic::make_empty_summary();
-    var file_info = ast::make_empty_file_info();
-        var sample_arr: array::Array<char> = array::Array();
-    var si = 0;
-    while si < sample.len {
-        sample_arr.push(sample[si]);
-        si = si + 1;
-    }
-    lexer::tokenize(@sample_arr, 0, @tokens, @lex_errors);
-    if lex_errors.len > 0 {
-        print_chars("lexer failed\n");
-        return;
-    }
-    if !parser::parse_file(@arena, tokens.data, tokens.len, @file_info, @parse_errors) {
-        var p_idx = 0;
-        while p_idx < parse_errors.len {
-            print_parse_error(parse_errors[p_idx]);
-            p_idx = p_idx + 1;
-        }
-        return;
-    }
-    
-    var file_info_id = arena.file_infos.len;
-    arena.file_infos.push(file_info);
-    
-    var modules: array::Array<resolver::ModuleInterface> = array::Array();
-    modules.push(resolver::ModuleInterface {
-        name_span: span::make(0, 0),
-        file_info_id: file_info_id,
-        import_module_indices: array::Array()
-    });
-    
-    var p = resolver::Project {
-        arena: @arena,
-        source: @sample_arr,
-        modules: @modules,
-        prelude_count: 0
-    };
-    
-    resolver::resolve_names(@p, @parse_errors);
-    
-    semantic.analysis::analyze_file(@p, file_info, @summary, @semantic_errors);
-    print_chars("fns ");
-    io::print(summary.function_count);
-    print_chars(" structs ");
-    io::print(summary.struct_count);
-    print_chars(" enums ");
-    io::print(summary.enum_count);
-    print_chars(" choices ");
-    io::print(summary.choice_count);
-    print_chars(" dup_fn ");
-    io::print(summary.duplicate_function_count);
-    print_chars(" dup_type ");
-    io::print(summary.duplicate_type_count);
-    print_chars(" dup_param ");
-    io::print(summary.duplicate_param_count);
-    print_chars(" dup_local ");
-    io::print(summary.duplicate_local_count);
-    print_chars(" unknown_var ");
-    io::print(summary.unknown_variable_count);
-    print_chars(" unknown_fn ");
-    io::print(summary.unknown_function_count);
-    print_chars(" bad_return ");
-    io::print(summary.bad_return_count);
-    print_chars(" wrong_arg ");
-    io::print(summary.wrong_arg_count_count);
-    print_chars(" type_mismatch ");
-    io::print(summary.type_mismatch_count);
-    print_chars(" bad_condition ");
-    io::print(summary.bad_condition_count);
-    print_chars(" unknown_type ");
-    io::print(summary.unknown_type_count);
-    print_chars(" unknown_field ");
-    io::print(summary.unknown_field_count);
-    print_chars(" bad_member_base ");
-    io::print(summary.bad_member_base_count);
-    print_chars(" missing_field ");
-    io::print(summary.missing_field_count);
-    print_chars(" dup_field_init ");
-    io::print(summary.duplicate_field_init_count);
-    print_chars("\n");
-    var i = 0;
-    while i < semantic_errors.len {
-        print_semantic_error(sample, semantic_errors[i]);
-        i = i + 1;
-    }
-}
-
-fn build_file(path: []char) {
-    print_chars("== building: ");
-    print_chars(path);
-    print_chars("\n");
 
     var arena = ast::make_empty_arena();
     var source: array::Array<char> = array::Array();
     var modules: array::Array<resolver::ModuleInterface> = array::Array();
-    var resolve_errors: array::Array<ast::ParseError> = array::Array();
+    var errors: array::Array<ast::ParseError> = array::Array();
 
-    var entry_path = string::String::from(path);
-
-    if !resolver::load_and_resolve(@entry_path, @arena, @source, @modules, @resolve_errors) {
-        print_chars("FAILED:LOAD\n");
-        return;
+    if !resolver::load_and_resolve(@entry_file, @stdlib_path, @arena, @source, @modules, @errors) {
+        var err_msg = string::String::from("Failed to load and resolve project\n");
+        io::puts(err_msg.data);
+        io::puts(string::String::from("Entry: ").data);
+        io::puts(entry_file.data);
+        io::puts(string::String::from("\n").data);
+        var err_i = 0;
+        while err_i < errors.len {
+            var err = errors[err_i];
+            io::puts(string::String::from("Parse Error kind: ").data);
+            print_int(err.kind);
+            io::puts(string::String::from(" at span start: ").data);
+            print_int(err.span.start);
+            io::puts(string::String::from("\n").data);
+            err_i = err_i + 1;
+        }
+        return 1;
     }
 
-    print_chars("resolved ");
-    var mcount = modules.len;
-    io::print(mcount);
-    print_chars(" modules\n");
-
-    var proj = resolver::Project { arena: @arena, source: @source, modules: @modules, prelude_count: 0 };
-    resolver::resolve_names(@proj, @resolve_errors);
+    var project = resolver::Project {
+        arena: @arena,
+        source: @source,
+        modules: @modules,
+        prelude_count: 0,
+        source_root_start: 0,
+        source_root_end: 0
+    };
 
     var total_semantic_errors = 0;
+
     var mi = 0;
     while mi < modules.len {
         var summary = semantic::make_empty_summary();
-        var semantic_errors: array::Array<semantic::SemanticError> = array::Array();
-        var file_info = (arena).file_infos[modules[mi].file_info_id];
-        var proj2 = resolver::Project { arena: @arena, source: @source, modules: @modules, prelude_count: 0 };
-        semantic.analysis::analyze_file(@proj2, file_info, @summary, @semantic_errors);
-        if semantic_errors.len > 0 {
-            var e = 0;
-            while e < semantic_errors.len {
-                print_semantic_error("", semantic_errors[e]);
-                e = e + 1;
+        var sem_errs: array::Array<semantic::SemanticError> = array::Array();
+        semantic.analysis::analyze_file(@project, arena.file_infos[modules[mi].file_info_id], @summary, @sem_errs);
+        if sem_errs.len > 0 {
+            var err_i = 0;
+            while err_i < sem_errs.len {
+                var err = sem_errs[err_i];
+                io::puts(string::String::from("Semantic Error kind: ").data);
+                print_int(err.kind);
+                io::puts(string::String::from(" at span start: ").data);
+                print_int(err.span.start);
+                
+                var start_print = err.span.start - 10;
+                if start_print < 0 { start_print = 0; }
+                var end_print = err.span.end + 10;
+                if end_print > (*project.source).len { end_print = (*project.source).len; }
+                
+                var snippet: array::Array<char> = array::Array();
+                var k = start_print;
+                while k < end_print {
+                    snippet.push((*project.source).data[k]);
+                    k = k + 1;
+                }
+                var snippet_str = string::String::from_chars(snippet.data, snippet.len);
+                io::puts(string::String::from(" snippet: '").data);
+                io::puts(snippet_str.data);
+                io::puts(string::String::from("'\n").data);
+                
+                err_i = err_i + 1;
             }
+            total_semantic_errors = total_semantic_errors + sem_errs.len;
         }
-        total_semantic_errors = total_semantic_errors + semantic_errors.len;
         mi = mi + 1;
     }
 
-    print_chars("semantic errors: ");
-    io::print(total_semantic_errors);
-    print_chars("\n");
-
     if total_semantic_errors > 0 {
-        return;
+        var err_msg = string::String::from("Semantic analysis failed\n");
+        io::puts(err_msg.data);
+        return 1;
     }
 
-    var cg = cg_types::make_empty_codegen();
-    var proj3 = resolver::Project { arena: @arena, source: @source, modules: @modules, prelude_count: 0 };
-    llvm_codegen.native::generate(@cg, @proj3);
+    var codegen = cg_types::make_empty_codegen();
+    llvm_codegen.native::generate(@codegen, @project);
 
-    print_chars("ir output:\n");
-    var ci = 0;
-    while ci < cg.output.len {
-        io::print_char(cg.output.data[ci]);
-        ci = ci + 1;
+    var ll_ext = string::String::from(".ll");
+    var ll_name = output_name.concat(@ll_ext);
+    
+    var f = io::File();
+    f.init();
+    var w_mode = string::String::from("w");
+    if f.open(ll_name.data, w_mode.data) {
+        var null_term = string::String::from_chars(codegen.output.data, codegen.output.len);
+        f.write_string(null_term.data);
+        f.close();
+    } else {
+        var err_msg = string::String::from("Failed to write IR output\n");
+        io::puts(err_msg.data);
+        return 1;
     }
-    print_chars("\n== done\n");
+
+    var cmd = string::String::from("clang -Wno-override-module ");
+    var cmd2 = cmd.concat(@ll_name);
+    var part2 = string::String::from(" -o ");
+    var cmd3 = cmd2.concat(@part2);
+    var cmd4 = cmd3.concat(@output_name);
+    var part3 = string::String::from(" -lm");
+    var cmd5 = cmd4.concat(@part3);
+
+    var ret = system(cmd5.data);
+    
+    if ret != 0i32 {
+        var err_msg = string::String::from("Clang invocation failed\n");
+        io::puts(err_msg.data);
+        return cast<int>(ret);
+    }
+
+    return 0;
 }
 
-fn main(): int {
-    run_lexer_case("var", "var x: int = 42;");
-    run_lexer_case("comment", "var y = 1; /* nested /* ok */ still */");
-    run_lexer_case("string", "const s = \"hi\\n\";");
-    run_lexer_case("char", "const ch = 'x';");
-    run_lexer_case("loop", "while true { break; continue; }");
-    run_parser_case("var x: int = 42;");
-    run_parser_case("const flag = true;");
-    run_parser_case("answer = 42;");
-    run_parser_case("{ var a = 1; const b = false; answer = a; }");
-    run_parser_case("var y = 1 + 2 * 3;");
-    run_parser_case("const ok = (1 + 2) == 3;");
-    run_parser_case("var total: int = add(1, 2) + 3;");
-    run_parser_case("const ch: char = 'x';");
-    run_parser_case("var s = \"hi\";");
-    run_parser_case("var n = person.age;");
-    run_parser_case("var p: Person = Person(1);");
-    run_parser_case("var p: Person = Person { age: 1 };");
-    run_parser_case("var d: Direction = Direction::West;");
-    run_parser_case("var o: OptionInt = OptionInt::Some(42);");
-    run_parser_case("var t: token::Token = token::make(1, 0, 1);");
-    run_parser_case("match d { Direction::North => { return 1; } Direction::South => { return 2; } };");
-    run_parser_case("if x == 1 { return 1; } else { return 2; }");
-    run_parser_case("while x < 10 { x = x + 1; continue; }");
-    run_parser_case("ping(1, true);");
-    run_parser_case("break;");
-    run_parser_case("continue;");
-    run_parser_case("return 42;");
-    run_item_parser_case("fn add(a: int, b: int): int { return a + b; }");
-    run_item_parser_case("fn parse(name: Name): Token { return name; }");
-    run_item_parser_case("struct Token { kind: int; lexeme: char; }");
-    run_item_parser_case("import token;");
-    run_item_parser_case("enum Direction { North, South, East, West }");
-    run_item_parser_case("choice OptionInt { Some(int), None }");
-    run_item_parser_case("fn tick() { while x < 10 { x = x + 1; } }");
-    run_file_parser_case("import token; struct Token { kind: int; } enum Direction { North, South } choice OptionInt { Some(int), None } fn add(a: int, b: int): int { return a + b; } fn tick() { while x < 10 { x = x + 1; } }");
-    run_semantic_case("fn add(a: int, a: int): int { var x = 1; { var x = 2; } var x = 3; y = missing(); var s = \"hi\"; s = 'x'; ping(1, false); return a + b; } fn ping(v: bool) { if 1 { return; } } fn add() { return true; }");
-    run_semantic_case("fn add(a: int, b: int): int { return a + b; } fn use(): int { var total: int = add(1, 2) + 3; return total; }");
-    run_semantic_case("struct Name { value: int; } fn id(name: Name): Name { return name; }");
-    run_semantic_case("struct Name { value: int; } struct Token { kind: int; } fn parse(name: Name): Token { return name; }");
-    run_semantic_case("struct Token { kind: int; } struct Token { ch: char; }");
-    run_semantic_case("struct Person { age: int; } fn age_of(person: Person): int { return person.age; }");
-    run_semantic_case("struct Person { age: int; } fn bad(person: Person): int { return person.name; }");
-    run_semantic_case("fn bad(x: int): int { return x.age; }");
-    run_semantic_case("struct Person { age: int; } fn make(): Person { return Person(1); }");
-    run_semantic_case("struct Person { age: int; } fn make(): Person { return Person(); }");
-    run_semantic_case("struct Person { age: int; } fn make(): Person { return Person(true); }");
-    run_semantic_case("struct Person { age: int; } fn make(): Person { return Person { age: 1 }; }");
-    run_semantic_case("struct Person { age: int; } fn make(): Person { return Person { age: true }; }");
-    run_semantic_case("struct Person { age: int; height: int; } fn make(): Person { return Person { age: 1 }; }");
-    run_semantic_case("struct Person { age: int; } fn make(): Person { return Person { age: 1, age: 2 }; }");
-    run_semantic_case("struct Person { age: int; } fn flow(): int { var p: Person = Person { age: 1 }; return p.age; }");
-    run_semantic_case("struct Person { age: int; } fn flow(): int { var p: Person = Person(1); return p.age; }");
-    run_semantic_case("enum Direction { North, South } fn pick(): Direction { return Direction::North; }");
-    run_semantic_case("enum Direction { North } fn bad(): Direction { return Direction::South; }");
-    run_semantic_case("choice OptionInt { Some(int), None } fn make(): OptionInt { return OptionInt::Some(42); }");
-    run_semantic_case("choice OptionInt { Some(int), None } fn make(): OptionInt { return OptionInt::Some(true); }");
-    run_semantic_case("choice OptionInt { Some(int), None } fn make(): OptionInt { return OptionInt::None(1); }");
-    run_semantic_case("enum Direction { North, South } fn code(d: Direction): int { match d { Direction::North => { return 1; } Direction::South => { return 2; } }; return 0; }");
-    run_semantic_case("enum Direction { North } fn code(d: Direction): int { match d { Direction::South => { return 1; } }; return 0; }");
-    run_semantic_case("choice OptionInt { Some(int), None } fn get(o: OptionInt): int { match o { OptionInt::Some(v) => { return v; } OptionInt::None => { return 0; } }; return 0; }");
-    run_semantic_case("choice OptionInt { Some(int), None } fn get(o: OptionInt): int { match o { OptionInt::Some => { return 1; } OptionInt::None(v) => { return v; } }; return 0; }");
-    return 0;
+fn print_int(n: int) {
+    if n == 0 {
+        io::print_char('0');
+        io::print_char('\n');
+        return;
+    }
+    var buf: array::Array<char> = array::Array();
+    var temp = n;
+    while temp > 0 {
+        var digit = cast<char>(cast<int32>(temp % 10) + 48i32);
+        buf.push(digit);
+        temp = temp / 10;
+    }
+    var i = buf.len - 1;
+    while i >= 0 {
+        io::print_char(buf[i]);
+        i = i - 1;
+    }
+    io::print_char('\n');
 }

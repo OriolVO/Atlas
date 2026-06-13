@@ -1,5 +1,7 @@
 import array;
 import ast;
+import string;
+import io;
 import span;
 import resolver;
 import monomorphizer;
@@ -264,6 +266,26 @@ fn find_nullable_refined_local(
     return idx;
 }
 
+fn resolve_index_read_method_type(p: @resolver::Project, class_id: int, errors: @array::Array<semantic::SemanticError>, summary: @semantic::Summary): int {
+    var class_info = (*(*p).arena).classes[class_id];
+    var m = 0;
+    while m < class_info.method_len {
+        var method = (*(*p).arena).class_methods[class_info.method_start + m];
+        var method_info = (*(*p).arena).functions[method.function_id];
+        var m_name = method_info.name_span;
+        var src = (*(*p).source).data;
+        if m_name.end - m_name.start == 10 {
+            if src[m_name.start] == 'o' and src[m_name.start+1] == 'p' and src[m_name.start+2] == 'e' and src[m_name.start+3] == 'r' and src[m_name.start+4] == 'a' and src[m_name.start+5] == 't' and src[m_name.start+6] == 'o' and src[m_name.start+7] == 'r' and src[m_name.start+8] == '[' and src[m_name.start+9] == ']' {
+                if method_info.has_return_type {
+                    return semantic::resolve_type_ref(p, method_info.return_type_ref, errors, summary);
+                }
+            }
+        }
+        m = m + 1;
+    }
+    return semantic::type_unknown();
+}
+
 export fn infer_expr_type(
     p: @resolver::Project,
     expr_id: int,
@@ -388,6 +410,10 @@ export fn infer_expr_type(
         }
 
         if target_type >= 4000 {
+            if semantic::span_equals_text(p, expr.name_span, "destroy") {
+                errors.push(semantic::make_error(8, expr.span.start, expr.span.end));
+                (*summary).type_mismatch_count = (*summary).type_mismatch_count + 1;
+            }
             var class_idx = target_type - 4000;
             if class_idx < (*(*p).arena).classes.len {
                 var class_info = (*(*p).arena).classes[class_idx];
@@ -470,7 +496,11 @@ export fn infer_expr_type(
 
     if expr.kind == 17 {
         if expr.child_len > 0 {
-            infer_expr_type(p, (*(*p).arena).expr_refs[expr.child_start], locals, depths, local_types, local_count, depth, errors, summary);
+            var arg_type = infer_expr_type(p, (*(*p).arena).expr_refs[expr.child_start], locals, depths, local_types, local_count, depth, errors, summary);
+            if semantic::is_class_type(arg_type) {
+                errors.push(semantic::make_error(8, expr.span.start, expr.span.end));
+                (*summary).type_mismatch_count = (*summary).type_mismatch_count + 1;
+            }
         }
         semantic::resolve_type_ref_from_name(p, expr.name_span);
         return semantic::type_unknown();
@@ -600,6 +630,16 @@ export fn infer_expr_type(
             var cast_type_ref = ast::make_type_ref(6, cast_type_span.start, cast_type_span.end);
             if (*(*p).source).data[cast_type_span.start] == '@' {
                 cast_type_ref.token_kind = 61;
+            } else {
+                var num_kind = semantic::resolve_numeric_alias(p, cast_type_span);
+                if num_kind != semantic::type_unknown() {
+                    cast_type_ref.token_kind = num_kind;
+                }
+                var slen = cast_type_span.end - cast_type_span.start;
+                var src_data = (*(*p).source).data;
+                var cs = cast_type_span.start;
+                if slen == 4 and src_data[cs] == 'b' and src_data[cs+1] == 'o' and src_data[cs+2] == 'o' and src_data[cs+3] == 'l' { cast_type_ref.token_kind = 44; }
+                if slen == 4 and src_data[cs] == 'c' and src_data[cs+1] == 'h' and src_data[cs+2] == 'a' and src_data[cs+3] == 'r' { cast_type_ref.token_kind = 45; }
             }
             return semantic::resolve_type_ref(p, cast_type_ref, errors, summary);
         }
@@ -614,7 +654,11 @@ export fn infer_expr_type(
         if semantic::span_equals_text(p, expr.callee_span, "destroy") {
             var destroy_i = 0;
             while destroy_i < expr.child_len {
-                infer_expr_type(p, (*(*p).arena).expr_refs[expr.child_start + destroy_i], locals, depths, local_types, local_count, depth, errors, summary);
+                var arg_type = infer_expr_type(p, (*(*p).arena).expr_refs[expr.child_start + destroy_i], locals, depths, local_types, local_count, depth, errors, summary);
+                if semantic::is_class_type(arg_type) {
+                    errors.push(semantic::make_error(8, expr.span.start, expr.span.end));
+                    (*summary).type_mismatch_count = (*summary).type_mismatch_count + 1;
+                }
                 destroy_i = destroy_i + 1;
             }
             return semantic::type_unknown();
@@ -878,10 +922,16 @@ export fn infer_expr_type(
             return semantic::type_unknown();
         }
         if expr.op_kind == 74 {
-            if semantic::is_class_type(lhs_type) {
-                return semantic::type_unknown();
-            }
             semantic::expect_type(semantic::type_int(), rhs_type, 8, expr.span, errors, summary);
+            if semantic::is_class_type(lhs_type) {
+                var class_idx = lhs_type - 4000;
+                var method_return_type = resolve_index_read_method_type(p, class_idx, errors, summary);
+                if method_return_type == semantic::type_unknown() {
+                    errors.push(semantic::make_error(13, expr.span.start, expr.span.end));
+                    (*summary).unknown_field_count = (*summary).unknown_field_count + 1;
+                }
+                return method_return_type;
+            }
             if semantic::is_pointer_type(lhs_type) {
                 return semantic::type_dereference(lhs_type);
             }
@@ -1145,6 +1195,13 @@ fn analyze_block(
                 var local_type = semantic::type_unknown();
                 if stmt.var_decl.has_init {
                     local_type = infer_expr_type(p, stmt.var_decl.init_expr_id, locals.data, local_depths.data, local_types.data, locals.len,     depth, errors, summary);
+                    if semantic::is_class_type(local_type) {
+                        var init_expr = (*(*p).arena).exprs[stmt.var_decl.init_expr_id];
+                        if init_expr.kind == 1 {
+                            errors.push(semantic::make_error(8, stmt.var_decl.span.start, stmt.var_decl.span.end));
+                            (*summary).type_mismatch_count = (*summary).type_mismatch_count + 1;
+                        }
+                    }
                 }
                 if stmt.var_decl.has_type_hint {
                     if stmt.var_decl.has_init {
@@ -1402,6 +1459,29 @@ export fn analyze_file(p: @resolver::Project, file_info: ast::FileInfo, summary:
                 if class_info.generic_param_len > 0 or method_info.generic_param_len > 0 {
                     m = m + 1;
                     continue;
+                }
+                var is_operator_index = false;
+                var name_len = method_info.name_span.end - method_info.name_span.start;
+                if name_len >= 10 {
+                    var name_data = (*(*p).source).data;
+                    var ns = method_info.name_span.start;
+                    if name_data[ns+name_len-2] == '[' and name_data[ns+name_len-1] == ']' { is_operator_index = true; }
+                }
+                if is_operator_index {
+                    var explicit_params = method_info.param_len;
+                    if explicit_params > 0 {
+                        var first_param = (*(*p).arena).params[method_info.param_start];
+                        var fn_len = first_param.name_span.end - first_param.name_span.start;
+                        var src_data = (*(*p).source).data;
+                        var fps = first_param.name_span.start;
+                        if fn_len == 4 and src_data[fps] == 's' and src_data[fps+1] == 'e' and src_data[fps+2] == 'l' and src_data[fps+3] == 'f' {
+                            explicit_params = explicit_params - 1;
+                        }
+                    }
+                    if explicit_params != 1 {
+                        errors.push(semantic::make_error(8, method_info.name_span.start, method_info.name_span.end));
+                        (*summary).type_mismatch_count = (*summary).type_mismatch_count + 1;
+                    }
                 }
                 var locals: array::Array<span::Span> = array::Array();
                 var local_depths: array::Array<int> = array::Array();

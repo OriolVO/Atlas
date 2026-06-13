@@ -57,6 +57,10 @@ export fn type_choice(idx: int): int { if idx < 0 { return type_unknown(); } ret
 export fn type_class(idx: int): int { if idx < 0 { return type_unknown(); } return 4000 + idx; }
 export fn type_pointer(target: int, nullable: bool): int { var e = 0; if nullable { e = 1; } return 10000 + target * 2 + e; }
 
+export fn instantiate_class_type(p: @resolver::Project, class_id: int, type_arg_span: span::Span): int {
+    return monomorphizer::instantiate_class(p, class_id, type_arg_span);
+}
+
 export fn is_pointer_type(ty: int): bool { return ty >= 10000 and ty < 50000; }
 export fn is_nullable_pointer(ty: int): bool { if ty < 10000 or ty >= 50000 { return false; } return (ty - 10000) % 2 == 1; }
 export fn type_dereference(ptr_ty: int): int { if ptr_ty < 10000 or ptr_ty >= 50000 { return type_unknown(); } return (ptr_ty - 10000) / 2; }
@@ -276,10 +280,7 @@ export fn resolve_type_ref_from_name(p: @resolver::Project, raw_name: span::Span
     var i = 0;
     while i < (*(*p).arena).items.len {
         var item = (*(*p).arena).items[i];
-        if item.kind == 1 {
-            var fi = (*(*p).arena).functions[item.function_id];
-            if name_equals((*(*p).source).data, fi.name_span, name) { return type_int(); }
-        } else if item.kind == 2 {
+        if item.kind == 2 {
             var si = (*(*p).arena).structs[item.struct_id];
             if name_equals((*(*p).source).data, si.name_span, name) { return 1000 + item.struct_id; }
         } else if item.kind == 3 {
@@ -452,7 +453,7 @@ export fn name_equals(source: @char?, left: span::Span, right: span::Span): bool
     return true;
 }
 
-fn last_path_segment_name(source: @array::Array<char>, name: span::Span): span::Span {
+export fn last_path_segment_name(source: @array::Array<char>, name: span::Span): span::Span {
     var end = name.end;
     var start = name.start;
     var si = end - 1;

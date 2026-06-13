@@ -8,6 +8,91 @@ import string;
 import token;
 import cg_types;
 
+fn current_class_element_type(g: @cg_types::Codegen, p: @resolver::Project): int {
+    if (*g).current_fn_id >= 0 and (*g).current_fn_id < (*(*p).arena).functions.len {
+        var current_fn = (*(*p).arena).functions[(*g).current_fn_id];
+        if current_fn.has_return_type {
+            var return_ty = cg_types::resolve_type_simple(p, current_fn.return_type_ref);
+            if return_ty != semantic::type_void() and return_ty != semantic::type_unknown() {
+                return return_ty;
+            }
+        }
+        var pi = current_fn.param_len - 1;
+        while pi > 0 {
+            var param = (*(*p).arena).params[current_fn.param_start + pi];
+            if param.has_type_hint {
+                var param_ty = cg_types::resolve_type_simple(p, param.type_ref);
+                if param_ty != semantic::type_unknown() {
+                    return param_ty;
+                }
+            }
+            pi = pi - 1;
+        }
+    }
+
+    var ci = 0;
+    while ci < (*(*p).arena).classes.len {
+        var class_info = (*(*p).arena).classes[ci];
+        var mi = 0;
+        while mi < class_info.method_len {
+            var method = (*(*p).arena).class_methods[class_info.method_start + mi];
+            if method.function_id == (*g).current_fn_id and class_info.field_len > 0 {
+                var field = (*(*p).arena).class_fields[class_info.field_start];
+                var field_ty = cg_types::resolve_type_simple(p, field.type_ref);
+                if semantic::is_pointer_type(field_ty) {
+                    return semantic::type_dereference(field_ty);
+                }
+                return field_ty;
+            }
+            mi = mi + 1;
+        }
+        ci = ci + 1;
+    }
+    return semantic::type_unknown();
+}
+
+fn resolve_field_type_for_codegen(p: @resolver::Project, type_ref: ast::TypeRef, declaration_span: span::Span): int {
+    var field_ty = cg_types::resolve_type_simple(p, type_ref);
+    if semantic::is_class_type(field_ty) {
+        var class_id = field_ty - 4000;
+        if class_id >= 0 and class_id < (*(*p).arena).classes.len {
+            var class_info = (*(*p).arena).classes[class_id];
+            if class_info.generic_param_len > 0 {
+                var arg_start = -1;
+                var arg_end = -1;
+                var scan_start = declaration_span.start;
+                if type_ref.name_span.start < scan_start or scan_start == declaration_span.end {
+                    scan_start = type_ref.name_span.start;
+                }
+                var scan_end = declaration_span.end;
+                if scan_end <= type_ref.name_span.end {
+                    scan_end = type_ref.name_span.end + 128;
+                    if scan_end > (*(*p).source).len {
+                        scan_end = (*(*p).source).len;
+                    }
+                }
+                var i = scan_start;
+                while i < scan_end and (*(*p).source).data[i] != ';' {
+                    if (*(*p).source).data[i] == '<' {
+                        arg_start = i + 1;
+                    } else if (*(*p).source).data[i] == '>' and arg_start >= 0 {
+                        arg_end = i;
+                        break;
+                    }
+                    i = i + 1;
+                }
+                if arg_start >= 0 and arg_end > arg_start {
+                    var concrete_id = monomorphizer::instantiate_class(p, class_id, span::make(arg_start, arg_end));
+                    if concrete_id >= 0 {
+                        return 4000 + concrete_id;
+                    }
+                }
+            }
+        }
+    }
+    return field_ty;
+}
+
 export fn codegen_expr(g: @cg_types::Codegen, p: @resolver::Project, expr_id: int, source: @array::Array<char>): int {
     if expr_id < 0 { return -1; }
     var expr = (*(*p).arena).exprs[expr_id];
@@ -114,13 +199,20 @@ export fn codegen_expr(g: @cg_types::Codegen, p: @resolver::Project, expr_id: in
                 receiver_reg = receiver_slot;
             }
         } else {
-            receiver_reg = codegen_expr(g, p, receiver_expr_id, source);
+            receiver_reg = codegen_lvalue(g, p, receiver_expr_id, source);
             receiver_ty = cg_types::get_last(g);
-            if !semantic::is_pointer_type(receiver_ty) {
+            if receiver_reg < 0 {
+                receiver_reg = codegen_expr(g, p, receiver_expr_id, source);
+                receiver_ty = cg_types::get_last(g);
+            }
+            if receiver_reg >= 0 and !semantic::is_pointer_type(receiver_ty) {
                 var receiver_slot2 = cg_types::next_temp(g);
-                cg_types::emit_alloca_typed(g, receiver_slot2, receiver_ty, p);
-                cg_types::emit_store_typed(g, receiver_reg, receiver_slot2, receiver_ty, p);
-                receiver_reg = receiver_slot2;
+                var receiver_is_lvalue = receiver_expr.kind == 4 or receiver_expr.kind == 5 or receiver_expr.kind == 9;
+                if !receiver_is_lvalue {
+                    cg_types::emit_alloca_typed(g, receiver_slot2, receiver_ty, p);
+                    cg_types::emit_store_typed(g, receiver_reg, receiver_slot2, receiver_ty, p);
+                    receiver_reg = receiver_slot2;
+                }
             }
         }
         var target_ty = receiver_ty;
@@ -599,11 +691,35 @@ export fn codegen_expr(g: @cg_types::Codegen, p: @resolver::Project, expr_id: in
             var type_ref = ast::make_type_ref(6, type_arg_span.start, type_arg_span.end);
             if source.data[type_arg_span.start] == '@' {
                 type_ref.token_kind = 61;
+            } else {
+                var numeric_cast_type = semantic::resolve_numeric_alias(p, type_arg_span);
+                if numeric_cast_type != semantic::type_unknown() {
+                    type_ref.token_kind = numeric_cast_type;
+                }
+                var cast_name_len = type_arg_span.end - type_arg_span.start;
+                if cast_name_len == 4 and
+                   source.data[type_arg_span.start] == 'b' and
+                   source.data[type_arg_span.start + 1] == 'o' and
+                   source.data[type_arg_span.start + 2] == 'o' and
+                   source.data[type_arg_span.start + 3] == 'l' {
+                    type_ref.token_kind = 44;
+                }
+                if cast_name_len == 4 and
+                   source.data[type_arg_span.start] == 'c' and
+                   source.data[type_arg_span.start + 1] == 'h' and
+                   source.data[type_arg_span.start + 2] == 'a' and
+                   source.data[type_arg_span.start + 3] == 'r' {
+                    type_ref.token_kind = 45;
+                }
             }
             var errors: array::Array<semantic::SemanticError> = array::Array();
             var summary = semantic::make_empty_summary();
             var to_ty = semantic::resolve_type_ref(p, type_ref, @errors, @summary);
             if from_ty == to_ty or cg_types::same_llvm_scalar_type(from_ty, to_ty) {
+                cg_types::set_last(g, to_ty);
+                return src_reg;
+            }
+            if from_ty == semantic::type_unknown() and cg_types::is_llvm_integer_type(to_ty) {
                 cg_types::set_last(g, to_ty);
                 return src_reg;
             }
@@ -636,8 +752,6 @@ export fn codegen_expr(g: @cg_types::Codegen, p: @resolver::Project, expr_id: in
                 } else {
                     cg_types::emit(g, "= trunc ");
                 }
-            } else if from_ty == semantic::type_unknown() and cg_types::is_llvm_integer_type(to_ty) {
-                cg_types::emit(g, "= trunc ");
             } else {
                 cg_types::emit(g, "= bitcast ");
             }
@@ -659,6 +773,14 @@ export fn codegen_expr(g: @cg_types::Codegen, p: @resolver::Project, expr_id: in
             var errors2: array::Array<semantic::SemanticError> = array::Array();
             var summary2 = semantic::make_empty_summary();
             var target_ty = semantic::resolve_type_ref(p, type_ref2, @errors2, @summary2);
+            if type_arg_span2.end - type_arg_span2.start == 1 or
+               errors2.len > 0 or
+               target_ty == semantic::type_unknown() {
+                var class_element_ty = current_class_element_type(g, p);
+                if class_element_ty != semantic::type_unknown() {
+                    target_ty = class_element_ty;
+                }
+            }
             var gep_reg = cg_types::next_temp(g);
             cg_types::emit(g, "    ");
             cg_types::push_temp(g, gep_reg);
@@ -694,20 +816,12 @@ export fn codegen_expr(g: @cg_types::Codegen, p: @resolver::Project, expr_id: in
         }
 
         var fn_name_span = expr.callee_span;
-        var fn_index = -1;
-        var ni = 0;
-        while ni < (*(*p).arena).functions.len {
-            var fn2 = (*(*p).arena).functions[ni];
-            if fn2.name_span.start == fn_name_span.start and fn2.name_span.end == fn_name_span.end {
-                fn_index = ni;
-                break;
-            }
-            ni = ni + 1;
-        }
+        var fn_index = cg_types::find_function_for_expr(p, expr);
+        var concrete_fn_id = -1;
 
         if fn_index >= 0 {
             var type_arg_span = (*(*p).arena).name_refs[expr.name_ref_start];
-            var concrete_fn_id = monomorphizer::instantiate_generic(p, fn_index, type_arg_span);
+            concrete_fn_id = monomorphizer::instantiate_generic(p, fn_index, type_arg_span);
             if concrete_fn_id >= 0 {
                 var concrete_func = (*(*p).arena).functions[concrete_fn_id];
                 fn_name_span = concrete_func.name_span;
@@ -715,10 +829,16 @@ export fn codegen_expr(g: @cg_types::Codegen, p: @resolver::Project, expr_id: in
         }
 
         var fn_chars: array::Array<char> = array::Array();
-        var csi = fn_name_span.start;
-        while csi < fn_name_span.end {
-            fn_chars.push(source.data[csi]);
-            csi = csi + 1;
+        if concrete_fn_id >= 0 {
+            cg_types::append_function_symbol(@fn_chars, p, concrete_fn_id);
+        } else if fn_index >= 0 {
+            cg_types::append_function_symbol(@fn_chars, p, fn_index);
+        } else {
+            var csi = fn_name_span.start;
+            while csi < fn_name_span.end {
+                fn_chars.push(source.data[csi]);
+                csi = csi + 1;
+            }
         }
         var ret_reg = cg_types::next_temp(g);
         cg_types::emit_call(g, ret_reg, fn_chars.data, fn_chars.len, semantic::type_int(), @param_regs, @param_tys, p);
@@ -868,6 +988,22 @@ export fn codegen_expr(g: @cg_types::Codegen, p: @resolver::Project, expr_id: in
             lhs_ty = rhs_ty;
         }
 
+        if !is_unary and lhs_ty != rhs_ty and cg_types::is_llvm_integer_type(lhs_ty) and cg_types::is_llvm_integer_type(rhs_ty) {
+            var lw = cg_types::integer_width(lhs_ty);
+            var rw = cg_types::integer_width(rhs_ty);
+            if lw > rw {
+                var new_rhs = cg_types::next_temp(g);
+                cg_types::emit(g, "    "); cg_types::push_temp(g, new_rhs); cg_types::emit(g, "= zext "); cg_types::emit_type(g, rhs_ty, p); cg_types::emit(g, " "); cg_types::push_reg(g, rhs_reg); cg_types::emit(g, " to i64"); cg_types::newline(g);
+                rhs_reg = new_rhs;
+                rhs_ty = lhs_ty;
+            } else if rw > lw {
+                var new_lhs = cg_types::next_temp(g);
+                cg_types::emit(g, "    "); cg_types::push_temp(g, new_lhs); cg_types::emit(g, "= zext "); cg_types::emit_type(g, lhs_ty, p); cg_types::emit(g, " "); cg_types::push_reg(g, lhs_reg); cg_types::emit(g, " to i64"); cg_types::newline(g);
+                lhs_reg = new_lhs;
+                lhs_ty = rhs_ty;
+            }
+        }
+
         var op = expr.op_kind;
         var r = cg_types::next_temp(g);
         var aty = lhs_ty;
@@ -906,48 +1042,15 @@ export fn codegen_expr(g: @cg_types::Codegen, p: @resolver::Project, expr_id: in
                 var ptr_ty = cg_types::get_last(g);
                 if semantic::is_pointer_type(ptr_ty) {
                     var target_ty = semantic::type_dereference(ptr_ty);
-                    var r = cg_types::next_temp(g);
-                    cg_types::push_temp(g, r);
+                    var deref_reg = cg_types::next_temp(g);
+                    cg_types::push_temp(g, deref_reg);
                     cg_types::emit(g, "= load ");
-                    if target_ty >= 4000 {
-                        var ci2 = target_ty - 4000;
-                        if ci2 < (*(*p).arena).classes.len {
-                            cg_types::emit(g, "%class.");
-                            var cls = (*(*p).arena).classes[ci2];
-                            var ni8 = cls.name_span.start;
-                            while ni8 < cls.name_span.end {
-                                (*g).output.push((*(*p).source).data[ni8]);
-                                ni8 = ni8 + 1;
-                            }
-                        } else { cg_types::emit(g, "i64"); }
-                    } else if target_ty >= 3000 {
-                        var ci3 = target_ty - 3000;
-                        if ci3 < (*(*p).arena).choices.len {
-                            cg_types::emit(g, "%choice.");
-                            var ch2 = (*(*p).arena).choices[ci3];
-                            var ni9 = ch2.name_span.start;
-                            while ni9 < ch2.name_span.end {
-                                (*g).output.push((*(*p).source).data[ni9]);
-                                ni9 = ni9 + 1;
-                            }
-                        } else { cg_types::emit(g, "i64"); }
-                    } else if target_ty >= 1000 {
-                        var si = target_ty - 1000;
-                        if si < (*(*p).arena).structs.len {
-                            cg_types::emit(g, "%struct.");
-                            var st = (*(*p).arena).structs[si];
-                            var ni10 = st.name_span.start;
-                            while ni10 < st.name_span.end {
-                                (*g).output.push((*(*p).source).data[ni10]);
-                                ni10 = ni10 + 1;
-                            }
-                        } else { cg_types::emit(g, "i64"); }
-                    } else { cg_types::emit_type(g, target_ty, p); }
+                    cg_types::emit_type(g, target_ty, p);
                     cg_types::emit(g, ", ptr ");
                     cg_types::push_reg(g, lhs_reg);
                     cg_types::newline(g);
                     cg_types::set_last(g, target_ty);
-                    return r;
+                    return deref_reg;
                 }
                 return lhs_reg;
             }
@@ -1035,6 +1138,21 @@ export fn codegen_expr(g: @cg_types::Codegen, p: @resolver::Project, expr_id: in
             return loaded;
         }
         if op == 55 or op == 56 or op == 53 or op == 54 {
+            if cg_types::integer_width(lhs_ty) > cg_types::integer_width(rhs_ty) {
+                var zr3 = cg_types::next_temp(g);
+                cg_types::emit(g, "    "); cg_types::push_temp(g, zr3); cg_types::emit(g, "= zext ");
+                cg_types::emit_type(g, rhs_ty, p); cg_types::emit(g, " "); cg_types::push_reg(g, rhs_reg);
+                cg_types::emit(g, " to "); cg_types::emit_type(g, lhs_ty, p); cg_types::newline(g);
+                rhs_reg = zr3;
+                rhs_ty = lhs_ty;
+            } else if cg_types::integer_width(rhs_ty) > cg_types::integer_width(lhs_ty) {
+                var zl3 = cg_types::next_temp(g);
+                cg_types::emit(g, "    "); cg_types::push_temp(g, zl3); cg_types::emit(g, "= zext ");
+                cg_types::emit_type(g, lhs_ty, p); cg_types::emit(g, " "); cg_types::push_reg(g, lhs_reg);
+                cg_types::emit(g, " to "); cg_types::emit_type(g, rhs_ty, p); cg_types::newline(g);
+                lhs_reg = zl3;
+                lhs_ty = rhs_ty;
+            }
             var cmp = "slt";
             if op == 55 { cmp = "slt"; }
             if op == 56 { cmp = "sgt"; }
@@ -1055,6 +1173,21 @@ export fn codegen_expr(g: @cg_types::Codegen, p: @resolver::Project, expr_id: in
         }
         if op == 51 {
             var cmp_ty = cg_types::get_last(g);
+            if cg_types::integer_width(lhs_ty) > cg_types::integer_width(rhs_ty) {
+                var zr = cg_types::next_temp(g);
+                cg_types::emit(g, "    "); cg_types::push_temp(g, zr); cg_types::emit(g, "= zext ");
+                cg_types::emit_type(g, rhs_ty, p); cg_types::emit(g, " "); cg_types::push_reg(g, rhs_reg);
+                cg_types::emit(g, " to "); cg_types::emit_type(g, lhs_ty, p); cg_types::newline(g);
+                rhs_reg = zr;
+                rhs_ty = lhs_ty;
+            } else if cg_types::integer_width(rhs_ty) > cg_types::integer_width(lhs_ty) {
+                var zl = cg_types::next_temp(g);
+                cg_types::emit(g, "    "); cg_types::push_temp(g, zl); cg_types::emit(g, "= zext ");
+                cg_types::emit_type(g, lhs_ty, p); cg_types::emit(g, " "); cg_types::push_reg(g, lhs_reg);
+                cg_types::emit(g, " to "); cg_types::emit_type(g, rhs_ty, p); cg_types::newline(g);
+                lhs_reg = zl;
+                lhs_ty = rhs_ty;
+            }
             if cmp_ty == semantic::type_float() or cmp_ty == semantic::type_float64() {
                 cg_types::emit_fcmp(g, r, "oeq", cmp_ty, lhs_reg, rhs_reg, p);
             } else {
@@ -1065,6 +1198,21 @@ export fn codegen_expr(g: @cg_types::Codegen, p: @resolver::Project, expr_id: in
         }
         if op == 52 {
             var cmp_ty = cg_types::get_last(g);
+            if cg_types::integer_width(lhs_ty) > cg_types::integer_width(rhs_ty) {
+                var zr2 = cg_types::next_temp(g);
+                cg_types::emit(g, "    "); cg_types::push_temp(g, zr2); cg_types::emit(g, "= zext ");
+                cg_types::emit_type(g, rhs_ty, p); cg_types::emit(g, " "); cg_types::push_reg(g, rhs_reg);
+                cg_types::emit(g, " to "); cg_types::emit_type(g, lhs_ty, p); cg_types::newline(g);
+                rhs_reg = zr2;
+                rhs_ty = lhs_ty;
+            } else if cg_types::integer_width(rhs_ty) > cg_types::integer_width(lhs_ty) {
+                var zl2 = cg_types::next_temp(g);
+                cg_types::emit(g, "    "); cg_types::push_temp(g, zl2); cg_types::emit(g, "= zext ");
+                cg_types::emit_type(g, lhs_ty, p); cg_types::emit(g, " "); cg_types::push_reg(g, lhs_reg);
+                cg_types::emit(g, " to "); cg_types::emit_type(g, rhs_ty, p); cg_types::newline(g);
+                lhs_reg = zl2;
+                lhs_ty = rhs_ty;
+            }
             if cmp_ty == semantic::type_float() or cmp_ty == semantic::type_float64() {
                 cg_types::emit_fcmp(g, r, "one", cmp_ty, lhs_reg, rhs_reg, p);
             } else {
@@ -1331,43 +1479,15 @@ export fn codegen_expr(g: @cg_types::Codegen, p: @resolver::Project, expr_id: in
             return result_reg;
         } else {
             var call_ret_ty = semantic::type_int();
-            var direct_fn_id = cg_types::find_function_for_codegen(p, expr.callee_span);
+            var direct_fn_id = cg_types::find_function_for_expr(p, expr);
             if direct_fn_id >= 0 {
                 var direct_info = (*(*p).arena).functions[direct_fn_id];
-                if double_colon_idx >= 0 {
-                    var qualified_owner = span::make(expr.callee_span.start, double_colon_idx);
-                    var qualified_owner_name = cg_types::last_segment(qualified_owner, source);
-                    var owner_is_class = false;
-                    var owner_class_id = -1;
-                    var owner_i = 0;
-                    while owner_i < (*(*p).arena).classes.len {
-                        if semantic::name_equals(source.data, (*(*p).arena).classes[owner_i].name_span, qualified_owner_name) {
-                            owner_is_class = true;
-                            owner_class_id = owner_i;
-                            break;
-                        }
-                        owner_i = owner_i + 1;
-                    }
-                    fn_chars.len = 0;
-                    if owner_is_class {
-                        var owner_class_name = (*(*p).arena).classes[owner_class_id].name_span;
-                        var owner_name_i = owner_class_name.start;
-                        while owner_name_i < owner_class_name.end {
-                            fn_chars.push(source.data[owner_name_i]);
-                            owner_name_i = owner_name_i + 1;
-                        }
-                        fn_chars.push('.');
-                    }
-                    var direct_name_i = direct_info.name_span.start;
-                    while direct_name_i < direct_info.name_span.end {
-                        fn_chars.push(source.data[direct_name_i]);
-                        direct_name_i = direct_name_i + 1;
-                    }
-                }
+                fn_chars.len = 0;
+                cg_types::append_function_symbol(@fn_chars, p, direct_fn_id);
                 if direct_info.has_return_type {
                     var direct_errors: array::Array<semantic::SemanticError> = array::Array();
                     var direct_summary = semantic::make_empty_summary();
-                    call_ret_ty = semantic::resolve_type_ref(p, direct_info.return_type_ref, @direct_errors, @direct_summary);
+                    call_ret_ty = cg_types::resolve_type_simple(p, direct_info.return_type_ref);
                 } else {
                     call_ret_ty = semantic::type_void();
                 }
@@ -1387,7 +1507,7 @@ export fn codegen_expr(g: @cg_types::Codegen, p: @resolver::Project, expr_id: in
                     if call_info.has_return_type {
                         var call_errors: array::Array<semantic::SemanticError> = array::Array();
                         var call_summary = semantic::make_empty_summary();
-                        call_ret_ty = semantic::resolve_type_ref(p, call_info.return_type_ref, @call_errors, @call_summary);
+                        call_ret_ty = cg_types::resolve_type_simple(p, call_info.return_type_ref);
                     } else {
                         call_ret_ty = semantic::type_void();
                     }
@@ -1413,11 +1533,22 @@ export fn codegen_expr(g: @cg_types::Codegen, p: @resolver::Project, expr_id: in
                 is_len = true;
             }
         }
-        if is_len and base_ty >= 50000 {
-            var r = cg_types::next_temp(g);
-            cg_types::emit(g, "    "); cg_types::push_temp(g, r); cg_types::emit(g, "= extractvalue "); cg_types::emit_type(g, base_ty, p); cg_types::emit(g, " "); cg_types::push_reg(g, base_val); cg_types::emit(g, ", 1"); cg_types::newline(g);
-            cg_types::set_last(g, semantic::type_int());
-            return r;
+        if is_len {
+            var work_val = base_val;
+            var work_ty = base_ty;
+            if semantic::is_pointer_type(base_ty) {
+                work_val = cg_types::next_temp(g);
+                work_ty = semantic::type_dereference(base_ty);
+                cg_types::emit_load_typed(g, work_val, base_val, work_ty, p);
+            }
+            if not semantic::is_pointer_type(work_ty) {
+                var r = cg_types::next_temp(g);
+                cg_types::emit(g, "    "); cg_types::push_temp(g, r); cg_types::emit(g, "= extractvalue ");
+                cg_types::emit_type(g, work_ty, p);
+                cg_types::emit(g, " "); cg_types::push_reg(g, work_val); cg_types::emit(g, ", 1"); cg_types::newline(g);
+                cg_types::set_last(g, semantic::type_int());
+                return r;
+            }
         }
 
         var field_idx = -1;
@@ -1434,7 +1565,7 @@ export fn codegen_expr(g: @cg_types::Codegen, p: @resolver::Project, expr_id: in
                 var f = (*(*p).arena).struct_fields[st.field_start + fi];
                 if semantic::name_equals((*(*p).source).data, f.name_span, expr.name_span) {
                     field_idx = fi;
-                    field_ty = cg_types::resolve_type_simple(p, f.type_ref);
+                    field_ty = resolve_field_type_for_codegen(p, f.type_ref, f.span);
                     break;
                 }
                 fi = fi + 1;
@@ -1448,7 +1579,7 @@ export fn codegen_expr(g: @cg_types::Codegen, p: @resolver::Project, expr_id: in
                 var f = (*(*p).arena).class_fields[cl.field_start + fi];
                 if semantic::name_equals((*(*p).source).data, f.name_span, expr.name_span) {
                     field_idx = fi;
-                    field_ty = cg_types::resolve_type_simple(p, f.type_ref);
+                    field_ty = resolve_field_type_for_codegen(p, f.type_ref, f.span);
                     break;
                 }
                 fi = fi + 1;
@@ -1478,20 +1609,36 @@ export fn codegen_expr(g: @cg_types::Codegen, p: @resolver::Project, expr_id: in
     if expr.kind == 10 {
         var struct_ty = semantic::type_int();
         var si = 0;
+        var search_name_2 = semantic::last_path_segment_name((*(*p).source), expr.callee_span);
         while si < (*(*p).arena).structs.len {
             var st = (*(*p).arena).structs[si];
-            if semantic::name_equals((*(*p).source).data, st.name_span, expr.callee_span) {
+            if semantic::name_equals((*(*p).source).data, st.name_span, search_name_2) {
                 struct_ty = 1000 + si;
                 break;
             }
             si = si + 1;
         }
         var accum_value = -1;
+        var struct_id_for_fields = struct_ty - 1000;
         var fi = 0;
         while fi < expr.child_len {
             var val_reg = codegen_expr(g, p, (*(*p).arena).expr_refs[expr.child_start + fi], source);
             if val_reg >= 0 {
                 var field_ty = cg_types::get_last(g);
+                var field_name_span = (*(*p).arena).name_refs[expr.name_ref_start + fi];
+                var actual_fi = fi;
+                if struct_id_for_fields >= 0 and struct_id_for_fields < (*(*p).arena).structs.len {
+                    var st_info = (*(*p).arena).structs[struct_id_for_fields];
+                    var sfi = 0;
+                    while sfi < st_info.field_len {
+                        var sf = (*(*p).arena).struct_fields[st_info.field_start + sfi];
+                        if semantic::name_equals((*(*p).source).data, sf.name_span, field_name_span) {
+                            actual_fi = sfi;
+                            break;
+                        }
+                        sfi = sfi + 1;
+                    }
+                }
                 var new_accum = cg_types::next_temp(g);
                 cg_types::emit(g, "    ");
                 cg_types::push_temp(g, new_accum);
@@ -1508,7 +1655,7 @@ export fn codegen_expr(g: @cg_types::Codegen, p: @resolver::Project, expr_id: in
                 cg_types::emit(g, " ");
                 cg_types::push_reg(g, val_reg);
                 cg_types::emit(g, ", ");
-                cg_types::emit_int(g, fi);
+                cg_types::emit_int(g, actual_fi);
                 cg_types::newline(g);
                 accum_value = new_accum;
             }
@@ -1666,6 +1813,9 @@ export fn codegen_lvalue(g: @cg_types::Codegen, p: @resolver::Project, expr_id: 
             cg_types::push_reg(g, index_reg);
         } else if semantic::is_pointer_type(base_ty) {
             element_ty = semantic::type_dereference(base_ty);
+            if semantic::is_class_type(element_ty) {
+                element_ty = semantic::type_int();
+            }
             if base_expr.kind == 1 {
                 var loaded_base_ptr = cg_types::next_temp(g);
                 cg_types::emit_load_typed(g, loaded_base_ptr, base_ptr, base_ty, p);
@@ -1678,6 +1828,85 @@ export fn codegen_lvalue(g: @cg_types::Codegen, p: @resolver::Project, expr_id: 
             cg_types::emit_type(g, element_ty, p);
             cg_types::emit(g, ", ptr ");
             cg_types::push_reg(g, base_ptr);
+            cg_types::emit(g, ", i64 ");
+            cg_types::push_reg(g, index_reg);
+        } else if semantic::is_class_type(base_ty) {
+            element_ty = semantic::type_int();
+            var indexed_class_id = base_ty - 4000;
+            if indexed_class_id >= 0 and indexed_class_id < (*(*p).arena).classes.len {
+                var indexed_class = (*(*p).arena).classes[indexed_class_id];
+                if indexed_class.field_len > 0 {
+                    var data_field = (*(*p).arena).class_fields[indexed_class.field_start];
+                    var data_field_ty = cg_types::resolve_type_simple(p, data_field.type_ref);
+                    if semantic::is_pointer_type(data_field_ty) {
+                        element_ty = semantic::type_dereference(data_field_ty);
+                    }
+                }
+                if element_ty == semantic::type_unknown() or element_ty == semantic::type_int() {
+                    var concrete_name = indexed_class.name_span;
+                    var suffix_start = concrete_name.start;
+                    var name_i = concrete_name.start;
+                    while name_i < concrete_name.end {
+                        if (*(*p).source).data[name_i] == '_' {
+                            suffix_start = name_i + 1;
+                            break;
+                        }
+                        name_i = name_i + 1;
+                    }
+                    if suffix_start > concrete_name.start {
+                        var suffix = span::make(suffix_start, concrete_name.end);
+                        var suffix_primitive = semantic::resolve_numeric_alias(p, suffix);
+                        if suffix_primitive != semantic::type_unknown() {
+                            element_ty = suffix_primitive;
+                        } else {
+                            var suffix_len = suffix.end - suffix.start;
+                            if suffix_len == 4 and
+                               (*(*p).source).data[suffix.start] == 'b' and
+                               (*(*p).source).data[suffix.start + 1] == 'o' and
+                               (*(*p).source).data[suffix.start + 2] == 'o' and
+                               (*(*p).source).data[suffix.start + 3] == 'l' {
+                                element_ty = semantic::type_bool();
+                            } else if suffix_len == 4 and
+                                      (*(*p).source).data[suffix.start] == 'c' and
+                                      (*(*p).source).data[suffix.start + 1] == 'h' and
+                                      (*(*p).source).data[suffix.start + 2] == 'a' and
+                                      (*(*p).source).data[suffix.start + 3] == 'r' {
+                                element_ty = semantic::type_char();
+                            } else {
+                                var suffix_struct = 0;
+                                while suffix_struct < (*(*p).arena).structs.len {
+                                    if semantic::name_equals((*(*p).source).data, (*(*p).arena).structs[suffix_struct].name_span, suffix) {
+                                        element_ty = 1000 + suffix_struct;
+                                        break;
+                                    }
+                                    suffix_struct = suffix_struct + 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            var class_val = base_ptr;
+            if base_expr.kind == 1 {
+                class_val = cg_types::next_temp(g);
+                cg_types::emit_load_typed(g, class_val, base_ptr, base_ty, p);
+            }
+            var data_reg = cg_types::next_temp(g);
+            cg_types::emit(g, "    ");
+            cg_types::push_temp(g, data_reg);
+            cg_types::emit(g, "= extractvalue ");
+            cg_types::emit_type(g, base_ty, p);
+            cg_types::emit(g, " ");
+            cg_types::push_reg(g, class_val);
+            cg_types::emit(g, ", 0");
+            cg_types::newline(g);
+            element_ptr = cg_types::next_temp(g);
+            cg_types::emit(g, "    ");
+            cg_types::push_temp(g, element_ptr);
+            cg_types::emit(g, "= getelementptr inbounds ");
+            cg_types::emit_type(g, element_ty, p);
+            cg_types::emit(g, ", ptr ");
+            cg_types::push_reg(g, data_reg);
             cg_types::emit(g, ", i64 ");
             cg_types::push_reg(g, index_reg);
         } else {
@@ -1709,7 +1938,7 @@ export fn codegen_lvalue(g: @cg_types::Codegen, p: @resolver::Project, expr_id: 
                 var field = (*(*p).arena).struct_fields[struct_info.field_start + fi];
                 if semantic::name_equals(source.data, field.name_span, expr.name_span) {
                     field_idx = fi;
-                    field_ty = cg_types::resolve_type_simple(p, field.type_ref);
+                    field_ty = resolve_field_type_for_codegen(p, field.type_ref, field.span);
                     break;
                 }
                 fi = fi + 1;
@@ -1721,7 +1950,7 @@ export fn codegen_lvalue(g: @cg_types::Codegen, p: @resolver::Project, expr_id: 
                 var field2 = (*(*p).arena).class_fields[class_info.field_start + fi2];
                 if semantic::name_equals(source.data, field2.name_span, expr.name_span) {
                     field_idx = fi2;
-                    field_ty = cg_types::resolve_type_simple(p, field2.type_ref);
+                    field_ty = resolve_field_type_for_codegen(p, field2.type_ref, field2.span);
                     break;
                 }
                 fi2 = fi2 + 1;
@@ -1881,23 +2110,21 @@ export fn coerce_type(g: @cg_types::Codegen, p: @resolver::Project, from_reg: in
         var class_id = to_ty - 4000;
         if class_id >= 0 and class_id < (*(*p).arena).classes.len {
             var class_info = (*(*p).arena).classes[class_id];
-            if cg_types::span_ends_with(p, class_info.name_span, "String") {
-                var fn_name: array::Array<char> = array::Array();
-                var name_i = class_info.name_span.start;
-                while name_i < class_info.name_span.end {
-                    fn_name.push((*(*p).source).data[name_i]);
-                    name_i = name_i + 1;
-                }
-                fn_name.push('.');
-                fn_name.push('f'); fn_name.push('r'); fn_name.push('o'); fn_name.push('m');
-                var regs: array::Array<int> = array::Array();
-                var tys: array::Array<int> = array::Array();
-                regs.push(from_reg);
-                tys.push(from_ty);
-                var converted = cg_types::next_temp(g);
-                cg_types::emit_call(g, converted, fn_name.data, fn_name.len, to_ty, @regs, @tys, p);
-                return converted;
+            var fn_name: array::Array<char> = array::Array();
+            var name_i = class_info.name_span.start;
+            while name_i < class_info.name_span.end {
+                fn_name.push((*(*p).source).data[name_i]);
+                name_i = name_i + 1;
             }
+            fn_name.push('.');
+            fn_name.push('f'); fn_name.push('r'); fn_name.push('o'); fn_name.push('m');
+            var regs: array::Array<int> = array::Array();
+            var tys: array::Array<int> = array::Array();
+            regs.push(from_reg);
+            tys.push(from_ty);
+            var converted = cg_types::next_temp(g);
+            cg_types::emit_call(g, converted, fn_name.data, fn_name.len, to_ty, @regs, @tys, p);
+            return converted;
         }
     }
     if to_ty >= 10000 and from_ty == semantic::type_int() {
@@ -1909,6 +2136,26 @@ export fn coerce_type(g: @cg_types::Codegen, p: @resolver::Project, from_reg: in
         var r = cg_types::next_temp(g);
         cg_types::emit(g, "    "); cg_types::push_temp(g, r); cg_types::emit(g, "= ptrtoint "); cg_types::emit_type(g, from_ty, p); cg_types::emit(g, " "); cg_types::push_reg(g, from_reg); cg_types::emit(g, " to i64"); cg_types::newline(g);
         return r;
+    }
+    if cg_types::is_llvm_integer_type(from_ty) and cg_types::is_llvm_integer_type(to_ty) {
+        var fw = cg_types::integer_width(from_ty);
+        var tw = cg_types::integer_width(to_ty);
+        if fw != tw {
+            var r = cg_types::next_temp(g);
+            cg_types::emit(g, "    "); cg_types::push_temp(g, r);
+            if fw < tw {
+                cg_types::emit(g, "= zext ");
+            } else {
+                cg_types::emit(g, "= trunc ");
+            }
+            cg_types::emit_type(g, from_ty, p);
+            cg_types::emit(g, " ");
+            cg_types::push_reg(g, from_reg);
+            cg_types::emit(g, " to ");
+            cg_types::emit_type(g, to_ty, p);
+            cg_types::newline(g);
+            return r;
+        }
     }
     return from_reg;
 }
@@ -1978,9 +2225,13 @@ export fn codegen_stmt(g: @cg_types::Codegen, p: @resolver::Project, stmt: ast::
         cg_types::register_local(g, p, stmt.const_decl.name_span, ty, reg);
         if ty >= 4000 { cg_types::register_cleanup(g, reg, ty); }
     } else if stmt.kind == 4 {
+        var cleanup_count = (*g).cleanup_regs.len;
         cg_types::push_scope(g);
         codegen_block_flat(g, p, stmt.block_id, source);
-        cg_types::emit_cleanups_to_depth(g, p, (*g).scope_depth);
+        if !(*g).block_terminated {
+            cg_types::emit_cleanups_to_depth(g, p, (*g).scope_depth);
+        }
+        cg_types::truncate_cleanups(g, cleanup_count);
         cg_types::pop_scope(g);
     } else if stmt.kind == 3 {
         var value_reg = codegen_expr(g, p, stmt.assign_stmt.value_expr_id, source);
@@ -2115,15 +2366,29 @@ export fn codegen_stmt(g: @cg_types::Codegen, p: @resolver::Project, stmt: ast::
 
         (*g).block_terminated = false;
         cg_types::emit_label(g, then_label);
+        var then_cleanup_count = (*g).cleanup_regs.len;
+        cg_types::push_scope(g);
         codegen_block_flat(g, p, stmt.if_stmt.then_block_id, source);
-        if !(*g).block_terminated { cg_types::emit_br(g, end_label); }
+        if !(*g).block_terminated {
+            cg_types::emit_cleanups_to_depth(g, p, (*g).scope_depth);
+            cg_types::emit_br(g, end_label);
+        }
+        cg_types::truncate_cleanups(g, then_cleanup_count);
+        cg_types::pop_scope(g);
 
         (*g).block_terminated = false;
         cg_types::emit_label(g, else_label);
+        var else_cleanup_count = (*g).cleanup_regs.len;
+        cg_types::push_scope(g);
         if stmt.if_stmt.has_else_block {
             codegen_block_flat(g, p, stmt.if_stmt.else_block_id, source);
         }
-        if !(*g).block_terminated { cg_types::emit_br(g, end_label); }
+        if !(*g).block_terminated {
+            cg_types::emit_cleanups_to_depth(g, p, (*g).scope_depth);
+            cg_types::emit_br(g, end_label);
+        }
+        cg_types::truncate_cleanups(g, else_cleanup_count);
+        cg_types::pop_scope(g);
 
         (*g).block_terminated = false;
         cg_types::emit_label(g, end_label);
@@ -2143,8 +2408,15 @@ export fn codegen_stmt(g: @cg_types::Codegen, p: @resolver::Project, stmt: ast::
 
         (*g).block_terminated = false;
         cg_types::emit_label(g, body_label);
+        var body_cleanup_count = (*g).cleanup_regs.len;
+        cg_types::push_scope(g);
         codegen_block_flat(g, p, stmt.while_stmt.body_block_id, source);
-        if !(*g).block_terminated { cg_types::emit_br(g, cond_label); }
+        if !(*g).block_terminated {
+            cg_types::emit_cleanups_to_depth(g, p, (*g).scope_depth);
+            cg_types::emit_br(g, cond_label);
+        }
+        cg_types::truncate_cleanups(g, body_cleanup_count);
+        cg_types::pop_scope(g);
 
         (*g).block_terminated = false;
         cg_types::emit_label(g, end_label);
@@ -2208,6 +2480,8 @@ export fn codegen_stmt(g: @cg_types::Codegen, p: @resolver::Project, stmt: ast::
             }
             (*g).block_terminated = false;
             cg_types::emit_label(g, arm_label);
+            var arm_cleanup_count = (*g).cleanup_regs.len;
+            cg_types::push_scope(g);
             if val_ty >= 3000 and val_ty < 4000 and arm.has_binding {
                 var payload_raw = cg_types::next_temp(g);
                 cg_types::emit(g, "    ");
@@ -2224,7 +2498,12 @@ export fn codegen_stmt(g: @cg_types::Codegen, p: @resolver::Project, stmt: ast::
                 cg_types::register_local(g, p, arm.binding_span, semantic::type_int(), binding_alloca);
             }
             codegen_block_flat(g, p, arm.block_id, source);
-            if !(*g).block_terminated { cg_types::emit_br(g, end_label); }
+            if !(*g).block_terminated {
+                cg_types::emit_cleanups_to_depth(g, p, (*g).scope_depth);
+                cg_types::emit_br(g, end_label);
+            }
+            cg_types::truncate_cleanups(g, arm_cleanup_count);
+            cg_types::pop_scope(g);
             (*g).block_terminated = false;
             cg_types::emit_label(g, next_check_label);
             i = i + 1;
@@ -2256,6 +2535,9 @@ export fn codegen_function(g: @cg_types::Codegen, p: @resolver::Project, fn_id: 
     (*g).cleanup_depths.len = 0;
     (*g).scope_depth = 0;
     (*g).local_count = 0;
+    (*g).local_names.len = 0;
+    (*g).local_regs.len = 0;
+    (*g).local_types.len = 0;
 
     // DEBUG TRACE
     cg_types::emit(g, "; DEBUG: codegen_function for ");
@@ -2273,7 +2555,7 @@ export fn codegen_function(g: @cg_types::Codegen, p: @resolver::Project, fn_id: 
     if fn_info.has_return_type {
         var errors: array::Array<semantic::SemanticError> = array::Array();
         var summary = semantic::make_empty_summary();
-        ret_ty = semantic::resolve_type_ref(p, fn_info.return_type_ref, @errors, @summary);
+        ret_ty = cg_types::resolve_type_simple(p, fn_info.return_type_ref);
     }
 
     if fn_info.body_block_id < 0 {
@@ -2289,37 +2571,24 @@ export fn codegen_function(g: @cg_types::Codegen, p: @resolver::Project, fn_id: 
                 scan = scan + 1;
             }
         }
+        if cg_types::is_extern_emitted(g, p, fn_info.name_span) {
+            return;
+        }
+        cg_types::record_extern_emitted(g, fn_info.name_span);
+        (*g).fn_is_main = cg_types::span_ends_with(p, fn_info.name_span, "main");
         cg_types::emit(g, "declare ");
-        cg_types::emit_type(g, ret_ty, p);
+        if (*g).fn_is_main and ret_ty == semantic::type_int() {
+            cg_types::emit(g, "i32");
+        } else {
+            cg_types::emit_type(g, ret_ty, p);
+        }
         cg_types::emit(g, " @\"");
-        var class_prefix_span = span::make(0, 0);
-        var ci = 0;
-        while ci < (*(*p).arena).classes.len {
-            var cl = (*(*p).arena).classes[ci];
-            var mi = 0;
-            while mi < cl.method_len {
-                var cm = (*(*p).arena).class_methods[cl.method_start + mi];
-                if cm.function_id == fn_id {
-                    class_prefix_span = cl.name_span;
-                    break;
-                }
-                mi = mi + 1;
-            }
-            if class_prefix_span.start != 0 or class_prefix_span.end != 0 { break; }
-            ci = ci + 1;
-        }
-        if class_prefix_span.start != 0 or class_prefix_span.end != 0 {
-            var pi2 = class_prefix_span.start;
-            while pi2 < class_prefix_span.end {
-                (*g).output.push(source.data[pi2]);
-                pi2 = pi2 + 1;
-            }
-            (*g).output.push('.');
-        }
-        var ni = fn_info.name_span.start;
-        while ni < fn_info.name_span.end {
-            (*g).output.push(source.data[ni]);
-            ni = ni + 1;
+        var declaration_name: array::Array<char> = array::Array();
+        cg_types::append_function_symbol(@declaration_name, p, fn_id);
+        var declaration_i = 0;
+        while declaration_i < declaration_name.len {
+            (*g).output.push(declaration_name[declaration_i]);
+            declaration_i = declaration_i + 1;
         }
         cg_types::emit(g, "\"(");
         var pi = 0;
@@ -2329,7 +2598,7 @@ export fn codegen_function(g: @cg_types::Codegen, p: @resolver::Project, fn_id: 
             if param.has_type_hint {
                 var errors: array::Array<semantic::SemanticError> = array::Array();
                 var summary = semantic::make_empty_summary();
-                pty = semantic::resolve_type_ref(p, param.type_ref, @errors, @summary);
+                pty = cg_types::resolve_type_simple(p, param.type_ref);
             }
             if pi > 0 { cg_types::emit(g, ", "); }
             cg_types::emit_type(g, pty, p);
@@ -2342,10 +2611,14 @@ export fn codegen_function(g: @cg_types::Codegen, p: @resolver::Project, fn_id: 
         return;
     }
 
+    (*g).fn_is_main = cg_types::span_ends_with(p, fn_info.name_span, "main");
     cg_types::emit(g, "define ");
-    cg_types::emit_type(g, ret_ty, p);
+    if (*g).fn_is_main and ret_ty == semantic::type_int() {
+        cg_types::emit(g, "i32");
+    } else {
+        cg_types::emit_type(g, ret_ty, p);
+    }
     cg_types::emit(g, " @\"");
-    var class_prefix_span2 = span::make(0, 0);
     var ci2 = 0;
     while ci2 < (*(*p).arena).classes.len {
         var cl2 = (*(*p).arena).classes[ci2];
@@ -2353,26 +2626,19 @@ export fn codegen_function(g: @cg_types::Codegen, p: @resolver::Project, fn_id: 
         while mi2 < cl2.method_len {
             var cm2 = (*(*p).arena).class_methods[cl2.method_start + mi2];
             if cm2.function_id == fn_id {
-                class_prefix_span2 = cl2.name_span;
                 break;
             }
             mi2 = mi2 + 1;
         }
-        if class_prefix_span2.start != 0 or class_prefix_span2.end != 0 { break; }
+        if mi2 < cl2.method_len { break; }
         ci2 = ci2 + 1;
     }
-    if class_prefix_span2.start != 0 or class_prefix_span2.end != 0 {
-        var pi3 = class_prefix_span2.start;
-        while pi3 < class_prefix_span2.end {
-            (*g).output.push(source.data[pi3]);
-            pi3 = pi3 + 1;
-        }
-        (*g).output.push('.');
-    }
-    var ni = fn_info.name_span.start;
-    while ni < fn_info.name_span.end {
-        (*g).output.push(source.data[ni]);
-        ni = ni + 1;
+    var definition_name: array::Array<char> = array::Array();
+    cg_types::append_function_symbol(@definition_name, p, fn_id);
+    var definition_i = 0;
+    while definition_i < definition_name.len {
+        (*g).output.push(definition_name[definition_i]);
+        definition_i = definition_i + 1;
     }
     cg_types::emit(g, "\"(");
     var pi = 0;
@@ -2382,7 +2648,7 @@ export fn codegen_function(g: @cg_types::Codegen, p: @resolver::Project, fn_id: 
         if param.has_type_hint {
             var errors: array::Array<semantic::SemanticError> = array::Array();
             var summary = semantic::make_empty_summary();
-            pty = semantic::resolve_type_ref(p, param.type_ref, @errors, @summary);
+            pty = cg_types::resolve_type_simple(p, param.type_ref);
         } else if pi == 0 and ci2 < (*(*p).arena).classes.len {
             pty = semantic::type_pointer(4000 + ci2, false);
         }
@@ -2408,7 +2674,7 @@ export fn codegen_function(g: @cg_types::Codegen, p: @resolver::Project, fn_id: 
         if param.has_type_hint {
             var errors: array::Array<semantic::SemanticError> = array::Array();
             var summary = semantic::make_empty_summary();
-            pty = semantic::resolve_type_ref(p, param.type_ref, @errors, @summary);
+            pty = cg_types::resolve_type_simple(p, param.type_ref);
         } else if pi == 0 and ci2 < (*(*p).arena).classes.len {
             pty = semantic::type_pointer(4000 + ci2, false);
         }
@@ -2435,9 +2701,15 @@ export fn codegen_function(g: @cg_types::Codegen, p: @resolver::Project, fn_id: 
         var load_reg = cg_types::next_temp(g);
         cg_types::emit(g, "    ");
         cg_types::push_temp(g, load_reg);
-        cg_types::emit(g, "= add ");
-        cg_types::emit_type(g, pty, p);
-        cg_types::emit(g, " 0, %");
+        if semantic::is_float_type(pty) {
+            cg_types::emit(g, "= fadd ");
+            cg_types::emit_type(g, pty, p);
+            cg_types::emit(g, " 0.0, %");
+        } else {
+            cg_types::emit(g, "= add ");
+            cg_types::emit_type(g, pty, p);
+            cg_types::emit(g, " 0, %");
+        }
         var pj = param.name_span.start;
         while pj < param.name_span.end {
             (*g).output.push(source.data[pj]);
@@ -2457,6 +2729,9 @@ export fn codegen_function(g: @cg_types::Codegen, p: @resolver::Project, fn_id: 
     (*g).fn_return_type = ret_ty;
     (*g).block_terminated = false;
     (*g).local_count = 0;
+    (*g).local_names.len = 0;
+    (*g).local_regs.len = 0;
+    (*g).local_types.len = 0;
     codegen_block_flat(g, p, fn_info.body_block_id, source);
     if !(*g).block_terminated {
         cg_types::emit_all_cleanups(g, p);

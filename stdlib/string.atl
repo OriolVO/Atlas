@@ -65,7 +65,7 @@ export class String {
         return (*self).data;
     }
 
-    fn from(chars: []char): String {
+    public fn from(chars: []char): String {
         var s = String();
         memory::free(s.data);
 

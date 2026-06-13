@@ -128,9 +128,12 @@ fn parse_import_item(p: @parser_types::Parser, arena: @ast::Arena, import_id: @i
     }
     while parser_types::peek_kind(p) == 68 {
         parser_types::advance(p);
-        if !parser_types::expect_identifier(p, @name_start, @name_end) {
+        var seg_start = 0;
+        var seg_end = 0;
+        if !parser_types::expect_identifier(p, @seg_start, @seg_end) {
             return false;
         }
+        name_end = seg_end;
     }
     var end_s = parser_types::peek_span_end(p);
     parser_types::expect(p, 65);

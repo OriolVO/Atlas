@@ -779,11 +779,13 @@ impl NativeCodegen {
                 }
             },
             Expr::Binary { op, lhs, rhs, .. } => {
-                if let Some(result) = self.try_emit_overloaded_binary(op, lhs, rhs)? {
+                let (lhs_val, lhs_ty) = self.emit_expr(lhs)?;
+                if let Some(result) = self.try_emit_overloaded_binary(op, &lhs_val, &lhs_ty, rhs)? {
                     return Ok(result);
                 }
+                let (rhs_val, rhs_ty) = self.emit_expr(rhs)?;
                 let (lhs_val, lhs_ty, rhs_val, rhs_ty) =
-                    self.emit_binary_operands(lhs, rhs)?;
+                    self.coerce_binary_operands_evaluated(lhs_val, lhs_ty, rhs_val, rhs_ty)?;
                 emit_binary(
                     &mut self.output,
                     &mut self.temp_counter,
@@ -1932,24 +1934,43 @@ impl NativeCodegen {
     fn try_emit_overloaded_binary(
         &mut self,
         op: &BinOp,
-        lhs: &Expr,
+        lhs_val: &str,
+        lhs_ty: &AtlasType,
         rhs: &Expr,
     ) -> Result<Option<(String, AtlasType)>, AtlasError> {
         let Some(method_name) = binary_operator_method_name(op) else {
             return Ok(None);
         };
-        let (self_arg, class_name) = match self.emit_method_receiver(lhs) {
-            Ok(result) => result,
-            Err(_) => return Ok(None),
+        let class_name = match lhs_ty {
+            AtlasType::Class(name) => name,
+            AtlasType::Pointer { target, .. } => {
+                if let AtlasType::Class(name) = &**target {
+                    name
+                } else {
+                    return Ok(None);
+                }
+            }
+            _ => return Ok(None),
         };
         let Some(method) = self
             .typed_ast
             .classes
-            .get(&class_name)
+            .get(class_name)
             .and_then(|class_ty| class_ty.methods.get(method_name))
             .cloned()
         else {
             return Ok(None);
+        };
+        let self_arg = if let AtlasType::Class(_) = lhs_ty {
+            let tmp_ptr = self.next_temp();
+            let llvm_class_ty = map_type(lhs_ty)?;
+            self.output.push_str(&format!(
+                "    {} = alloca {}\n    store {} {}, {}* {}\n",
+                tmp_ptr, llvm_class_ty, llvm_class_ty, lhs_val, llvm_class_ty, tmp_ptr
+            ));
+            tmp_ptr
+        } else {
+            lhs_val.to_string()
         };
         let expected_rhs_ty = method
             .sig
@@ -2661,13 +2682,13 @@ impl NativeCodegen {
         Ok(Some((reg, expected_ty.clone())))
     }
 
-    fn emit_binary_operands(
+    fn coerce_binary_operands_evaluated(
         &mut self,
-        lhs: &Expr,
-        rhs: &Expr,
+        lhs_val: String,
+        lhs_ty: AtlasType,
+        rhs_val: String,
+        rhs_ty: AtlasType,
     ) -> Result<(String, AtlasType, String, AtlasType), AtlasError> {
-        let (lhs_val, lhs_ty) = self.emit_expr(lhs)?;
-        let (rhs_val, rhs_ty) = self.emit_expr(rhs)?;
 
         if same_runtime_type(&lhs_ty, &rhs_ty) {
             return Ok((lhs_val, lhs_ty, rhs_val, rhs_ty));

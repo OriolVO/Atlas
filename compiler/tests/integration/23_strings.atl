@@ -3,30 +3,30 @@
 extern "C" fn malloc(size: int): @char;
 extern "C" fn free(ptr: @char);
 
-class String {
+class MyString {
     public data: @char;
     public len: int;
 
-    fn init(self: @String) {
+    fn init(self: @MyString) {
         (*self).data = malloc(1);
         (*self).data[0] = '\0';
         (*self).len = 0;
     }
 
-    fn destroy(self: @String) {
+    fn destroy(self: @MyString) {
         free((*self).data);
     }
 
-    fn length(self: @String): int {
+    fn length(self: @MyString): int {
         return (*self).len;
     }
 
-    fn c_str(self: @String): @char {
+    fn c_str(self: @MyString): @char {
         return (*self).data;
     }
 
-    fn from(chars: []char): String {
-        var s = String();
+    fn from(chars: []char): MyString {
+        var s = MyString();
         free(s.data);
 
         var n = chars.len;
@@ -45,6 +45,6 @@ class String {
 }
 
 fn main(): int {
-    var s: String = "hello";
+    var s: MyString = "hello";
     return s.length() + 2;
 }

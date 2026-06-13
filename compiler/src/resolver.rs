@@ -470,6 +470,7 @@ impl<'a> NameResolver<'a> {
                 let is_imported = self.imports.contains(class_name.as_str())
                     || self.imports.contains(&dotted_class)
                     || self.imports.iter().any(|imp| imp.starts_with(&format!("{}.", class_name)));
+                println!("StaticCall: class_name={}, method_name={}, is_imported={}", class_name, method_name, is_imported);
                 if is_imported || class_name == self.current_module {
                     let lookup_name = if self.imports.contains(&dotted_class) {
                         &dotted_class
@@ -484,6 +485,7 @@ impl<'a> NameResolver<'a> {
                         let is_class  = mi.classes.contains(method_name.as_str());
                         let is_struct = mi.structs.contains(method_name.as_str());
 
+                        println!("Resolver checking: {}.{} -> is_fn={}, is_extern={}, is_class={}, is_struct={}, exports_contains={}", lookup_name, method_name, is_fn, is_extern, is_class, is_struct, mi.exports.contains(method_name.as_str()));
                         if is_fn || is_extern || is_class || is_struct {
                             if class_name != self.current_module && !mi.exports.contains(method_name.as_str()) {
                                 self.errors.push(AtlasError::TypeError {

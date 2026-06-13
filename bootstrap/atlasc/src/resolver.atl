@@ -3,6 +3,7 @@ import array;
 import ast;
 import error;
 import fs;
+import io;
 import lexer;
 import parser;
 import string;
@@ -19,12 +20,18 @@ export struct Project {
     source: @array::Array<char>;
     modules: @array::Array<ModuleInterface>;
     prelude_count: int;
+    source_root_start: int;
+    source_root_end: int;
 }
 
 
 
 fn prelude_module_name(idx: int): []char {
-    if idx == 0 { return "result"; }
+    if idx == 0 { return "array"; }
+    if idx == 1 { return "span"; }
+    if idx == 2 { return "string"; }
+    if idx == 3 { return "memory"; }
+    if idx == 4 { return "result"; }
     return "";
 }
 
@@ -38,12 +45,36 @@ fn path_to_chars(path: @string::String): array::Array<char> {
     return chars;
 }
 
-fn build_module_path(prefix: []char, name_chars: []char, name_len: int, suffix: []char): array::Array<char> {
+fn build_module_path(prefix_data: @char?, prefix_len: int, name_data: @char?, name_len: int, suffix_data: @char?, suffix_len: int): array::Array<char> {
     var path_arr: array::Array<char> = array::Array();
     var pi = 0;
-    while pi < prefix.len {
-        path_arr.push(prefix[pi]);
+    while pi < prefix_len {
+        path_arr.push(prefix_data[pi]);
         pi = pi + 1;
+    }
+    var ni = 0;
+    while ni < name_len {
+        if name_data[ni] == '.' {
+            path_arr.push('/');
+        } else {
+            path_arr.push(name_data[ni]);
+        }
+        ni = ni + 1;
+    }
+    var si = 0;
+    while si < suffix_len {
+        path_arr.push(suffix_data[si]);
+        si = si + 1;
+    }
+    return path_arr;
+}
+
+fn build_import_path(p: @Project, name_chars: []char, name_len: int, suffix: []char): array::Array<char> {
+    var path_arr: array::Array<char> = array::Array();
+    var ri = (*p).source_root_start;
+    while ri < (*p).source_root_end {
+        path_arr.push((*(*p).source).data[ri]);
+        ri = ri + 1;
     }
     var ni = 0;
     while ni < name_len {
@@ -62,15 +93,15 @@ fn build_module_path(prefix: []char, name_chars: []char, name_len: int, suffix: 
     return path_arr;
 }
 
-fn try_load_module_path(p: @Project, path_arr: @array::Array<char>, name_span: span::Span, errors: @array::Array<ast::ParseError>): bool {
-    return load_module(p, path_arr.data, path_arr.len, name_span, errors);
+fn try_load_module_path(p: @Project, path_arr: @array::Array<char>, stdlib_chars: @char?, stdlib_len: int, name_span: span::Span, errors: @array::Array<ast::ParseError>): bool {
+    return load_module(p, path_arr.data, path_arr.len, stdlib_chars, stdlib_len, name_span, errors);
 }
 
 fn is_module_loaded(p: @Project, name_span: span::Span): bool {
     var mi = 0;
     while mi < (*(*p).modules).len {
         var existing = (*(*p).modules)[mi].name_span;
-        if existing.start != 0 and existing.end != 0 {
+        if existing.end > existing.start {
             if existing.end - existing.start == name_span.end - name_span.start {
                 var matched = true;
                 var k = 0;
@@ -89,9 +120,9 @@ fn is_module_loaded(p: @Project, name_span: span::Span): bool {
     return false;
 }
 
-fn load_prelude_modules(p: @Project, errors: @array::Array<ast::ParseError>): bool {
+fn load_prelude_modules(p: @Project, stdlib_chars: @char?, stdlib_len: int, errors: @array::Array<ast::ParseError>): bool {
     var pi = 0;
-    while pi < 1 {
+    while pi < 5 {
         var name = prelude_module_name(pi);
         var name_len = name.len;
 
@@ -103,48 +134,76 @@ fn load_prelude_modules(p: @Project, errors: @array::Array<ast::ParseError>): bo
         }
         var name_span = span::make(name_start, (*(*p).source).len);
 
-        var name_chars: array::Array<char> = array::Array();
-        ni = 0;
-        while ni < name_len {
-            name_chars.push(name[ni]);
-            ni = ni + 1;
-        }
+        if !is_module_loaded(p, name_span) {
+            var name_chars: array::Array<char> = array::Array();
+            ni = 0;
+            while ni < name_len {
+                name_chars.push(name[ni]);
+                ni = ni + 1;
+            }
 
-        var path_arr = build_module_path("../../stdlib/", name_chars.data, name_len, ".atl");
-        if !try_load_module_path(p, @path_arr, name_span, errors) {
-            path_arr = build_module_path("stdlib/", name_chars.data, name_len, ".atl");
-            if !try_load_module_path(p, @path_arr, name_span, errors) {
-                pi = pi + 1;
-                continue;
+            var pre1 = string::String::from("../../stdlib/");
+            var suf = string::String::from(".atl");
+            var path_arr = build_module_path(pre1.data, pre1.len, name_chars.data, name_len, suf.data, suf.len);
+            if !try_load_module_path(p, @path_arr, stdlib_chars, stdlib_len, name_span, errors) {
+                var pre2 = string::String::from("stdlib/");
+                path_arr = build_module_path(pre2.data, pre2.len, name_chars.data, name_len, suf.data, suf.len);
+                if !try_load_module_path(p, @path_arr, stdlib_chars, stdlib_len, name_span, errors) {
+                    pi = pi + 1;
+                    continue;
+                }
             }
         }
-
-        var last_mod_idx = (*(*p).modules).len - 1;
-        (*(*p).modules)[last_mod_idx].name_span = name_span;
 
         pi = pi + 1;
     }
     return true;
 }
 
-export fn load_and_resolve(entry_path: @string::String, arena: @ast::Arena, source: @array::Array<char>, modules: @array::Array<ModuleInterface>, errors: @array::Array<ast::ParseError>): bool {
-    var p = Project { arena: arena, source: source, modules: modules, prelude_count: 0 };
+export fn load_and_resolve(entry_path: @string::String, stdlib_path: @string::String, arena: @ast::Arena, source: @array::Array<char>, modules: @array::Array<ModuleInterface>, errors: @array::Array<ast::ParseError>): bool {
+    var p = Project { arena: arena, source: source, modules: modules, prelude_count: 0, source_root_start: 0, source_root_end: 0 };
 
-    if !load_prelude_modules(@p, errors) {
-        return false;
+    // Derive source root from entry path: everything up to and including the last '/'
+    var last_slash = -1;
+    var si = 0;
+    while si < (*entry_path).len {
+        if (*entry_path).data[si] == '/' {
+            last_slash = si;
+        }
+        si = si + 1;
     }
-    (*p).prelude_count = (*(*p).modules).len;
+    var root_start = (*(*p).source).len;
+    if last_slash >= 0 {
+        var ri = 0;
+        while ri <= last_slash {
+            (*(*p).source).push((*entry_path).data[ri]);
+            ri = ri + 1;
+        }
+    }
+    var root_end = (*(*p).source).len;
+    p.source_root_start = root_start;
+    p.source_root_end = root_end;
 
     var entry_chars = path_to_chars(entry_path);
+    var stdlib_chars = path_to_chars(stdlib_path);
+
+    if !load_prelude_modules(@p, stdlib_chars.data, stdlib_chars.len, errors) {
+        return false;
+    }
+    p.prelude_count = (*p.modules).len;
+
     var entry_name = span::make(0, 0);
-    if !load_module(@p, entry_chars.data, entry_chars.len, entry_name, errors) {
+    if !load_module(@p, entry_chars.data, entry_chars.len, stdlib_chars.data, stdlib_chars.len, entry_name, errors) {
         return false;
     }
 
-    return topo_sort_and_resolve(@p, errors);
+    if !topo_sort_and_resolve(@p, errors) {
+        return false;
+    }
+    return true;
 }
 
-fn load_module(p: @Project, path_chars: @char?, path_len: int, name_span: span::Span, errors: @array::Array<ast::ParseError>): bool {
+fn load_module(p: @Project, path_chars: @char?, path_len: int, stdlib_chars: @char?, stdlib_len: int, name_span: span::Span, errors: @array::Array<ast::ParseError>): bool {
     var start_offset = (*(*p).source).len;
 
     var path_str = string::String::from_chars(path_chars, path_len);
@@ -194,16 +253,21 @@ fn load_module(p: @Project, path_chars: @char?, path_len: int, name_span: span::
 
             if !is_module_loaded(p, import_name_span) {
                 var before_count = (*(*p).modules).len;
-                var path_arr = build_module_path("src/", name_chars.data, name_len, ".atl");
-                if !try_load_module_path(p, @path_arr, import_name_span, errors) {
-                    var std_path_arr = build_module_path("../../stdlib/", name_chars.data, name_len, ".atl");
-                    if !try_load_module_path(p, @std_path_arr, import_name_span, errors) {
-                        std_path_arr = build_module_path("stdlib/", name_chars.data, name_len, ".atl");
-                        if !try_load_module_path(p, @std_path_arr, import_name_span, errors) {
-                            var err_start = import_name_span.start;
-                            errors.push(ast::make_parse_error(20, err_start, err_start));
-                            return false;
-                        }
+                // Build source prefix from project's source root
+                var src_pre_arr: array::Array<char> = array::Array();
+                var src_ri = (*p).source_root_start;
+                while src_ri < (*p).source_root_end {
+                    src_pre_arr.push((*(*p).source).data[src_ri]);
+                    src_ri = src_ri + 1;
+                }
+                var atl_suf = string::String::from(".atl");
+                var path_arr = build_module_path(src_pre_arr.data, src_pre_arr.len, name_chars.data, name_len, atl_suf.data, atl_suf.len);
+                if !try_load_module_path(p, @path_arr, stdlib_chars, stdlib_len, import_name_span, errors) {
+                    var std_path_arr = build_module_path(stdlib_chars, stdlib_len, name_chars.data, name_len, atl_suf.data, atl_suf.len);
+                    if !try_load_module_path(p, @std_path_arr, stdlib_chars, stdlib_len, import_name_span, errors) {
+                        var err_start = import_name_span.start;
+                        errors.push(ast::make_parse_error(20, err_start, err_start));
+                        return false;
                     }
                 }
                 var new_mod_idx = (*(*p).modules).len - 1;
@@ -212,7 +276,7 @@ fn load_module(p: @Project, path_chars: @char?, path_len: int, name_span: span::
                 var mi = 0;
                 while mi < (*(*p).modules).len {
                     var existing = (*(*p).modules)[mi].name_span;
-                    if existing.start != 0 and existing.end != 0 {
+                    if existing.end > existing.start {
                         if existing.end - existing.start == name_len {
                             var matched = true;
                             var k = 0;
@@ -240,19 +304,19 @@ fn load_module(p: @Project, path_chars: @char?, path_len: int, name_span: span::
 }
 
 fn topo_sort_and_resolve(p: @Project, errors: @array::Array<ast::ParseError>): bool {
-    var visited: array::Array<bool> = array::Array();
-    var in_stack: array::Array<bool> = array::Array();
+    var visited: array::Array<int> = array::Array();
+    var in_stack: array::Array<int> = array::Array();
     var order: array::Array<int> = array::Array();
     var i = 0;
     while i < (*(*p).modules).len {
-        visited.push(false);
-        in_stack.push(false);
+        visited.push(0);
+        in_stack.push(0);
         i = i + 1;
     }
 
     i = 0;
     while i < (*(*p).modules).len {
-        if !visited[i] {
+        if visited[i] == 0 {
             if !topo_dfs(p, i, @visited, @in_stack, @order) {
                 return false;
             }
@@ -263,19 +327,19 @@ fn topo_sort_and_resolve(p: @Project, errors: @array::Array<ast::ParseError>): b
     return resolve_names_in_order(p, @order, errors);
 }
 
-fn topo_dfs(p: @Project, mod_idx: int, visited: @array::Array<bool>, in_stack: @array::Array<bool>, order: @array::Array<int>): bool {
-    (*visited)[mod_idx] = true;
-    (*in_stack)[mod_idx] = true;
+fn topo_dfs(p: @Project, mod_idx: int, visited: @array::Array<int>, in_stack: @array::Array<int>, order: @array::Array<int>): bool {
+    (*visited)[mod_idx] = 1;
+    (*in_stack)[mod_idx] = 1;
 
     var import_count = (*(*p).modules)[mod_idx].import_module_indices.len;
     var ii = 0;
     while ii < import_count {
         var dep_idx = (*(*p).modules)[mod_idx].import_module_indices[ii];
         if dep_idx >= 0 and dep_idx < (*in_stack).len {
-            if (*in_stack)[dep_idx] {
+            if (*in_stack)[dep_idx] != 0 {
                 return false;
             }
-            if !(*visited)[dep_idx] {
+            if (*visited)[dep_idx] == 0 {
                 if !topo_dfs(p, dep_idx, visited, in_stack, order) {
                     return false;
                 }
@@ -284,7 +348,7 @@ fn topo_dfs(p: @Project, mod_idx: int, visited: @array::Array<bool>, in_stack: @
         ii = ii + 1;
     }
 
-    (*in_stack)[mod_idx] = false;
+    (*in_stack)[mod_idx] = 0;
     (*order).push(mod_idx);
     return true;
 }
