@@ -56,6 +56,12 @@ export fn main(argc: int32, argv: @@char): int {
                 }
             }
         } else if c_str_eq(arg, "--project") {
+        } else if c_str_eq(arg, "-o") {
+            i = i + 1i32;
+            if i < argc {
+                memory::free(output_name.data);
+                output_name = string::String::from_chars(argv[i], c_str_len(argv[i]));
+            }
         } else {
             memory::free(entry_file.data);
             entry_file = string::String::from_chars(arg, c_str_len(arg));
@@ -188,7 +194,7 @@ export fn main(argc: int32, argv: @@char): int {
     if ret != 0i32 {
         var err_msg = string::String::from("Clang invocation failed\n");
         io::puts(err_msg.data);
-        return cast<int>(ret);
+        return 1;
     }
 
     return 0;

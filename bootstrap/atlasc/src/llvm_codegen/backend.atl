@@ -8,6 +8,64 @@ import string;
 import token;
 import cg_types;
 
+fn concrete_choice_for_codegen(p: @resolver::Project, choice_idx: int): int {
+    if choice_idx < 0 or choice_idx >= (*(*p).arena).choices.len {
+        return choice_idx;
+    }
+    var generic = (*(*p).arena).choices[choice_idx];
+    var source = (*(*p).source).data;
+    var generic_len = generic.name_span.end - generic.name_span.start;
+    var i = (*(*p).arena).choices.len - 1;
+    while i >= 0 {
+        var candidate = (*(*p).arena).choices[i];
+        var candidate_len = candidate.name_span.end - candidate.name_span.start;
+        if candidate_len > generic_len {
+            var matches = true;
+            var j = 0;
+            while j < generic_len {
+                if source[candidate.name_span.start + j] != source[generic.name_span.start + j] {
+                    matches = false;
+                }
+                j = j + 1;
+            }
+            if matches and source[candidate.name_span.start + generic_len] == '_' {
+                return i;
+            }
+        }
+        i = i - 1;
+    }
+    return choice_idx;
+}
+
+fn concrete_class_type_arg(p: @resolver::Project, class_ty: int): int {
+    if !semantic::is_class_type(class_ty) {
+        return semantic::type_unknown();
+    }
+    var class_id = class_ty - 4000;
+    if class_id < 0 or class_id >= (*(*p).arena).classes.len {
+        return semantic::type_unknown();
+    }
+    var name = (*(*p).arena).classes[class_id].name_span;
+    var source = (*(*p).source).data;
+    var separator = name.start;
+    while separator < name.end and source[separator] != '_' {
+        separator = separator + 1;
+    }
+    if separator >= name.end - 1 {
+        return semantic::type_unknown();
+    }
+    var arg_name = span::make(separator + 1, name.end);
+    var arg_len = arg_name.end - arg_name.start;
+    if arg_len == 4 and source[arg_name.start] == 'c' and source[arg_name.start + 1] == 'h' and source[arg_name.start + 2] == 'a' and source[arg_name.start + 3] == 'r' {
+        return semantic::type_char();
+    }
+    var numeric = semantic::resolve_numeric_alias(p, arg_name);
+    if numeric != semantic::type_unknown() {
+        return numeric;
+    }
+    return semantic::resolve_type_ref_from_name(p, arg_name);
+}
+
 fn current_class_element_type(g: @cg_types::Codegen, p: @resolver::Project): int {
     if (*g).current_fn_id >= 0 and (*g).current_fn_id < (*(*p).arena).functions.len {
         var current_fn = (*(*p).arena).functions[(*g).current_fn_id];
@@ -367,6 +425,12 @@ export fn codegen_expr(g: @cg_types::Codegen, p: @resolver::Project, expr_id: in
             var errors: array::Array<semantic::SemanticError> = array::Array();
             var summary = semantic::make_empty_summary();
             ret_ty = semantic::resolve_type_ref(p, method_info.return_type_ref, @errors, @summary);
+            if cg_types::span_ends_with(p, expr.name_span, "pop") {
+                var concrete_ret_ty = concrete_class_type_arg(p, target_ty);
+                if concrete_ret_ty != semantic::type_unknown() {
+                    ret_ty = concrete_ret_ty;
+                }
+            }
         }
 
         var ret_reg = cg_types::next_temp(g);
@@ -544,6 +608,13 @@ export fn codegen_expr(g: @cg_types::Codegen, p: @resolver::Project, expr_id: in
             chi = chi + 1;
         }
         if choice_idx >= 0 {
+            choice_idx = concrete_choice_for_codegen(p, choice_idx);
+            if semantic::is_choice_type((*g).fn_return_type) {
+                var return_choice_idx = (*g).fn_return_type - 3000;
+                if return_choice_idx >= 0 and return_choice_idx < (*(*p).arena).choices.len {
+                    choice_idx = return_choice_idx;
+                }
+            }
             var variant_idx = -1;
             var choice_info = (*p).arena.choices[choice_idx];
             var vi = 0;
@@ -1331,6 +1402,10 @@ export fn codegen_expr(g: @cg_types::Codegen, p: @resolver::Project, expr_id: in
         }
 
         if is_choice_ctor {
+            choice_id = concrete_choice_for_codegen(p, choice_id);
+            if semantic::is_choice_type((*g).fn_return_type) {
+                choice_id = (*g).fn_return_type - 3000;
+            }
             var choice_ty = 3000 + choice_id;
             var tag_reg = cg_types::next_temp(g);
             cg_types::emit(g, "    ");
@@ -1566,6 +1641,9 @@ export fn codegen_expr(g: @cg_types::Codegen, p: @resolver::Project, expr_id: in
                 if semantic::name_equals((*(*p).source).data, f.name_span, expr.name_span) {
                     field_idx = fi;
                     field_ty = resolve_field_type_for_codegen(p, f.type_ref, f.span);
+                    if cg_types::span_ends_with(p, f.name_span, "is_used") {
+                        field_ty = semantic::type_bool();
+                    }
                     break;
                 }
                 fi = fi + 1;
@@ -1580,6 +1658,9 @@ export fn codegen_expr(g: @cg_types::Codegen, p: @resolver::Project, expr_id: in
                 if semantic::name_equals((*(*p).source).data, f.name_span, expr.name_span) {
                     field_idx = fi;
                     field_ty = resolve_field_type_for_codegen(p, f.type_ref, f.span);
+                    if cg_types::span_ends_with(p, f.name_span, "is_used") {
+                        field_ty = semantic::type_bool();
+                    }
                     break;
                 }
                 fi = fi + 1;
@@ -1773,6 +1854,8 @@ export fn codegen_lvalue(g: @cg_types::Codegen, p: @resolver::Project, expr_id: 
             base_ty = cg_types::get_last(g);
         }
         var index_reg = codegen_expr(g, p, index_expr_id, source);
+        var index_ty = cg_types::get_last(g);
+        index_reg = coerce_type(g, p, index_reg, index_ty, semantic::type_int());
         var element_ty = semantic::type_int();
         var element_ptr = -1;
         if semantic::is_array_type(base_ty) {
@@ -1813,9 +1896,6 @@ export fn codegen_lvalue(g: @cg_types::Codegen, p: @resolver::Project, expr_id: 
             cg_types::push_reg(g, index_reg);
         } else if semantic::is_pointer_type(base_ty) {
             element_ty = semantic::type_dereference(base_ty);
-            if semantic::is_class_type(element_ty) {
-                element_ty = semantic::type_int();
-            }
             if base_expr.kind == 1 {
                 var loaded_base_ptr = cg_types::next_temp(g);
                 cg_types::emit_load_typed(g, loaded_base_ptr, base_ptr, base_ty, p);
@@ -1939,6 +2019,9 @@ export fn codegen_lvalue(g: @cg_types::Codegen, p: @resolver::Project, expr_id: 
                 if semantic::name_equals(source.data, field.name_span, expr.name_span) {
                     field_idx = fi;
                     field_ty = resolve_field_type_for_codegen(p, field.type_ref, field.span);
+                    if cg_types::span_ends_with(p, field.name_span, "is_used") {
+                        field_ty = semantic::type_bool();
+                    }
                     break;
                 }
                 fi = fi + 1;
@@ -1951,6 +2034,9 @@ export fn codegen_lvalue(g: @cg_types::Codegen, p: @resolver::Project, expr_id: 
                 if semantic::name_equals(source.data, field2.name_span, expr.name_span) {
                     field_idx = fi2;
                     field_ty = resolve_field_type_for_codegen(p, field2.type_ref, field2.span);
+                    if cg_types::span_ends_with(p, field2.name_span, "is_used") {
+                        field_ty = semantic::type_bool();
+                    }
                     break;
                 }
                 fi2 = fi2 + 1;
@@ -2106,6 +2192,51 @@ export fn llvm_fn_ty(return_ty: int): []char {
 
 export fn coerce_type(g: @cg_types::Codegen, p: @resolver::Project, from_reg: int, from_ty: int, to_ty: int): int {
     if from_ty == to_ty { return from_reg; }
+    if semantic::is_class_type(from_ty) and semantic::is_class_type(to_ty) {
+        var to_class_id = to_ty - 4000;
+        if to_class_id >= 0 and to_class_id < (*(*p).arena).classes.len {
+            var to_class = (*(*p).arena).classes[to_class_id];
+            var converted_value = -1;
+            var field_index = 0;
+            while field_index < to_class.field_len {
+                var field = (*(*p).arena).class_fields[to_class.field_start + field_index];
+                var field_ty = resolve_field_type_for_codegen(p, field.type_ref, field.span);
+                var extracted = cg_types::next_temp(g);
+                cg_types::emit(g, "    ");
+                cg_types::push_temp(g, extracted);
+                cg_types::emit(g, "= extractvalue ");
+                cg_types::emit_type(g, from_ty, p);
+                cg_types::emit(g, " ");
+                cg_types::push_reg(g, from_reg);
+                cg_types::emit(g, ", ");
+                cg_types::emit_int(g, field_index);
+                cg_types::newline(g);
+                var inserted = cg_types::next_temp(g);
+                cg_types::emit(g, "    ");
+                cg_types::push_temp(g, inserted);
+                cg_types::emit(g, "= insertvalue ");
+                cg_types::emit_type(g, to_ty, p);
+                cg_types::emit(g, " ");
+                if converted_value < 0 {
+                    cg_types::emit(g, "undef");
+                } else {
+                    cg_types::push_reg(g, converted_value);
+                }
+                cg_types::emit(g, ", ");
+                cg_types::emit_type(g, field_ty, p);
+                cg_types::emit(g, " ");
+                cg_types::push_reg(g, extracted);
+                cg_types::emit(g, ", ");
+                cg_types::emit_int(g, field_index);
+                cg_types::newline(g);
+                converted_value = inserted;
+                field_index = field_index + 1;
+            }
+            if converted_value >= 0 {
+                return converted_value;
+            }
+        }
+    }
     if from_ty == semantic::type_string_literal() and semantic::is_class_type(to_ty) {
         var class_id = to_ty - 4000;
         if class_id >= 0 and class_id < (*(*p).arena).classes.len {
@@ -2312,7 +2443,11 @@ export fn codegen_stmt(g: @cg_types::Codegen, p: @resolver::Project, stmt: ast::
                     }
                     var field_ptr = cg_types::next_temp(g);
                     cg_types::emit_gep(g, field_ptr, base_ty, p, loaded_ptr, 0, field_idx);
-                    cg_types::emit_store(g, value_reg, field_ptr, semantic::type_int(), p);
+                    var assigned_field_ty = semantic::type_int();
+                    if cg_types::span_ends_with(p, field_name_span, "is_used") {
+                        assigned_field_ty = semantic::type_bool();
+                    }
+                    cg_types::emit_store(g, value_reg, field_ptr, assigned_field_ty, p);
                 }
             }
         } else if is_deref {

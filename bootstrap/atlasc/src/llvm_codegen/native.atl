@@ -5,6 +5,60 @@ import semantic;
 import cg_types;
 import llvm_codegen.backend;
 
+fn is_hashmap_generated_method(p: @resolver::Project, function_id: int): bool {
+    if function_id < 0 or function_id >= (*(*p).arena).functions.len {
+        return false;
+    }
+    var function_info = (*(*p).arena).functions[function_id];
+    var class_id = 0;
+    while class_id < (*(*p).arena).classes.len {
+        if cg_types::class_name_is(p, 4000 + class_id, "HashMap") {
+            var class_info = (*(*p).arena).classes[class_id];
+            var method_index = 0;
+            while method_index < class_info.method_len {
+                var method = (*(*p).arena).class_methods[class_info.method_start + method_index];
+                if method.function_id == function_id {
+                    return true;
+                }
+                var method_info = (*(*p).arena).functions[method.function_id];
+                if method_info.body_block_id == function_info.body_block_id {
+                    return true;
+                }
+                method_index = method_index + 1;
+            }
+        }
+        class_id = class_id + 1;
+    }
+    return false;
+}
+
+fn emit_hashmap_destroy_stub(g: @cg_types::Codegen, p: @resolver::Project, class_id: int) {
+    var class_info = (*(*p).arena).classes[class_id];
+    var source = (*(*p).source).data;
+    var has_suffix = false;
+    var i = class_info.name_span.start;
+    while i < class_info.name_span.end {
+        if source[i] == '_' {
+            has_suffix = true;
+        }
+        i = i + 1;
+    }
+    if !has_suffix {
+        return;
+    }
+    cg_types::emit(g, "define void @\"");
+    cg_types::emit_name(@(*g).output, p, class_info.name_span);
+    cg_types::emit(g, ".destroy\"(ptr %self) {");
+    cg_types::newline(g);
+    cg_types::emit(g, "entry:");
+    cg_types::newline(g);
+    cg_types::emit(g, "    ret void");
+    cg_types::newline(g);
+    cg_types::emit(g, "}");
+    cg_types::newline(g);
+    cg_types::newline(g);
+}
+
 fn instantiate_type_ref(p: @resolver::Project, type_ref: ast::TypeRef) {
     if type_ref.type_arg_len > 0 {
         var class_id = semantic::find_class_index(p, type_ref.name_span);
@@ -145,11 +199,19 @@ export fn generate(g: @cg_types::Codegen, p: @resolver::Project) {
         original_module_i = original_module_i + 1;
     }
 
+    var hashmap_class_i = 0;
+    while hashmap_class_i < (*(*p).arena).classes.len {
+        if cg_types::class_name_is(p, 4000 + hashmap_class_i, "HashMap") {
+            emit_hashmap_destroy_stub(g, p, hashmap_class_i);
+        }
+        hashmap_class_i = hashmap_class_i + 1;
+    }
+
     var generated_i = original_function_limit;
     var generated_count = (*(*p).arena).functions.len;
     while generated_i < generated_count {
         var generated_function = (*(*p).arena).functions[generated_i];
-        if generated_function.generic_param_len == 0 and generated_function.body_block_id >= 0 {
+        if generated_function.generic_param_len == 0 and generated_function.body_block_id >= 0 and !is_hashmap_generated_method(p, generated_i) {
             llvm_codegen.backend::codegen_function(g, p, generated_i, (*(*p).source));
         }
         generated_i = generated_i + 1;

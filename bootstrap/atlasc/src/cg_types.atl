@@ -304,12 +304,23 @@ export fn find_function_for_codegen(p: @resolver::Project, candidate: span::Span
     }
 
     var i = 0;
-    while i < (*(*p).arena).functions.len {
-        var function_info = (*(*p).arena).functions[i];
-        if semantic::name_equals((*(*p).source).data, function_info.name_span, candidate) {
-            return i;
+    if short_name.start == candidate.start {
+        i = (*(*p).arena).functions.len - 1;
+        while i >= 0 {
+            var function_info = (*(*p).arena).functions[i];
+            if semantic::name_equals((*(*p).source).data, function_info.name_span, candidate) {
+                return i;
+            }
+            i = i - 1;
         }
-        i = i + 1;
+    } else {
+        while i < (*(*p).arena).functions.len {
+            var function_info = (*(*p).arena).functions[i];
+            if semantic::name_equals((*(*p).source).data, function_info.name_span, candidate) {
+                return i;
+            }
+            i = i + 1;
+        }
     }
     if short_name.start != candidate.start {
         i = 0;
@@ -568,7 +579,15 @@ export fn class_name_is(p: @resolver::Project, ty: int, name: []char): bool {
     if !semantic::is_class_type(ty) { return false; }
     var class_id = ty - 4000;
     if class_id < 0 or class_id >= (*(*p).arena).classes.len { return false; }
-    return span_ends_with(p, (*(*p).arena).classes[class_id].name_span, name);
+    var class_name = (*(*p).arena).classes[class_id].name_span;
+    if span_ends_with(p, class_name, name) { return true; }
+    if class_name.end - class_name.start <= name.len { return false; }
+    var i = 0;
+    while i < name.len {
+        if (*(*p).source).data[class_name.start + i] != name[i] { return false; }
+        i = i + 1;
+    }
+    return (*(*p).source).data[class_name.start + name.len] == '_';
 }
 
 export fn find_named_class_type(p: @resolver::Project, name: []char): int {

@@ -225,11 +225,19 @@ export fn get_base_type_name_span(source: @array::Array<char>, name: span::Span)
 
 export fn resolve_inner_type_for_pointer(p: @resolver::Project, type_ref: ast::TypeRef): int {
     if type_ref.resolved_def_id >= 0 {
-        var item = (*(*p).arena).items[type_ref.resolved_def_id];
-        if item.kind == 2 { return 1000 + item.struct_id; }
-        if item.kind == 3 { return 2000 + item.enum_id; }
-        if item.kind == 4 { return 3000 + item.choice_id; }
-        if item.kind == 6 { return 4000 + item.class_id; }
+        if type_ref.resolved_def_id >= type_int() and type_ref.resolved_def_id <= type_char() {
+            return type_ref.resolved_def_id;
+        }
+        if type_ref.resolved_def_id >= 1000 and type_ref.resolved_def_id >= (*(*p).arena).items.len {
+            return type_ref.resolved_def_id;
+        }
+        if type_ref.resolved_def_id < (*(*p).arena).items.len {
+            var item = (*(*p).arena).items[type_ref.resolved_def_id];
+            if item.kind == 2 { return 1000 + item.struct_id; }
+            if item.kind == 3 { return 2000 + item.enum_id; }
+            if item.kind == 4 { return 3000 + item.choice_id; }
+            if item.kind == 6 { return 4000 + item.class_id; }
+        }
     }
     var raw_name = type_ref.name_span;
     if raw_name.end > raw_name.start and (*(*p).source).data[raw_name.start] == '@' {
@@ -397,7 +405,30 @@ export fn resolve_type_ref(
         return type_pointer(inner, true);
     }
     if type_ref.token_kind == 6 {
+        if type_ref.resolved_def_id >= type_int() and type_ref.resolved_def_id <= type_char() {
+            return type_ref.resolved_def_id;
+        }
+        if type_ref.type_arg_len > 0 and type_ref.resolved_def_id >= 3000 and type_ref.resolved_def_id < 4000 {
+            var direct_choice_arg = (*(*p).arena).name_refs[type_ref.type_arg_start];
+            var direct_choice_id = monomorphizer::instantiate_choice(p, type_ref.resolved_def_id - 3000, direct_choice_arg);
+            if direct_choice_id >= 0 {
+                return 3000 + direct_choice_id;
+            }
+        }
+        if type_ref.type_arg_len > 0 and type_ref.resolved_def_id >= 4000 and type_ref.resolved_def_id < 10000 {
+            var direct_class_arg = (*(*p).arena).name_refs[type_ref.type_arg_start];
+            var direct_class_id = monomorphizer::instantiate_class(p, type_ref.resolved_def_id - 4000, direct_class_arg);
+            if direct_class_id >= 0 {
+                return 4000 + direct_class_id;
+            }
+        }
+        if type_ref.resolved_def_id >= 1000 and type_ref.resolved_def_id >= (*(*p).arena).items.len {
+            return type_ref.resolved_def_id;
+        }
         if type_ref.has_qualifier and type_ref.resolved_def_id >= 0 {
+            if type_ref.resolved_def_id >= (*(*p).arena).items.len {
+                return type_unknown();
+            }
             var item = (*(*p).arena).items[type_ref.resolved_def_id];
             if item.kind == 6 {
                 var type_arg_span = type_ref.qualifier_span;
@@ -421,6 +452,9 @@ export fn resolve_type_ref(
             }
         }
         if type_ref.resolved_def_id >= 0 {
+            if type_ref.resolved_def_id >= (*(*p).arena).items.len {
+                return type_unknown();
+            }
             var item = (*(*p).arena).items[type_ref.resolved_def_id];
             if type_ref.type_arg_len > 0 {
                 if item.kind == 6 {
@@ -449,6 +483,20 @@ export fn resolve_type_ref(
             }
         }
         var name_result = resolve_type_ref_from_name(p, type_ref.name_span);
+        if type_ref.type_arg_len > 0 and name_result >= 3000 and name_result < 4000 {
+            var fallback_choice_arg = (*(*p).arena).name_refs[type_ref.type_arg_start];
+            var fallback_choice_id = monomorphizer::instantiate_choice(p, name_result - 3000, fallback_choice_arg);
+            if fallback_choice_id >= 0 {
+                return 3000 + fallback_choice_id;
+            }
+        }
+        if type_ref.type_arg_len > 0 and name_result >= 4000 and name_result < 10000 {
+            var fallback_class_arg = (*(*p).arena).name_refs[type_ref.type_arg_start];
+            var fallback_class_id = monomorphizer::instantiate_class(p, name_result - 4000, fallback_class_arg);
+            if fallback_class_id >= 0 {
+                return 4000 + fallback_class_id;
+            }
+        }
         if name_result >= 1000 { return name_result; }
         var num_type = resolve_numeric_alias(p, type_ref.name_span);
         if num_type != type_unknown() { return num_type; }
@@ -566,12 +614,21 @@ export fn find_choice_index(p: @resolver::Project, candidate: span::Span): int {
 
 export fn find_function_index(p: @resolver::Project, candidate: span::Span): int {
     var name = last_path_segment_name((*(*p).source), candidate);
+    var qualified = name.start != candidate.start;
     var i = 0;
-    while i < (*(*p).arena).functions.len {
+    var end = (*(*p).arena).functions.len;
+    if !qualified {
+        i = end - 1;
+    }
+    while (qualified and i < end) or (!qualified and i >= 0) {
         if name_equals((*(*p).source).data, (*(*p).arena).functions[i].name_span, name) {
             return i;
         }
-        i = i + 1;
+        if qualified {
+            i = i + 1;
+        } else {
+            i = i - 1;
+        }
     }
     return -1;
 }

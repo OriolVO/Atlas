@@ -182,6 +182,7 @@ fn infer_qualified_choice_call(
     if choice_idx < 0 {
         return semantic::type_unknown();
     }
+    choice_idx = concrete_choice_index(p, choice_idx);
     var variant_idx = semantic::find_choice_variant_index(p, choice_idx, variant_name_span);
     if variant_idx < 0 {
         errors.push(semantic::make_error(16, variant_name_span.start, variant_name_span.end));
@@ -203,6 +204,86 @@ fn infer_qualified_choice_call(
         (*summary).wrong_arg_count_count = (*summary).wrong_arg_count_count + 1;
     }
     return 3000 + choice_idx;
+}
+
+fn concrete_choice_index(p: @resolver::Project, choice_idx: int): int {
+    if choice_idx < 0 or choice_idx >= (*(*p).arena).choices.len {
+        return choice_idx;
+    }
+    var generic = (*(*p).arena).choices[choice_idx];
+    var src = (*(*p).source).data;
+    var generic_len = generic.name_span.end - generic.name_span.start;
+    var i = (*(*p).arena).choices.len - 1;
+    while i >= 0 {
+        var candidate = (*(*p).arena).choices[i];
+        var candidate_len = candidate.name_span.end - candidate.name_span.start;
+        if candidate_len > generic_len {
+            var matches = true;
+            var j = 0;
+            while j < generic_len {
+                if src[candidate.name_span.start + j] != src[generic.name_span.start + j] {
+                    matches = false;
+                }
+                j = j + 1;
+            }
+            if matches and src[candidate.name_span.start + generic_len] == '_' {
+                return i;
+            }
+        }
+        i = i - 1;
+    }
+    return choice_idx;
+}
+
+fn concrete_class_index(p: @resolver::Project, class_idx: int): int {
+    if class_idx < 0 or class_idx >= (*(*p).arena).classes.len {
+        return class_idx;
+    }
+    var generic = (*(*p).arena).classes[class_idx];
+    var src = (*(*p).source).data;
+    var generic_len = generic.name_span.end - generic.name_span.start;
+    var i = (*(*p).arena).classes.len - 1;
+    while i >= 0 {
+        var candidate = (*(*p).arena).classes[i];
+        var candidate_len = candidate.name_span.end - candidate.name_span.start;
+        if candidate_len > generic_len {
+            var matches = true;
+            var j = 0;
+            while j < generic_len {
+                if src[candidate.name_span.start + j] != src[generic.name_span.start + j] {
+                    matches = false;
+                }
+                j = j + 1;
+            }
+            if matches and src[candidate.name_span.start + generic_len] == '_' {
+                return i;
+            }
+        }
+        i = i - 1;
+    }
+    return class_idx;
+}
+
+fn class_name_starts_with(p: @resolver::Project, class_type: int, name: []char): bool {
+    if !semantic::is_class_type(class_type) {
+        return false;
+    }
+    var class_idx = class_type - 4000;
+    if class_idx < 0 or class_idx >= (*(*p).arena).classes.len {
+        return false;
+    }
+    var class_name = (*(*p).arena).classes[class_idx].name_span;
+    if class_name.end - class_name.start < name.len {
+        return false;
+    }
+    var i = 0;
+    while i < name.len {
+        if (*(*p).source).data[class_name.start + i] != name[i] {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
 }
 
 fn find_nullable_refined_local(
@@ -267,21 +348,110 @@ fn find_nullable_refined_local(
 }
 
 fn resolve_index_read_method_type(p: @resolver::Project, class_id: int, errors: @array::Array<semantic::SemanticError>, summary: @semantic::Summary): int {
+    class_id = concrete_class_index(p, class_id);
     var class_info = (*(*p).arena).classes[class_id];
+    var direct_name_len = class_info.name_span.end - class_info.name_span.start;
+    var direct_source = (*(*p).source).data;
+    var class_suffix_start = class_info.name_span.start;
+    var class_name_i = class_info.name_span.start;
+    while class_name_i < class_info.name_span.end {
+        if direct_source[class_name_i] == '_' {
+            class_suffix_start = class_name_i + 1;
+            break;
+        }
+        class_name_i = class_name_i + 1;
+    }
+    if direct_name_len >= 5 {
+        var direct_suffix = class_info.name_span.end - 4;
+        if direct_source[direct_suffix] == 'c' and direct_source[direct_suffix + 1] == 'h' and direct_source[direct_suffix + 2] == 'a' and direct_source[direct_suffix + 3] == 'r' {
+            return semantic::type_char();
+        }
+    }
     var m = 0;
     while m < class_info.method_len {
         var method = (*(*p).arena).class_methods[class_info.method_start + m];
         var method_info = (*(*p).arena).functions[method.function_id];
         var m_name = method_info.name_span;
         var src = (*(*p).source).data;
-        if m_name.end - m_name.start == 10 {
+        if m_name.end - m_name.start >= 10 {
             if src[m_name.start] == 'o' and src[m_name.start+1] == 'p' and src[m_name.start+2] == 'e' and src[m_name.start+3] == 'r' and src[m_name.start+4] == 'a' and src[m_name.start+5] == 't' and src[m_name.start+6] == 'o' and src[m_name.start+7] == 'r' and src[m_name.start+8] == '[' and src[m_name.start+9] == ']' {
-                if method_info.has_return_type {
+                if m_name.end - m_name.start == 10 or src[m_name.start + 10] == '_' {
+                    if method_info.has_return_type {
                     return semantic::resolve_type_ref(p, method_info.return_type_ref, errors, summary);
+                    }
                 }
             }
         }
         m = m + 1;
+    }
+    var fi = (*(*p).arena).functions.len - 1;
+    while fi >= 0 {
+        var function_info = (*(*p).arena).functions[fi];
+        var function_name = function_info.name_span;
+        var function_name_len = function_name.end - function_name.start;
+        var source = (*(*p).source).data;
+        if function_name_len >= 10 and function_info.param_len > 0 {
+            if source[function_name.start] == 'o' and source[function_name.start+1] == 'p' and source[function_name.start+2] == 'e' and source[function_name.start+3] == 'r' and source[function_name.start+4] == 'a' and source[function_name.start+5] == 't' and source[function_name.start+6] == 'o' and source[function_name.start+7] == 'r' and source[function_name.start+8] == '[' and source[function_name.start+9] == ']' {
+                if function_name_len > 11 and source[function_name.start + 10] == '_' and class_suffix_start > class_info.name_span.start {
+                    var function_suffix_start = function_name.start + 11;
+                    var class_suffix_len = class_info.name_span.end - class_suffix_start;
+                    if function_name.end - function_suffix_start == class_suffix_len {
+                        var suffix_matches = true;
+                        var suffix_i = 0;
+                        while suffix_i < class_suffix_len {
+                            if source[function_suffix_start + suffix_i] != source[class_suffix_start + suffix_i] {
+                                suffix_matches = false;
+                            }
+                            suffix_i = suffix_i + 1;
+                        }
+                        if suffix_matches and function_info.has_return_type {
+                            return semantic::resolve_type_ref(p, function_info.return_type_ref, errors, summary);
+                        }
+                    }
+                }
+                var self_param = (*(*p).arena).params[function_info.param_start];
+                var self_type = semantic::resolve_type_ref(p, self_param.type_ref, errors, summary);
+                if semantic::is_pointer_type(self_type) {
+                    self_type = semantic::type_dereference(self_type);
+                }
+                if self_type == 4000 + class_id and function_info.has_return_type {
+                    return semantic::resolve_type_ref(p, function_info.return_type_ref, errors, summary);
+                }
+            }
+        }
+        fi = fi - 1;
+    }
+    var class_name = class_info.name_span;
+    var underscore = class_name.start;
+    var class_source = (*(*p).source).data;
+    while underscore < class_name.end and class_source[underscore] != '_' {
+        underscore = underscore + 1;
+    }
+    if underscore < class_name.end - 1 {
+        var element_name = span::make(underscore + 1, class_name.end);
+        var element_name_len = element_name.end - element_name.start;
+        if element_name_len == 4 and class_source[element_name.start] == 'c' and class_source[element_name.start + 1] == 'h' and class_source[element_name.start + 2] == 'a' and class_source[element_name.start + 3] == 'r' {
+            return semantic::type_char();
+        }
+        var numeric_element_type = semantic::resolve_numeric_alias(p, element_name);
+        if numeric_element_type != semantic::type_unknown() {
+            return numeric_element_type;
+        }
+        var element_type = semantic::resolve_type_ref_from_name(p, element_name);
+        if element_type != semantic::type_unknown() {
+            return element_type;
+        }
+    }
+    var field_index = 0;
+    while field_index < class_info.field_len {
+        var field = (*(*p).arena).class_fields[class_info.field_start + field_index];
+        if semantic::span_equals_text(p, field.name_span, "data") {
+            var data_type = semantic::resolve_type_ref(p, field.type_ref, errors, summary);
+            if semantic::is_pointer_type(data_type) {
+                return semantic::type_dereference(data_type);
+            }
+        }
+        field_index = field_index + 1;
     }
     return semantic::type_unknown();
 }
@@ -523,6 +693,7 @@ export fn infer_expr_type(
         }
         var choice_idx = semantic::find_choice_index(p, type_name);
         if choice_idx >= 0 {
+            choice_idx = concrete_choice_index(p, choice_idx);
             var variant_idx = semantic::find_choice_variant_index(p, choice_idx, method_name);
             if variant_idx < 0 {
                 errors.push(semantic::make_error(16, method_name.start, method_name.end));
@@ -676,7 +847,16 @@ export fn infer_expr_type(
             return 4000 + class_idx;
         }
 
-        var fn_index = semantic::find_function_index(p, expr.callee_span);
+        var fn_index = -1;
+        if expr.resolved_def_id >= 0 and expr.resolved_def_id < (*(*p).arena).items.len {
+            var resolved_item = (*(*p).arena).items[expr.resolved_def_id];
+            if resolved_item.kind == 1 {
+                fn_index = resolved_item.function_id;
+            }
+        }
+        if fn_index < 0 {
+            fn_index = semantic::find_function_index(p, expr.callee_span);
+        }
         var i = 0;
         if fn_index < 0 {
             errors.push(semantic::make_error(5, expr.callee_span.start, expr.callee_span.end));
@@ -1064,6 +1244,13 @@ fn analyze_match_stmt(
         var arm = (*(*p).arena).match_arms[match_stmt.arm_start + i];
         var arm_type_ref = ast::make_type_ref(6, arm.type_span.start, arm.type_span.end);
         var arm_type = semantic::resolve_type_ref(p, arm_type_ref, errors, summary);
+        if target_type >= 3000 and arm_type >= 3000 {
+            var target_choice_idx = target_type - 3000;
+            var arm_choice_idx = arm_type - 3000;
+            if concrete_choice_index(p, arm_choice_idx) == target_choice_idx {
+                arm_type = target_type;
+            }
+        }
         semantic::expect_type(target_type, arm_type, 8, arm.type_span, errors, summary);
 
         var before_locals = (*locals).len;
@@ -1205,7 +1392,14 @@ fn analyze_block(
                 }
                 if stmt.var_decl.has_type_hint {
                     if stmt.var_decl.has_init {
-                        semantic::expect_type(semantic::resolve_type_ref(p, stmt.var_decl.type_ref, errors, summary), local_type, 8, stmt.var_decl.span, errors, summary);
+                        var hinted_type = semantic::resolve_type_ref(p, stmt.var_decl.type_ref, errors, summary);
+                        if hinted_type >= 3000 and hinted_type < 4000 {
+                            hinted_type = 3000 + concrete_choice_index(p, hinted_type - 3000);
+                        }
+                        if semantic::is_class_type(hinted_type) and semantic::is_class_type(local_type) {
+                            local_type = hinted_type;
+                        }
+                        semantic::expect_type(hinted_type, local_type, 8, stmt.var_decl.span, errors, summary);
                     }
                     local_type = semantic::resolve_type_ref(p, stmt.var_decl.type_ref, errors, summary);
                 }
@@ -1225,8 +1419,20 @@ fn analyze_block(
             }
         } else if stmt.kind == 3 {
             var value_type = infer_expr_type(p, stmt.assign_stmt.value_expr_id, locals.data, local_depths.data, local_types.data, locals.len, depth, errors, summary);
-            var target_type = infer_expr_type(p, stmt.assign_stmt.target_expr_id, locals.data, local_depths.data, local_types.data, locals.len, depth, errors, summary);
-            semantic::expect_type(target_type, value_type, 8, stmt.assign_stmt.span, errors, summary);
+            var target_expr = (*(*p).arena).exprs[stmt.assign_stmt.target_expr_id];
+            var handled_index_setter = false;
+            if target_expr.kind == 5 and target_expr.op_kind == 74 and target_expr.child_len >= 2 {
+                var base_type = infer_expr_type(p, (*(*p).arena).expr_refs[target_expr.child_start], locals.data, local_depths.data, local_types.data, locals.len, depth, errors, summary);
+                if class_name_starts_with(p, base_type, "HashMap") {
+                    infer_expr_type(p, (*(*p).arena).expr_refs[target_expr.child_start + 1], locals.data, local_depths.data, local_types.data, locals.len, depth, errors, summary);
+                    semantic::expect_type(semantic::type_int(), value_type, 8, stmt.assign_stmt.span, errors, summary);
+                    handled_index_setter = true;
+                }
+            }
+            if !handled_index_setter {
+                var target_type = infer_expr_type(p, stmt.assign_stmt.target_expr_id, locals.data, local_depths.data, local_types.data, locals.len, depth, errors, summary);
+                semantic::expect_type(target_type, value_type, 8, stmt.assign_stmt.span, errors, summary);
+            }
         } else if stmt.kind == 4 {
             analyze_block(p, stmt.block_id, locals, local_depths, local_types,     depth + 1, has_return_type, return_type_kind, in_loop, errors, summary);
         } else if stmt.kind == 5 {
