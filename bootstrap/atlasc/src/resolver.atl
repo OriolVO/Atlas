@@ -591,7 +591,18 @@ fn resolve_expr(p: @Project, mod_idx: int, expr_id: int, errors: @array::Array<a
 
 fn resolve_type_ref(p: @Project, mod_idx: int, type_ref: @ast::TypeRef, errors: @array::Array<ast::ParseError>): bool {
     if (*type_ref).token_kind == 6 {
-        var def_id = find_name(p, mod_idx, (*type_ref).qualifier_span, (*type_ref).name_span);
+        var name_span = (*type_ref).name_span;
+        if (*type_ref).type_arg_len > 0 {
+            var si = name_span.start;
+            while si < name_span.end {
+                if (*(*p).source).data[si] == '<' {
+                    name_span = span::make(name_span.start, si);
+                    break;
+                }
+                si = si + 1;
+            }
+        }
+        var def_id = find_name(p, mod_idx, (*type_ref).qualifier_span, name_span);
         (*type_ref).resolved_def_id = def_id;
     } else if (*type_ref).token_kind == 61 or (*type_ref).token_kind == 62 {
         var name_span = (*type_ref).name_span;

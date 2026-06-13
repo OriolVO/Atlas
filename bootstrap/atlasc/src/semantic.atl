@@ -309,6 +309,13 @@ export fn resolve_type_ref_from_name(p: @resolver::Project, raw_name: span::Span
         }
         i = i + 1;
     }
+    var num_type = resolve_numeric_alias(p, name);
+    if num_type != type_unknown() { return num_type; }
+    var name_len = name.end - name.start;
+    var name_src = (*(*p).source).data;
+    var ns = name.start;
+    if name_len == 4 and name_src[ns] == 'b' and name_src[ns+1] == 'o' and name_src[ns+2] == 'o' and name_src[ns+3] == 'l' { return type_bool(); }
+    if name_len == 4 and name_src[ns] == 'c' and name_src[ns+1] == 'h' and name_src[ns+2] == 'a' and name_src[ns+3] == 'r' { return type_char(); }
     return type_unknown();
 }
 
@@ -394,6 +401,9 @@ export fn resolve_type_ref(
             var item = (*(*p).arena).items[type_ref.resolved_def_id];
             if item.kind == 6 {
                 var type_arg_span = type_ref.qualifier_span;
+                if type_ref.type_arg_len > 0 {
+                    type_arg_span = (*(*p).arena).name_refs[type_ref.type_arg_start];
+                }
                 var concrete_class_id = monomorphizer::instantiate_class(p, item.class_id, type_arg_span);
                 if concrete_class_id >= 0 {
                     return 4000 + concrete_class_id;
@@ -401,6 +411,9 @@ export fn resolve_type_ref(
             }
             if item.kind == 4 {
                 var type_arg_span = type_ref.qualifier_span;
+                if type_ref.type_arg_len > 0 {
+                    type_arg_span = (*(*p).arena).name_refs[type_ref.type_arg_start];
+                }
                 var concrete_choice_id = monomorphizer::instantiate_choice(p, item.choice_id, type_arg_span);
                 if concrete_choice_id >= 0 {
                     return 3000 + concrete_choice_id;
@@ -409,6 +422,22 @@ export fn resolve_type_ref(
         }
         if type_ref.resolved_def_id >= 0 {
             var item = (*(*p).arena).items[type_ref.resolved_def_id];
+            if type_ref.type_arg_len > 0 {
+                if item.kind == 6 {
+                    var type_arg_span = (*(*p).arena).name_refs[type_ref.type_arg_start];
+                    var concrete_class_id = monomorphizer::instantiate_class(p, item.class_id, type_arg_span);
+                    if concrete_class_id >= 0 {
+                        return 4000 + concrete_class_id;
+                    }
+                }
+                if item.kind == 4 {
+                    var type_arg_span = (*(*p).arena).name_refs[type_ref.type_arg_start];
+                    var concrete_choice_id = monomorphizer::instantiate_choice(p, item.choice_id, type_arg_span);
+                    if concrete_choice_id >= 0 {
+                        return 3000 + concrete_choice_id;
+                    }
+                }
+            }
             if item.kind == 2 {
                 return 1000 + item.struct_id;
             } else if item.kind == 3 {
@@ -650,6 +679,7 @@ export fn compatible_type(expected: int, actual: int): bool {
     if is_integer_type(expected) and actual == type_untyped_int() { return true; }
     if expected == type_untyped_int() and is_integer_type(actual) { return true; }
     if is_integer_type(expected) and actual == type_char() { return true; }
+    if expected == type_char() and is_integer_type(actual) { return true; }
     if is_float_type(expected) and is_float_type(actual) {
         if expected == actual { return true; }
         if expected == type_float64() and actual == type_float() { return true; }

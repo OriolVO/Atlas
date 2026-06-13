@@ -106,7 +106,7 @@ export fn main(argc: int32, argv: @@char): int {
         arena: @arena,
         source: @source,
         modules: @modules,
-        prelude_count: 0,
+        prelude_count: 5,
         source_root_start: 0,
         source_root_end: 0
     };
