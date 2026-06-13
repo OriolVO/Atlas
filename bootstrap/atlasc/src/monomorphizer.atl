@@ -272,11 +272,12 @@ export fn instantiate_class(
         span: cl.span
     });
 
+    var method_start = (*(*p).arena).class_methods.len;
     var mi = 0;
     while mi < cl.method_len {
         var orig_method = (*(*p).arena).class_methods[cl.method_start + mi];
         var concrete_fn_id = instantiate_generic(p, orig_method.function_id, type_arg_span);
-        if concrete_fn_id >= 0 and concrete_fn_id != orig_method.function_id {
+        if concrete_fn_id >= 0 {
             ast::push_class_method((*p).arena, ast::ClassMethod {
                 visibility: orig_method.visibility,
                 function_id: concrete_fn_id,
@@ -286,8 +287,6 @@ export fn instantiate_class(
         mi = mi + 1;
     }
 
-    var method_start = (*(*p).arena).class_methods.len - cl.method_len;
-    if method_start < 0 { method_start = 0; }
     (*(*p).arena).classes[new_cl_id].method_start = method_start;
     (*(*p).arena).classes[new_cl_id].method_len = cl.method_len;
 

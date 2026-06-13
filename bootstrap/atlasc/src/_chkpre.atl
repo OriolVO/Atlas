@@ -1,8 +1,0 @@
-import ast; import array; import error; import io; import lexer; import llvm_codegen.native; import parser; import span; import resolver; import semantic; import string; import token;
-fn main(): int {
-var arena = ast::make_empty_arena(); var source_arr: array::Array<char> = array::Array();
-var modules: array::Array<resolver::ModuleInterface> = array::Array();
-var resolve_errors: array::Array<ast::ParseError> = array::Array();
-if !resolver::load_and_resolve(@string::String::from("compiler/tests/integration/01_arithmetic.atl"), @arena, @source_arr, @modules, @resolve_errors) { return 10; }
-return modules.len;
-}

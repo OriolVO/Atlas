@@ -6,3 +6,9 @@ target
 *.out
 *.py
 bootstrap/atlasc/src/main
+bootstrap/atlasc/src/test_input.atl
+bootstrap/atlasc/src/test_runner.atl
+bootstrap/atlasc/src/*.ir.exe
+input.atl
+parse_test.atl
+compiler/test_output.txt

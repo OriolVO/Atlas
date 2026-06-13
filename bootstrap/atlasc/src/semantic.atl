@@ -127,6 +127,16 @@ fn find_field_type(
         }
         target = type_dereference(struct_type);
     }
+    if target >= 50000 {
+        var slen = member_name.end - member_name.start;
+        var s = (*(*p).source).data;
+        if slen == 3 and s[member_name.start] == 'l' and s[member_name.start+1] == 'e' and s[member_name.start+2] == 'n' {
+            return type_int();
+        }
+        errors.push(make_error(13, member_name.start, member_name.end));
+        (*summary).bad_member_base_count = (*summary).bad_member_base_count + 1;
+        return type_unknown();
+    }
     if target >= 4000 {
         var class_index = target - 4000;
         if class_index < (*(*p).arena).classes.len {
@@ -344,6 +354,17 @@ fn infer_struct_literal_type(
 }
 
 
+fn get_base_type_name_span(source: @array::Array<char>, name: span::Span): span::Span {
+    var i = name.start;
+    while i < name.end {
+        if (*source).data[i] == '<' {
+            return span::make(name.start, i);
+        }
+        i = i + 1;
+    }
+    return name;
+}
+
 fn resolve_inner_type_for_pointer(p: @resolver::Project, type_ref: ast::TypeRef): int {
     if type_ref.resolved_def_id >= 0 {
         var item = (*(*p).arena).items[type_ref.resolved_def_id];
@@ -352,10 +373,11 @@ fn resolve_inner_type_for_pointer(p: @resolver::Project, type_ref: ast::TypeRef)
         if item.kind == 4 { return 3000 + item.choice_id; }
         if item.kind == 6 { return 4000 + item.class_id; }
     }
-    var name = type_ref.name_span;
-    if name.end > name.start and (*(*p).source).data[name.start] == '@' {
-        name = span::make(name.start + 1, name.end);
+    var raw_name = type_ref.name_span;
+    if raw_name.end > raw_name.start and (*(*p).source).data[raw_name.start] == '@' {
+        raw_name = span::make(raw_name.start + 1, raw_name.end);
     }
+    var name = get_base_type_name_span((*p).source, raw_name);
     var i = 0;
     while i < (*(*p).arena).items.len {
         var item = (*(*p).arena).items[i];
@@ -384,7 +406,8 @@ fn resolve_inner_type_for_pointer(p: @resolver::Project, type_ref: ast::TypeRef)
     return 0;
 }
 
-fn resolve_type_ref_from_name(p: @resolver::Project, name: span::Span): int {
+fn resolve_type_ref_from_name(p: @resolver::Project, raw_name: span::Span): int {
+    var name = get_base_type_name_span((*p).source, raw_name);
     var i = 0;
     while i < (*(*p).arena).items.len {
         var item = (*(*p).arena).items[i];
@@ -1166,6 +1189,19 @@ fn infer_expr_type(
     }
 
     if expr.kind == 20 {
+        var class_idx = find_class_index(p, expr.callee_span);
+        if class_idx >= 0 {
+            var class_info = (*(*p).arena).classes[class_idx];
+            if class_info.generic_param_len > 0 and expr.int_value > 0 {
+                var type_arg_span = (*(*p).arena).name_refs[expr.name_ref_start];
+                var concrete_class_id = monomorphizer::instantiate_class(p, class_idx, type_arg_span);
+                if concrete_class_id >= 0 {
+                    return 4000 + concrete_class_id;
+                }
+            }
+            return 4000 + class_idx;
+        }
+
         var fn_index = find_function_index(p, expr.callee_span);
         var i = 0;
         if fn_index < 0 {
@@ -1417,6 +1453,11 @@ fn infer_expr_type(
     }
 
     if expr.kind == 6 {
+        var class_idx = find_class_index(p, expr.callee_span);
+        if class_idx >= 0 {
+            return 4000 + class_idx;
+        }
+
         var fn_index = find_function_index(p, expr.callee_span);
         var i = 0;
         if fn_index < 0  {
@@ -1806,6 +1847,10 @@ export fn analyze_file(p: @resolver::Project, file_info: ast::FileInfo, summary:
     i = 0;
     while i < struct_ids.len {
         var struct_info = (*(*p).arena).structs[struct_ids[i]];
+        if struct_info.generic_param_len > 0 {
+            i = i + 1;
+            continue;
+        }
         var f = 0;
         while f < struct_info.field_len {
             var field = (*(*p).arena).struct_fields[struct_info.field_start + f];
@@ -1883,6 +1928,10 @@ export fn analyze_file(p: @resolver::Project, file_info: ast::FileInfo, summary:
             );
         } else if item.kind == 6 {
             var class_info = (*(*p).arena).classes[item.class_id];
+            if class_info.generic_param_len > 0 {
+                i = i + 1;
+                continue;
+            }
             var f = 0;
             while f < class_info.field_len {
                 var field = (*(*p).arena).class_fields[class_info.field_start + f];

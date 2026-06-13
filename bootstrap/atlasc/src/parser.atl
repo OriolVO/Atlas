@@ -234,10 +234,11 @@ fn parse_type_expr(p: @Parser, arena: @ast::Arena, type_ref: @ast::TypeRef): boo
         if peek_kind(p) == 55 {
             advance(p);
             advance(p);
+            var end_val = name_end;
             if peek_kind(p) == 56 {
+                end_val = peek_span_end(p);
                 advance(p);
             }
-            var end_val = peek_span_end(p);
             if is_qual {
                 (*type_ref) = ast::make_qualified_type_ref(ref_kind, qual_start, qual_end, name_start, end_val);
             } else {
