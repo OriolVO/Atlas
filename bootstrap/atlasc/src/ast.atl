@@ -12,6 +12,8 @@ export struct TypeRef {
     qualifier_span: span::Span;
     name_span: span::Span;
     resolved_def_id: int;
+    type_arg_start: int;
+    type_arg_len: int;
 }
 
 
@@ -293,7 +295,9 @@ export fn make_empty_type_ref(): TypeRef {
         has_qualifier: false,
         qualifier_span: span::make(0, 0),
         name_span: span::make(0, 0),
-        resolved_def_id: -1
+        resolved_def_id: -1,
+        type_arg_start: 0,
+        type_arg_len: 0
     };
 }
 
@@ -303,7 +307,9 @@ export fn make_type_ref(token_kind: int, start: int, end: int): TypeRef {
         has_qualifier: false,
         qualifier_span: span::make(0, 0),
         name_span: span::make(start, end),
-        resolved_def_id: -1
+        resolved_def_id: -1,
+        type_arg_start: 0,
+        type_arg_len: 0
     };
 }
 
@@ -313,7 +319,9 @@ export fn make_qualified_type_ref(token_kind: int, qualifier_start: int, qualifi
         has_qualifier: true,
         qualifier_span: span::make(qualifier_start, qualifier_end),
         name_span: span::make(start, end),
-        resolved_def_id: -1
+        resolved_def_id: -1,
+        type_arg_start: 0,
+        type_arg_len: 0
     };
 }
 

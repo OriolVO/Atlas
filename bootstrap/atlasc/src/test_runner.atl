@@ -28,11 +28,14 @@ fn main(): int {
     
     var total_semantic_errors = 0;
     var mi = 0;
+    var prev_errors_len = errors.len;
     while mi < modules.len {
         var summary = semantic::make_empty_summary();
         var sem_errs: array::Array<semantic::SemanticError> = array::Array();
         semantic::analyze_file(@proj, arena.file_infos[modules[mi].file_info_id], @summary, @sem_errs);
-        if sem_errs.len > 0 or errors.len > 0 {
+        var has_new_errors = false;
+        if sem_errs.len > 0 or errors.len > prev_errors_len {
+            has_new_errors = true;
             io::print_char('M'); io::print_char('O'); io::print_char('D');
             var name_sp = modules[mi].name_span;
             if name_sp.start != name_sp.end {
@@ -60,6 +63,8 @@ fn main(): int {
             err_i = err_i + 1;
         }
         total_semantic_errors = total_semantic_errors + sem_errs.len;
+        if has_new_errors { total_semantic_errors = total_semantic_errors + 1; }
+        prev_errors_len = errors.len;
         mi = mi + 1;
     }
     

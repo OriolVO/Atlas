@@ -1496,8 +1496,23 @@ fn infer_expr_type(
         var is_generic = function_info.generic_param_len > 0;
 
         if is_generic {
+            if expr.child_len > 0 and function_info.param_len > 0 {
+                var arg_type = infer_expr_type(p, (*(*p).arena).expr_refs[expr.child_start], locals, depths, local_types, local_count, depth, errors, summary);
+                if arg_type != type_unknown() {
+                    (*(*p).arena).exprs[expr_id].resolved_def_id = fn_index;
+                    var ai2 = 0;
+                    while ai2 < expr.child_len {
+                        infer_expr_type(p, (*(*p).arena).expr_refs[expr.child_start + ai2], locals, depths, local_types, local_count, depth, errors, summary);
+                        ai2 = ai2 + 1;
+                    }
+                    if function_info.has_return_type {
+                        return resolve_type_ref(p, function_info.return_type_ref, errors, summary);
+                    }
+                    return type_unknown();
+                }
+            }
             while i < expr.child_len {
-                infer_expr_type(p, (*(*p).arena).expr_refs[expr.child_start + i], locals, depths, local_types, local_count,     depth, errors, summary);
+                infer_expr_type(p, (*(*p).arena).expr_refs[expr.child_start + i], locals, depths, local_types, local_count, depth, errors, summary);
                 i = i + 1;
             }
             if function_info.has_return_type {

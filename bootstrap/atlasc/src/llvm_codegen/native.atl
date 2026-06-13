@@ -1584,6 +1584,17 @@ fn codegen_expr(g: @Codegen, p: @resolver::Project, expr_id: int, source: @array
         var fn_chars: array::Array<char> = array::Array();
         var csi = expr.callee_span.start;
         var csi_end = expr.callee_span.end;
+        if expr.resolved_def_id >= 0 {
+            var mono_fn_id = -1;
+            if param_tys.len > 0 {
+                mono_fn_id = monomorphizer::instantiate_generic_from_type(p, expr.resolved_def_id, param_tys[0]);
+            }
+            if mono_fn_id >= 0 {
+                var resolved_fn = (*(*p).arena).functions[mono_fn_id];
+                csi = resolved_fn.name_span.start;
+                csi_end = resolved_fn.name_span.end;
+            }
+        }
         while csi < csi_end {
             if csi < csi_end - 1 and (*(*p).source).data[csi] == ':' and (*(*p).source).data[csi + 1] == ':' {
                 fn_chars.push('.');
@@ -2663,7 +2674,31 @@ export fn generate(g: @Codegen, p: @resolver::Project) {
     }
 }
 
+fn has_method_named(p: @resolver::Project, class_id: int, name: []char): bool {
+    var ci = (*(*p).arena).classes[class_id];
+    var m = 0;
+    while m < ci.method_len {
+        var method = (*(*p).arena).class_methods[ci.method_start + m];
+        var fn_info = (*(*p).arena).functions[method.function_id];
+        if fn_info.name_span.end - fn_info.name_span.start == name.len {
+            var matches = true;
+            var ni = 0;
+            while ni < name.len {
+                if (*(*p).source).data[fn_info.name_span.start + ni] != name[ni] {
+                    matches = false;
+                    break;
+                }
+                ni = ni + 1;
+            }
+            if matches { return true; }
+        }
+        m = m + 1;
+    }
+    return false;
+}
+
 fn emit_class_init(g: @Codegen, p: @resolver::Project, class_id: int) {
+    if has_method_named(p, class_id, "init") { return; }
     var ci = (*(*p).arena).classes[class_id];
     emit(g, "define void @\"");
     emit_name(@(*g).output, p, ci.name_span);
@@ -2687,6 +2722,7 @@ fn emit_class_init(g: @Codegen, p: @resolver::Project, class_id: int) {
 }
 
 fn emit_class_destroy(g: @Codegen, p: @resolver::Project, class_id: int) {
+    if has_method_named(p, class_id, "destroy") { return; }
     var ci = (*(*p).arena).classes[class_id];
     emit(g, "define void @\"");
     emit_name(@(*g).output, p, ci.name_span);

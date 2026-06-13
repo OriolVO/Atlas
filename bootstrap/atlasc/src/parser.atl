@@ -96,6 +96,72 @@ fn expect_identifier(p: @Parser, name_start: @int, name_end: @int): bool {
     return false;
 }
 
+fn parse_generic_type_arg(p: @Parser, start: @int, end: @int): bool {
+    var k = peek_kind(p);
+    if k == 61 {
+        (*start) = peek_span_start(p);
+        advance(p);
+        var target_start = 0;
+        var target_end = 0;
+        if !expect_identifier(p, @target_start, @target_end) {
+            return false;
+        }
+        while peek_kind(p) == 63 {
+            advance(p);
+            if !expect_identifier(p, @target_start, @target_end) {
+                return false;
+            }
+        }
+        (*end) = target_end;
+        return true;
+    }
+    if is_type_keyword(k) {
+        (*start) = peek_span_start(p);
+        (*end) = peek_span_end(p);
+        advance(p);
+        return true;
+    }
+    if k == 6 {
+        (*start) = peek_span_start(p);
+        advance(p);
+        var seg_end = peek_span_end(p);
+        while peek_kind(p) == 63 {
+            advance(p);
+            var next_start = 0;
+            var next_end = 0;
+            if !expect_identifier(p, @next_start, @next_end) {
+                return false;
+            }
+            seg_end = next_end;
+        }
+        (*end) = seg_end;
+        return true;
+    }
+    return false;
+}
+
+fn parse_args_and_end(p: @Parser, arena: @ast::Arena, args: @array::Array<int>, end_span: @int): bool {
+    advance(p);
+    if peek_kind(p) != 71 {
+        var done = false;
+        while !done {
+            var arg_id = -1;
+            if !parse_expr(p, arena, 0, @arg_id) {
+                return false;
+            }
+            (*args).push(arg_id);
+            if peek_kind(p) == 66 {
+                advance(p);
+            } else {
+                done = true;
+            }
+        }
+    }
+    (*end_span) = peek_span_end(p);
+    expect(p, 71);
+    return true;
+}
+
 fn synchronize(p: @Parser) {
     while (*p).cursor < (*p).count {
         var k = peek_kind(p);
@@ -233,17 +299,33 @@ fn parse_type_expr(p: @Parser, arena: @ast::Arena, type_ref: @ast::TypeRef): boo
 
         if peek_kind(p) == 55 {
             advance(p);
-            advance(p);
-            var end_val = name_end;
-            if peek_kind(p) == 56 {
-                end_val = peek_span_end(p);
-                advance(p);
+            var type_arg_spans: array::Array<span::Span> = array::Array();
+            if peek_kind(p) != 56 {
+                var done_ta = false;
+                while !done_ta {
+                    var ta_start = 0;
+                    var ta_end = 0;
+                    if !parse_generic_type_arg(p, @ta_start, @ta_end) {
+                        return false;
+                    }
+                    type_arg_spans.push(span::make(ta_start, ta_end));
+                    if peek_kind(p) == 66 {
+                        advance(p);
+                    } else {
+                        done_ta = true;
+                    }
+                }
             }
+            var end_val = peek_span_end(p);
+            expect(p, 56);
+            var ta_start_idx = ast::append_name_refs(arena, @type_arg_spans);
             if is_qual {
                 (*type_ref) = ast::make_qualified_type_ref(ref_kind, qual_start, qual_end, name_start, end_val);
             } else {
                 (*type_ref) = ast::make_type_ref(ref_kind, name_start, end_val);
             }
+            (*type_ref).type_arg_start = ta_start_idx;
+            (*type_ref).type_arg_len = type_arg_spans.len;
             return true;
         }
 
@@ -306,8 +388,8 @@ fn parse_param(p: @Parser, arena: @ast::Arena, param_id: @int): bool {
         name_end = peek_span_end(p);
         advance(p);
         if peek_kind(p) != 64 {
-            var type_ref = ast::make_type_ref(6, name_start, name_end);
-            (*param_id) = ast::push_param(arena, ast::make_param_info(name_start, name_end, true, type_ref));
+            var self_span = span::make(name_start, name_end);
+            (*param_id) = ast::push_param(arena, ast::make_param_info(name_start, name_end, false, ast::make_empty_type_ref()));
             return true;
         }
     } else {
@@ -491,7 +573,32 @@ fn parse_expr(p: @Parser, arena: @ast::Arena, min_bp: int, expr_id: @int): bool 
             }
             end_val = variant_end2;
 
-            if peek_kind(p) == 70 {
+            if peek_kind(p) == 55 and (is_type_keyword(peek_nth_kind(p, 1)) or peek_nth_kind(p, 1) == 6 or peek_nth_kind(p, 1) == 61) {
+                advance(p);
+                var type_arg_start = 0;
+                var type_arg_end = 0;
+                if !parse_generic_type_arg(p, @type_arg_start, @type_arg_end) {
+                    return false;
+                }
+                expect(p, 56);
+                if peek_kind(p) != 70 {
+                    return false;
+                }
+                var gen_args: array::Array<int> = array::Array();
+                var gen_end = 0;
+                if !parse_args_and_end(p, arena, @gen_args, @gen_end) {
+                    return false;
+                }
+                var gen_child_start = ast::append_expr_refs(arena, @gen_args);
+                var ta_refs: array::Array<span::Span> = array::Array();
+                ta_refs.push(span::make(type_arg_start, type_arg_end));
+                var gen_nr_start = ast::append_name_refs(arena, @ta_refs);
+                var gen_e = ast::make_generic_call_expr(type_start, variant_end2, gen_child_start, gen_args.len, start, gen_end);
+                var gen_id = ast::push_expr(arena, gen_e);
+                (*arena).exprs[gen_id].int_value = 1;
+                (*arena).exprs[gen_id].name_ref_start = gen_nr_start;
+                lhs_id = gen_id;
+            } else if peek_kind(p) == 70 {
                 advance(p);
                 var args: array::Array<int> = array::Array();
                 if peek_kind(p) != 71 {
@@ -555,6 +662,31 @@ fn parse_expr(p: @Parser, arena: @ast::Arena, min_bp: int, expr_id: @int): bool 
                 var e = ast::make_variant_expr(type_start, type_end, variant_start2, variant_end2, 0, 0, start, end_val);
                 lhs_id = ast::push_expr(arena, e);
             }
+        } else if peek_kind(p) == 55 and (is_type_keyword(peek_nth_kind(p, 1)) or peek_nth_kind(p, 1) == 6 or peek_nth_kind(p, 1) == 61) {
+            advance(p);
+            var type_arg_start2 = 0;
+            var type_arg_end2 = 0;
+            if !parse_generic_type_arg(p, @type_arg_start2, @type_arg_end2) {
+                return false;
+            }
+            expect(p, 56);
+            if peek_kind(p) != 70 {
+                return false;
+            }
+            var gen_args2: array::Array<int> = array::Array();
+            var gen_end2 = 0;
+            if !parse_args_and_end(p, arena, @gen_args2, @gen_end2) {
+                return false;
+            }
+            var gen_child_start2 = ast::append_expr_refs(arena, @gen_args2);
+            var ta_refs2: array::Array<span::Span> = array::Array();
+            ta_refs2.push(span::make(type_arg_start2, type_arg_end2));
+            var gen_nr_start2 = ast::append_name_refs(arena, @ta_refs2);
+            var gen_e2 = ast::make_generic_call_expr(name_start, name_end, gen_child_start2, gen_args2.len, start, gen_end2);
+            var gen_id2 = ast::push_expr(arena, gen_e2);
+            (*arena).exprs[gen_id2].int_value = 1;
+            (*arena).exprs[gen_id2].name_ref_start = gen_nr_start2;
+            lhs_id = gen_id2;
         } else if peek_kind(p) == 70 {
             advance(p);
             var args2: array::Array<int> = array::Array();
@@ -1042,17 +1174,25 @@ fn parse_fn_decl(p: @Parser, arena: @ast::Arena, func_id: @int): bool {
         return false;
     }
 
+    var gp_start = 0;
+    var gp_len = 0;
     if peek_kind(p) == 55 {
+        gp_start = (*arena).generic_params.len;
         advance(p);
-        if !expect_identifier(p, @name_start, @name_end) {
+        var g_name_start = 0;
+        var g_name_end = 0;
+        if !expect_identifier(p, @g_name_start, @g_name_end) {
             return false;
         }
+        ast::push_generic_param(arena, ast::GenericParam { name_span: span::make(g_name_start, g_name_end), span: span::make(g_name_start, g_name_end) });
         if peek_kind(p) == 66 {
             advance(p);
-            if !expect_identifier(p, @name_start, @name_end) {
+            if !expect_identifier(p, @g_name_start, @g_name_end) {
                 return false;
             }
+            ast::push_generic_param(arena, ast::GenericParam { name_span: span::make(g_name_start, g_name_end), span: span::make(g_name_start, g_name_end) });
         }
+        gp_len = (*arena).generic_params.len - gp_start;
         expect(p, 56);
     }
 
@@ -1097,7 +1237,7 @@ fn parse_fn_decl(p: @Parser, arena: @ast::Arena, func_id: @int): bool {
     }
 
     var end_s = peek_span_end(p);
-    var func_info = ast::make_function_info(name_start, name_end, param_start, param_len, has_return_type, return_type_ref, body_id, 0, 0, 0, 0, start, end_s, false);
+    var func_info = ast::make_function_info(name_start, name_end, param_start, param_len, has_return_type, return_type_ref, body_id, gp_start, gp_len, 0, 0, start, end_s, false);
     (*func_id) = ast::push_function(arena, func_info);
     return true;
 }
