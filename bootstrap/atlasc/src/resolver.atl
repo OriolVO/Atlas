@@ -432,6 +432,7 @@ fn resolve_block(p: @Project, mod_idx: int, block_id: int, errors: @array::Array
             }
             if !resolve_expr(p, mod_idx, stmt.const_decl.init_expr_id, errors) { ok = false; }
         } else if stmt.kind == 3 {
+            if !resolve_expr(p, mod_idx, stmt.assign_stmt.target_expr_id, errors) { ok = false; }
             if !resolve_expr(p, mod_idx, stmt.assign_stmt.value_expr_id, errors) { ok = false; }
         } else if stmt.kind == 4 {
             if !resolve_block(p, mod_idx, stmt.block_id, errors) { ok = false; }

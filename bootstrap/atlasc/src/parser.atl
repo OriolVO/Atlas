@@ -112,6 +112,22 @@ fn parse_generic_type_arg(p: @Parser, start: @int, end: @int): bool {
                 return false;
             }
         }
+        if peek_kind(p) == 55 {
+            var depth = 0;
+            while (*p).cursor < (*p).count {
+                var nested_kind = peek_kind(p);
+                if nested_kind == 55 {
+                    depth = depth + 1;
+                } else if nested_kind == 56 {
+                    depth = depth - 1;
+                }
+                target_end = peek_span_end(p);
+                advance(p);
+                if depth == 0 {
+                    break;
+                }
+            }
+        }
         (*end) = target_end;
         return true;
     }
@@ -134,10 +150,49 @@ fn parse_generic_type_arg(p: @Parser, start: @int, end: @int): bool {
             }
             seg_end = next_end;
         }
+        if peek_kind(p) == 55 {
+            var depth2 = 0;
+            while (*p).cursor < (*p).count {
+                var nested_kind2 = peek_kind(p);
+                if nested_kind2 == 55 {
+                    depth2 = depth2 + 1;
+                } else if nested_kind2 == 56 {
+                    depth2 = depth2 - 1;
+                }
+                seg_end = peek_span_end(p);
+                advance(p);
+                if depth2 == 0 {
+                    break;
+                }
+            }
+        }
         (*end) = seg_end;
         return true;
     }
     return false;
+}
+
+fn looks_like_generic_call(p: @Parser): bool {
+    if peek_kind(p) != 55 {
+        return false;
+    }
+    var offset = 1;
+    if peek_nth_kind(p, offset) == 61 {
+        offset = offset + 1;
+    }
+    var kind = peek_nth_kind(p, offset);
+    if !is_type_keyword(kind) and kind != 6 {
+        return false;
+    }
+    offset = offset + 1;
+    while peek_nth_kind(p, offset) == 63 {
+        offset = offset + 1;
+        if peek_nth_kind(p, offset) != 6 {
+            return false;
+        }
+        offset = offset + 1;
+    }
+    return peek_nth_kind(p, offset) == 56 and peek_nth_kind(p, offset + 1) == 70;
 }
 
 fn parse_args_and_end(p: @Parser, arena: @ast::Arena, args: @array::Array<int>, end_span: @int): bool {
@@ -237,7 +292,7 @@ fn parse_type_expr(p: @Parser, arena: @ast::Arena, type_ref: @ast::TypeRef): boo
         if !parse_type_expr(p, arena, @elem_ref) {
             return false;
         }
-        var end_slice = peek_span_end(p);
+        var end_slice = elem_ref.name_span.end;
         (*type_ref) = ast::make_type_ref(79, start, end_slice);
         return true;
     }
@@ -249,11 +304,12 @@ fn parse_type_expr(p: @Parser, arena: @ast::Arena, type_ref: @ast::TypeRef): boo
             return false;
         }
         var nullable = false;
+        var end_val = target_ref.name_span.end;
         if peek_kind(p) == 62 {
+            end_val = peek_span_end(p);
             advance(p);
             nullable = true;
         }
-        var end_val = peek_span_end(p);
         if nullable {
             (*type_ref) = ast::make_type_ref(62, start, end_val);
         } else {
@@ -331,16 +387,23 @@ fn parse_type_expr(p: @Parser, arena: @ast::Arena, type_ref: @ast::TypeRef): boo
 
         if peek_kind(p) == 74 {
             advance(p);
-            advance(p);
-            if peek_kind(p) == 75 {
+            var array_size = 0;
+            if peek_kind(p) == 1 {
+                var size_token = token_at_ptr(p, (*p).cursor);
+                array_size = (*size_token).int_value;
                 advance(p);
             }
             var end_val = peek_span_end(p);
+            expect(p, 75);
             if is_qual {
                 (*type_ref) = ast::make_qualified_type_ref(ref_kind, qual_start, qual_end, name_start, name_end);
             } else {
                 (*type_ref) = ast::make_type_ref(ref_kind, name_start, name_end);
             }
+            (*type_ref).token_kind = 80;
+            (*type_ref).resolved_def_id = ref_kind;
+            (*type_ref).type_arg_start = array_size;
+            (*type_ref).name_span = span::make(start, end_val);
             return true;
         }
 
@@ -363,6 +426,52 @@ fn parse_block(p: @Parser, arena: @ast::Arena, block_id: @int): bool {
     var stmts: array::Array<int> = array::Array();
 
     while peek_kind(p) != 73 and peek_kind(p) != 76 {
+        if peek_kind(p) == 10 {
+            var local_start = peek_span_start(p);
+            advance(p);
+            var local_name_start = 0;
+            var local_name_end = 0;
+            if !expect_identifier(p, @local_name_start, @local_name_end) {
+                synchronize(p);
+                continue;
+            }
+            expect(p, 72);
+            var local_field_start = (*arena).struct_fields.len;
+            while peek_kind(p) != 73 and peek_kind(p) != 76 {
+                var local_field_name_start = 0;
+                var local_field_name_end = 0;
+                if !expect_identifier(p, @local_field_name_start, @local_field_name_end) {
+                    synchronize(p);
+                    break;
+                }
+                expect(p, 64);
+                var local_field_type = ast::make_empty_type_ref();
+                if !parse_type_expr(p, arena, @local_field_type) {
+                    synchronize(p);
+                    break;
+                }
+                expect(p, 65);
+                ast::push_struct_field(arena, ast::make_struct_field(
+                    local_field_name_start,
+                    local_field_name_end,
+                    local_field_type,
+                    local_field_name_start,
+                    local_field_name_end
+                ));
+            }
+            var local_field_len = (*arena).struct_fields.len - local_field_start;
+            var local_end = peek_span_end(p);
+            expect(p, 73);
+            ast::push_struct(arena, ast::make_struct_info(
+                local_name_start,
+                local_name_end,
+                local_field_start,
+                local_field_len,
+                local_start,
+                local_end
+            ));
+            continue;
+        }
         var stmt_id = -1;
         if parse_stmt(p, arena, @stmt_id) {
             stmts.push(stmt_id);
@@ -573,7 +682,7 @@ fn parse_expr(p: @Parser, arena: @ast::Arena, min_bp: int, expr_id: @int): bool 
             }
             end_val = variant_end2;
 
-            if peek_kind(p) == 55 and (is_type_keyword(peek_nth_kind(p, 1)) or peek_nth_kind(p, 1) == 6 or peek_nth_kind(p, 1) == 61) {
+            if looks_like_generic_call(p) {
                 advance(p);
                 var type_arg_start = 0;
                 var type_arg_end = 0;
@@ -594,10 +703,9 @@ fn parse_expr(p: @Parser, arena: @ast::Arena, min_bp: int, expr_id: @int): bool 
                 ta_refs.push(span::make(type_arg_start, type_arg_end));
                 var gen_nr_start = ast::append_name_refs(arena, @ta_refs);
                 var gen_e = ast::make_generic_call_expr(type_start, variant_end2, gen_child_start, gen_args.len, start, gen_end);
-                var gen_id = ast::push_expr(arena, gen_e);
-                (*arena).exprs[gen_id].int_value = 1;
-                (*arena).exprs[gen_id].name_ref_start = gen_nr_start;
-                lhs_id = gen_id;
+                gen_e.int_value = 1;
+                gen_e.name_ref_start = gen_nr_start;
+                lhs_id = ast::push_expr(arena, gen_e);
             } else if peek_kind(p) == 70 {
                 advance(p);
                 var args: array::Array<int> = array::Array();
@@ -662,7 +770,7 @@ fn parse_expr(p: @Parser, arena: @ast::Arena, min_bp: int, expr_id: @int): bool 
                 var e = ast::make_variant_expr(type_start, type_end, variant_start2, variant_end2, 0, 0, start, end_val);
                 lhs_id = ast::push_expr(arena, e);
             }
-        } else if peek_kind(p) == 55 and (is_type_keyword(peek_nth_kind(p, 1)) or peek_nth_kind(p, 1) == 6 or peek_nth_kind(p, 1) == 61) {
+        } else if looks_like_generic_call(p) {
             advance(p);
             var type_arg_start2 = 0;
             var type_arg_end2 = 0;
@@ -683,10 +791,9 @@ fn parse_expr(p: @Parser, arena: @ast::Arena, min_bp: int, expr_id: @int): bool 
             ta_refs2.push(span::make(type_arg_start2, type_arg_end2));
             var gen_nr_start2 = ast::append_name_refs(arena, @ta_refs2);
             var gen_e2 = ast::make_generic_call_expr(name_start, name_end, gen_child_start2, gen_args2.len, start, gen_end2);
-            var gen_id2 = ast::push_expr(arena, gen_e2);
-            (*arena).exprs[gen_id2].int_value = 1;
-            (*arena).exprs[gen_id2].name_ref_start = gen_nr_start2;
-            lhs_id = gen_id2;
+            gen_e2.int_value = 1;
+            gen_e2.name_ref_start = gen_nr_start2;
+            lhs_id = ast::push_expr(arena, gen_e2);
         } else if peek_kind(p) == 70 {
             advance(p);
             var args2: array::Array<int> = array::Array();
@@ -873,8 +980,15 @@ fn parse_expr(p: @Parser, arena: @ast::Arena, min_bp: int, expr_id: @int): bool 
                 var r_end3 = peek_span_end(p);
                 expect(p, 71);
 
-                var ca_start = ast::append_expr_refs(arena, @method_args);
-                var e = ast::make_call_expr(member_start, member_end, ca_start, method_args.len, start, r_end3);
+                var call_children: array::Array<int> = array::Array();
+                call_children.push(lhs_id);
+                var method_arg_index = 0;
+                while method_arg_index < method_args.len {
+                    call_children.push(method_args[method_arg_index]);
+                    method_arg_index = method_arg_index + 1;
+                }
+                var ca_start = ast::append_expr_refs(arena, @call_children);
+                var e = ast::make_call_expr(member_start, member_end, ca_start, call_children.len, start, r_end3);
                 e.kind = 14;
                 var lhs_expr = (*arena).exprs[lhs_id];
                 e.callee_span = lhs_expr.span;
@@ -969,7 +1083,7 @@ fn parse_stmt(p: @Parser, arena: @ast::Arena, stmt_id: @int): bool {
             }
             var semi_end = peek_span_end(p);
             expect(p, 65);
-            var assign = ast::make_assign_stmt((*arena).exprs[expr_id].span.start, (*arena).exprs[expr_id].span.end, val_id, (*arena).exprs[expr_id].span.start, semi_end);
+            var assign = ast::make_assign_stmt((*arena).exprs[expr_id].span.start, (*arena).exprs[expr_id].span.end, expr_id, val_id, (*arena).exprs[expr_id].span.start, semi_end);
             (*stmt_id) = ast::push_stmt(arena, ast::make_assign_only_stmt(assign));
             return true;
         }
@@ -1170,8 +1284,24 @@ fn parse_fn_decl(p: @Parser, arena: @ast::Arena, func_id: @int): bool {
 
     var name_start = 0;
     var name_end = 0;
-    if !expect_identifier(p, @name_start, @name_end) {
-        return false;
+    if peek_kind(p) == 79 {
+        name_start = peek_span_start(p);
+        advance(p);
+        var operator_kind = peek_kind(p);
+        name_end = peek_span_end(p);
+        advance(p);
+        if operator_kind == 74 and peek_kind(p) == 75 {
+            name_end = peek_span_end(p);
+            advance(p);
+            if peek_kind(p) == 57 {
+                name_end = peek_span_end(p);
+                advance(p);
+            }
+        }
+    } else {
+        if !expect_identifier(p, @name_start, @name_end) {
+            return false;
+        }
     }
 
     var gp_start = 0;
@@ -1225,6 +1355,26 @@ fn parse_fn_decl(p: @Parser, arena: @ast::Arena, func_id: @int): bool {
         }
     }
 
+    var wc_start = 0;
+    var wc_len = 0;
+    if peek_kind(p) == 23 {
+        wc_start = (*arena).where_clauses.len;
+        while peek_kind(p) == 23 {
+            var wc_span_start = peek_span_start(p);
+            advance(p);
+            while peek_kind(p) != 72 and peek_kind(p) != 76 {
+                advance(p);
+            }
+            ast::push_where_clause(arena, ast::WhereClause {
+                target_span: span::make(0, 0),
+                constraint_start: 0,
+                constraint_len: 0,
+                span: span::make(wc_span_start, peek_span_start(p))
+            });
+        }
+        wc_len = (*arena).where_clauses.len - wc_start;
+    }
+
     var has_body = false;
     var body_id = -1;
     if peek_kind(p) == 72 {
@@ -1237,7 +1387,7 @@ fn parse_fn_decl(p: @Parser, arena: @ast::Arena, func_id: @int): bool {
     }
 
     var end_s = peek_span_end(p);
-    var func_info = ast::make_function_info(name_start, name_end, param_start, param_len, has_return_type, return_type_ref, body_id, gp_start, gp_len, 0, 0, start, end_s, false);
+    var func_info = ast::make_function_info(name_start, name_end, param_start, param_len, has_return_type, return_type_ref, body_id, gp_start, gp_len, wc_start, wc_len, start, end_s, false);
     (*func_id) = ast::push_function(arena, func_info);
     return true;
 }
@@ -1533,42 +1683,16 @@ fn parse_class_decl(p: @Parser, arena: @ast::Arena, item_id: @int, is_export: bo
     var wc_len = 0;
     if peek_kind(p) == 23 {
         wc_start = (*arena).where_clauses.len;
-        while peek_kind(p) == 23 {
+        var wc_span_start = peek_span_start(p);
+        while peek_kind(p) != 72 and peek_kind(p) != 76 {
             advance(p);
-            advance(p);
-            expect(p, 70);
-            while peek_kind(p) != 71 and peek_kind(p) != 76 {
-                advance(p);
-                advance(p);
-                if peek_kind(p) == 70 {
-                    advance(p);
-                    while peek_kind(p) != 71 and peek_kind(p) != 76 {
-                        if peek_kind(p) == 66 {
-                            advance(p);
-                        } else {
-                            advance(p);
-                            if peek_kind(p) == 64 {
-                                advance(p);
-                                advance(p);
-                            }
-                        }
-                    }
-                    expect(p, 71);
-                }
-                expect(p, 64);
-                advance(p);
-                expect(p, 65);
-            }
-            expect(p, 71);
-
-            var clause = ast::WhereClause {
-                target_span: span::make(0, 0),
-                constraint_start: 0,
-                constraint_len: 0,
-                span: span::make(start, start)
-            };
-            ast::push_where_clause(arena, clause);
         }
+        ast::push_where_clause(arena, ast::WhereClause {
+            target_span: span::make(0, 0),
+            constraint_start: 0,
+            constraint_len: 0,
+            span: span::make(wc_span_start, peek_span_start(p))
+        });
         wc_len = (*arena).where_clauses.len - wc_start;
     }
 

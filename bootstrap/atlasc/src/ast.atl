@@ -118,6 +118,7 @@ export struct ConstDecl {
 
 export struct AssignStmt {
     target_name_span: span::Span;
+    target_expr_id: int;
     value_expr_id: int;
     span: span::Span;
 }
@@ -868,14 +869,16 @@ export fn make_const_decl(name_start: int, name_end: int, has_type_hint: bool, t
 export fn make_empty_assign_stmt(): AssignStmt {
     return AssignStmt {
         target_name_span: span::make(0, 0),
+        target_expr_id: -1,
         value_expr_id: -1,
         span: span::make(0, 0)
     };
 }
 
-export fn make_assign_stmt(name_start: int, name_end: int, value_expr_id: int, start: int, end: int): AssignStmt {
+export fn make_assign_stmt(name_start: int, name_end: int, target_expr_id: int, value_expr_id: int, start: int, end: int): AssignStmt {
     return AssignStmt {
         target_name_span: span::make(name_start, name_end),
+        target_expr_id: target_expr_id,
         value_expr_id: value_expr_id,
         span: span::make(start, end)
     };

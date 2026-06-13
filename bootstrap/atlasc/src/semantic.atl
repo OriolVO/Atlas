@@ -378,6 +378,12 @@ fn resolve_inner_type_for_pointer(p: @resolver::Project, type_ref: ast::TypeRef)
         raw_name = span::make(raw_name.start + 1, raw_name.end);
     }
     var name = get_base_type_name_span((*p).source, raw_name);
+    var primitive = resolve_numeric_alias(p, name);
+    if primitive != type_unknown() { return primitive; }
+    var primitive_len = name.end - name.start;
+    var primitive_source = (*(*p).source).data;
+    if primitive_len == 4 and primitive_source[name.start] == 'c' and primitive_source[name.start + 1] == 'h' and primitive_source[name.start + 2] == 'a' and primitive_source[name.start + 3] == 'r' { return type_char(); }
+    if primitive_len == 4 and primitive_source[name.start] == 'b' and primitive_source[name.start + 1] == 'o' and primitive_source[name.start + 2] == 'o' and primitive_source[name.start + 3] == 'l' { return type_bool(); }
     var i = 0;
     while i < (*(*p).arena).items.len {
         var item = (*(*p).arena).items[i];
@@ -402,8 +408,13 @@ fn resolve_inner_type_for_pointer(p: @resolver::Project, type_ref: ast::TypeRef)
         if name_equals((*(*p).source).data, cls.name_span, name) { return 4000 + ci; }
         ci = ci + 1;
     }
-    if (*(*p).arena).classes.len > 0 { return 4000; }
-    return 0;
+    var si = 0;
+    while si < (*(*p).arena).structs.len {
+        var struc = (*(*p).arena).structs[si];
+        if name_equals((*(*p).source).data, struc.name_span, name) { return 1000 + si; }
+        si = si + 1;
+    }
+    return type_unknown();
 }
 
 fn resolve_type_ref_from_name(p: @resolver::Project, raw_name: span::Span): int {
@@ -429,12 +440,30 @@ fn resolve_type_ref_from_name(p: @resolver::Project, raw_name: span::Span): int 
         }
         i = i + 1;
     }
-    return type_int();
+    i = 0;
+    while i < (*(*p).arena).structs.len {
+        if name_equals((*(*p).source).data, (*(*p).arena).structs[i].name_span, name) {
+            return 1000 + i;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < (*(*p).arena).classes.len {
+        if name_equals((*(*p).source).data, (*(*p).arena).classes[i].name_span, name) {
+            return 4000 + i;
+        }
+        i = i + 1;
+    }
+    return type_unknown();
 }
 
 fn resolve_numeric_alias(p: @resolver::Project, name: span::Span): int {
     var slen = name.end - name.start;
     var s = (*(*p).source).data;
+    if slen == 3 and s[name.start] == 'i' and s[name.start + 1] == 'n' and s[name.start + 2] == 't' { return type_int(); }
+    if slen == 4 and s[name.start] == 'u' and s[name.start + 1] == 'i' and s[name.start + 2] == 'n' and s[name.start + 3] == 't' { return type_uint(); }
+    if slen == 5 and s[name.start] == 'f' and s[name.start + 1] == 'l' and s[name.start + 2] == 'o' and s[name.start + 3] == 'a' and s[name.start + 4] == 't' { return type_float(); }
+    if slen == 4 and s[name.start] == 'v' and s[name.start + 1] == 'o' and s[name.start + 2] == 'i' and s[name.start + 3] == 'd' { return type_void(); }
     if slen == 5 and s[name.start] == 'i' and s[name.start + 1] == 'n' and s[name.start + 2] == 't' and s[name.start + 3] == '3' and s[name.start + 4] == '2' { return type_int32(); }
     if slen == 3 and s[name.start] == 'i' and s[name.start + 1] == '3' and s[name.start + 2] == '2' { return type_int32(); }
     if slen == 5 and s[name.start] == 'i' and s[name.start + 1] == 'n' and s[name.start + 2] == 't' and s[name.start + 3] == '1' and s[name.start + 4] == '6' { return type_int16(); }
@@ -493,6 +522,13 @@ export fn resolve_type_ref(
         if slen == 4 and s[inner_start] == 'c' and s[inner_start+1] == 'h' and s[inner_start+2] == 'a' and s[inner_start+3] == 'r' { return 50000 + type_char(); }
         if slen == 4 and s[inner_start] == 'b' and s[inner_start+1] == 'o' and s[inner_start+2] == 'o' and s[inner_start+3] == 'l' { return 50000 + type_bool(); }
         return 50000 + type_int();
+    }
+    if type_ref.token_kind == 80 {
+        var element_type = type_ref.resolved_def_id;
+        if element_type < 31 or element_type > 45 {
+            element_type = type_int();
+        }
+        return 60000 + element_type * 10000 + type_ref.type_arg_start;
     }
     if type_ref.token_kind == 62 {
         var inner = resolve_inner_type_for_pointer(p, type_ref);
@@ -719,12 +755,18 @@ fn compatible_type(expected: int, actual: int): bool {
     if is_pointer_type(expected) and is_pointer_type(actual) {
         var exp_target = type_dereference(expected);
         var act_target = type_dereference(actual);
+        if exp_target == type_unknown() or act_target == type_unknown() {
+            return true;
+        }
         if exp_target == act_target {
             var exp_nullable = is_nullable_pointer(expected);
             var act_nullable = is_nullable_pointer(actual);
             if !act_nullable and exp_nullable {
                 return true;
             }
+        }
+        if is_nullable_pointer(expected) and !is_nullable_pointer(actual) {
+            return true;
         }
     }
     if is_pointer_type(expected) and is_nullable_pointer(expected) and actual == type_null() {
@@ -733,8 +775,21 @@ fn compatible_type(expected: int, actual: int): bool {
     if is_slice_type(expected) and slice_element_type(expected) == type_char() and actual == type_string_literal() {
         return true;
     }
+    if is_slice_type(expected) and slice_element_type(expected) == actual {
+        return true;
+    }
+    if is_slice_type(expected) and is_array_type(actual) and slice_element_type(expected) == array_element_type(actual) {
+        return true;
+    }
+    if is_class_type(expected) and actual == type_string_literal() {
+        return true;
+    }
     if is_integer_type(expected) and is_integer_type(actual) {
         if expected == actual { return true; }
+        if expected == type_int() and actual == type_int64() { return true; }
+        if expected == type_int64() and actual == type_int() { return true; }
+        if expected == type_uint() and actual == type_uint64() { return true; }
+        if expected == type_uint64() and actual == type_uint() { return true; }
         return false;
     }
     if is_integer_type(expected) and actual == type_untyped_int() { return true; }
@@ -742,10 +797,35 @@ fn compatible_type(expected: int, actual: int): bool {
     if is_integer_type(expected) and actual == type_char() { return true; }
     if is_float_type(expected) and is_float_type(actual) {
         if expected == actual { return true; }
+        if expected == type_float64() and actual == type_float() { return true; }
+        if expected == type_float() and actual == type_float64() { return true; }
         if actual == type_float() { return true; }
         return false;
     }
     return false;
+}
+
+fn span_equals_text(p: @resolver::Project, value: span::Span, text: []char): bool {
+    var start = value.end - text.len;
+    if start < value.start {
+        return false;
+    }
+    if start > value.start {
+        if start - value.start < 2 {
+            return false;
+        }
+        if (*(*p).source).data[start - 1] != ':' or (*(*p).source).data[start - 2] != ':' {
+            return false;
+        }
+    }
+    var i = 0;
+    while i < text.len {
+        if (*(*p).source).data[start + i] != text[i] {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
 }
 
 fn expect_type(
@@ -1009,14 +1089,27 @@ fn infer_expr_type(
                     var method = (*(*p).arena).class_methods[class_info.method_start + m];
                     var method_info = (*(*p).arena).functions[method.function_id];
                     if name_equals((*(*p).source).data, method_info.name_span, expr.name_span) {
-                        if arg_count != method_info.param_len {
+                        var explicit_param_count = method_info.param_len;
+                        if explicit_param_count > 0 {
+                            var first_param = (*(*p).arena).params[method_info.param_start];
+                            if name_equals((*(*p).source).data, first_param.name_span, span::make(expr.callee_span.start, expr.callee_span.start)) {
+                                explicit_param_count = explicit_param_count - 1;
+                            } else {
+                                var first_len = first_param.name_span.end - first_param.name_span.start;
+                                var first_source = (*(*p).source).data;
+                                if first_len == 4 and first_source[first_param.name_span.start] == 's' and first_source[first_param.name_span.start + 1] == 'e' and first_source[first_param.name_span.start + 2] == 'l' and first_source[first_param.name_span.start + 3] == 'f' {
+                                    explicit_param_count = explicit_param_count - 1;
+                                }
+                            }
+                        }
+                        if arg_count != explicit_param_count {
                             errors.push(make_error(7, expr.span.start, expr.span.end));
                             (*summary).wrong_arg_count_count = (*summary).wrong_arg_count_count + 1;
                         }
                         var ai = 1;
                         while ai < expr.child_len {
                             var arg_type = infer_expr_type(p, (*(*p).arena).expr_refs[expr.child_start + ai], locals, depths, local_types, local_count, depth, errors, summary);
-                            var param_idx = ai - 1;
+                            var param_idx = ai;
                             if param_idx < method_info.param_len {
                                 var param = (*(*p).arena).params[method_info.param_start + param_idx];
                                 if param.has_type_hint {
@@ -1031,6 +1124,9 @@ fn infer_expr_type(
                         return type_unknown();
                     }
                     m = m + 1;
+                }
+                if span_equals_text(p, expr.name_span, "clone") {
+                    return target_type;
                 }
             }
         }
@@ -1189,10 +1285,37 @@ fn infer_expr_type(
     }
 
     if expr.kind == 20 {
+        if span_equals_text(p, expr.callee_span, "cast") {
+            if expr.child_len > 0 {
+                infer_expr_type(p, (*(*p).arena).expr_refs[expr.child_start], locals, depths, local_types, local_count, depth, errors, summary);
+            }
+            var cast_type_span = (*(*p).arena).name_refs[expr.name_ref_start];
+            var cast_type_ref = ast::make_type_ref(6, cast_type_span.start, cast_type_span.end);
+            if (*(*p).source).data[cast_type_span.start] == '@' {
+                cast_type_ref.token_kind = 61;
+            }
+            return resolve_type_ref(p, cast_type_ref, errors, summary);
+        }
+        if span_equals_text(p, expr.callee_span, "sizeof") {
+            var sizeof_i = 0;
+            while sizeof_i < expr.child_len {
+                infer_expr_type(p, (*(*p).arena).expr_refs[expr.child_start + sizeof_i], locals, depths, local_types, local_count, depth, errors, summary);
+                sizeof_i = sizeof_i + 1;
+            }
+            return type_int();
+        }
+        if span_equals_text(p, expr.callee_span, "destroy") {
+            var destroy_i = 0;
+            while destroy_i < expr.child_len {
+                infer_expr_type(p, (*(*p).arena).expr_refs[expr.child_start + destroy_i], locals, depths, local_types, local_count, depth, errors, summary);
+                destroy_i = destroy_i + 1;
+            }
+            return type_unknown();
+        }
         var class_idx = find_class_index(p, expr.callee_span);
         if class_idx >= 0 {
             var class_info = (*(*p).arena).classes[class_idx];
-            if class_info.generic_param_len > 0 and expr.int_value > 0 {
+            if class_info.generic_param_len > 0 {
                 var type_arg_span = (*(*p).arena).name_refs[expr.name_ref_start];
                 var concrete_class_id = monomorphizer::instantiate_class(p, class_idx, type_arg_span);
                 if concrete_class_id >= 0 {
@@ -1215,7 +1338,7 @@ fn infer_expr_type(
         }
         var function_info = (*(*p).arena).functions[fn_index];
 
-        if function_info.generic_param_len > 0 and expr.int_value > 0 {
+        if function_info.generic_param_len > 0 {
             var type_arg_span = (*(*p).arena).name_refs[expr.name_ref_start];
             var concrete_fn_id = monomorphizer::instantiate_generic(p, fn_index, type_arg_span);
             if concrete_fn_id >= 0 {
@@ -1373,33 +1496,44 @@ fn infer_expr_type(
                 }
                 return type_dereference(lhs_type);
             }
-            expect_type(type_int(), lhs_type, 8, expr.span, errors, summary);
-            expect_type(type_int(), rhs_type, 8, expr.span, errors, summary);
-            return type_int();
+            if !is_numeric_type(lhs_type) and lhs_type != type_untyped_int() and lhs_type != type_unknown() {
+                errors.push(make_error(8, expr.span.start, expr.span.end));
+                (*summary).type_mismatch_count = (*summary).type_mismatch_count + 1;
+            }
+            expect_type(lhs_type, rhs_type, 8, expr.span, errors, summary);
+            return lhs_type;
         }
         if expr.op_kind == 61 {
             return type_pointer(lhs_type, false);
         }
         if expr.op_kind == 47 {
             if is_unary {
-                expect_type(type_int(), lhs_type, 8, expr.span, errors, summary);
-                return type_int();
+                if !is_numeric_type(lhs_type) and lhs_type != type_untyped_int() {
+                    errors.push(make_error(8, expr.span.start, expr.span.end));
+                    (*summary).type_mismatch_count = (*summary).type_mismatch_count + 1;
+                }
+                return lhs_type;
             }
-            expect_type(type_int(), lhs_type, 8, expr.span, errors, summary);
-            expect_type(type_int(), rhs_type, 8, expr.span, errors, summary);
-            return type_int();
+            expect_type(lhs_type, rhs_type, 8, expr.span, errors, summary);
+            return lhs_type;
         }
         if expr.op_kind == 46 or expr.op_kind == 49 or expr.op_kind == 50 {
-            expect_type(type_int(), lhs_type, 8, expr.span, errors, summary);
-            expect_type(type_int(), rhs_type, 8, expr.span, errors, summary);
-            return type_int();
+            if is_class_type(lhs_type) {
+                return lhs_type;
+            }
+            if !is_numeric_type(lhs_type) and lhs_type != type_untyped_int() and lhs_type != type_unknown() {
+                errors.push(make_error(8, expr.span.start, expr.span.end));
+                (*summary).type_mismatch_count = (*summary).type_mismatch_count + 1;
+            }
+            expect_type(lhs_type, rhs_type, 8, expr.span, errors, summary);
+            return lhs_type;
         }
         if expr.op_kind == 55 or expr.op_kind == 56 or expr.op_kind == 53 or expr.op_kind == 54 {
             if !is_integer_type(lhs_type) and !is_float_type(lhs_type) and lhs_type != type_unknown() and lhs_type != type_untyped_int() {
                 errors.push(make_error(8, expr.span.start, expr.span.end));
                 (*summary).type_mismatch_count = (*summary).type_mismatch_count + 1;
             }
-            if !is_unary and rhs_type != lhs_type and rhs_type != type_unknown() and lhs_type != type_unknown() and rhs_type != type_untyped_int() and lhs_type != type_untyped_int() {
+            if !is_unary and !compatible_type(lhs_type, rhs_type) {
                 errors.push(make_error(8, expr.span.start, expr.span.end));
                 (*summary).type_mismatch_count = (*summary).type_mismatch_count + 1;
             }
@@ -1407,7 +1541,7 @@ fn infer_expr_type(
         }
         if expr.op_kind == 51 or expr.op_kind == 52 {
             var is_null_check = (is_nullable_pointer(lhs_type) and rhs_type == type_null()) or (lhs_type == type_null() and is_nullable_pointer(rhs_type));
-            if !is_unary and !is_null_check and lhs_type != type_unknown() and rhs_type != type_unknown() and lhs_type != rhs_type and rhs_type != type_untyped_int() and lhs_type != type_untyped_int() {
+            if !is_unary and !is_null_check and !compatible_type(lhs_type, rhs_type) {
                 errors.push(make_error(8, expr.span.start, expr.span.end));
                 (*summary).type_mismatch_count = (*summary).type_mismatch_count + 1;
             }
@@ -1437,6 +1571,9 @@ fn infer_expr_type(
             return type_unknown();
         }
         if expr.op_kind == 74 {
+            if is_class_type(lhs_type) {
+                return type_unknown();
+            }
             expect_type(type_int(), rhs_type, 8, expr.span, errors, summary);
             if is_pointer_type(lhs_type) {
                 return type_dereference(lhs_type);
@@ -1724,10 +1861,8 @@ fn analyze_block(
             }
         } else if stmt.kind == 3 {
             var value_type = infer_expr_type(p, stmt.assign_stmt.value_expr_id, locals.data, local_depths.data, local_types.data, locals.len, depth, errors, summary);
-            var target_index = find_visible_name_index((*(*p).source).data, locals.data, local_depths.data, locals.len, stmt.assign_stmt.target_name_span, depth);
-            if target_index >= 0 {
-                expect_type(local_types[target_index], value_type, 8, stmt.assign_stmt.span, errors, summary);
-            }
+            var target_type = infer_expr_type(p, stmt.assign_stmt.target_expr_id, locals.data, local_depths.data, local_types.data, locals.len, depth, errors, summary);
+            expect_type(target_type, value_type, 8, stmt.assign_stmt.span, errors, summary);
         } else if stmt.kind == 4 {
             analyze_block(p, stmt.block_id, locals, local_depths, local_types,     depth + 1, has_return_type, return_type_kind, in_loop, errors, summary);
         } else if stmt.kind == 5 {
@@ -1979,7 +2114,7 @@ export fn analyze_file(p: @resolver::Project, file_info: ast::FileInfo, summary:
                             if sspan.end - sspan.start == 4 {
                                 var src = (*(*p).source).data;
                                 if src[sspan.start] == 's' and src[sspan.start+1] == 'e' and src[sspan.start+2] == 'l' and src[sspan.start+3] == 'f' {
-                                    param_type = 4000 + item.class_id;
+                                    param_type = type_pointer(4000 + item.class_id, false);
                                 }
                             }
                         }
