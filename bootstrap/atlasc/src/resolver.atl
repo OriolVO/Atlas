@@ -47,7 +47,11 @@ fn build_module_path(prefix: []char, name_chars: []char, name_len: int, suffix: 
     }
     var ni = 0;
     while ni < name_len {
-        path_arr.push(name_chars[ni]);
+        if name_chars[ni] == '.' {
+            path_arr.push('/');
+        } else {
+            path_arr.push(name_chars[ni]);
+        }
         ni = ni + 1;
     }
     var si = 0;

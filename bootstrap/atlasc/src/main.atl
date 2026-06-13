@@ -1,5 +1,6 @@
 import ast;
 import array;
+import cg_types;
 import error;
 import io;
 import lexer;
@@ -8,6 +9,7 @@ import parser;
 import span;
 import resolver;
 import semantic;
+import semantic.analysis;
 import string;
 import token;
 
@@ -471,7 +473,7 @@ fn run_semantic_case(sample: []char) {
     
     resolver::resolve_names(@p, @parse_errors);
     
-    semantic::analyze_file(@p, file_info, @summary, @semantic_errors);
+    semantic.analysis::analyze_file(@p, file_info, @summary, @semantic_errors);
     print_chars("fns ");
     io::print(summary.function_count);
     print_chars(" structs ");
@@ -550,7 +552,7 @@ fn build_file(path: []char) {
         var semantic_errors: array::Array<semantic::SemanticError> = array::Array();
         var file_info = (arena).file_infos[modules[mi].file_info_id];
         var proj2 = resolver::Project { arena: @arena, source: @source, modules: @modules, prelude_count: 0 };
-        semantic::analyze_file(@proj2, file_info, @summary, @semantic_errors);
+        semantic.analysis::analyze_file(@proj2, file_info, @summary, @semantic_errors);
         if semantic_errors.len > 0 {
             var e = 0;
             while e < semantic_errors.len {
@@ -570,7 +572,7 @@ fn build_file(path: []char) {
         return;
     }
 
-    var cg = llvm_codegen.native::make_empty_codegen();
+    var cg = cg_types::make_empty_codegen();
     var proj3 = resolver::Project { arena: @arena, source: @source, modules: @modules, prelude_count: 0 };
     llvm_codegen.native::generate(@cg, @proj3);
 

@@ -1,0 +1,538 @@
+import array;
+import ast;
+import span;
+import parser_types;
+import parser.expr;
+
+export fn parse_fn_decl(p: @parser_types::Parser, arena: @ast::Arena, func_id: @int): bool {
+    var start = parser_types::peek_span_start(p);
+    parser_types::expect(p, 9);
+
+    var name_start = 0;
+    var name_end = 0;
+    if parser_types::peek_kind(p) == 79 {
+        name_start = parser_types::peek_span_start(p);
+        parser_types::advance(p);
+        var operator_kind = parser_types::peek_kind(p);
+        name_end = parser_types::peek_span_end(p);
+        parser_types::advance(p);
+        if operator_kind == 74 and parser_types::peek_kind(p) == 75 {
+            name_end = parser_types::peek_span_end(p);
+            parser_types::advance(p);
+            if parser_types::peek_kind(p) == 57 {
+                name_end = parser_types::peek_span_end(p);
+                parser_types::advance(p);
+            }
+        }
+    } else {
+        if !parser_types::expect_identifier(p, @name_start, @name_end) {
+            return false;
+        }
+    }
+
+    var gp_start = 0;
+    var gp_len = 0;
+    if parser_types::peek_kind(p) == 55 {
+        gp_start = (*arena).generic_params.len;
+        parser_types::advance(p);
+        var g_name_start = 0;
+        var g_name_end = 0;
+        if !parser_types::expect_identifier(p, @g_name_start, @g_name_end) {
+            return false;
+        }
+        ast::push_generic_param(arena, ast::GenericParam { name_span: span::make(g_name_start, g_name_end), span: span::make(g_name_start, g_name_end) });
+        if parser_types::peek_kind(p) == 66 {
+            parser_types::advance(p);
+            if !parser_types::expect_identifier(p, @g_name_start, @g_name_end) {
+                return false;
+            }
+            ast::push_generic_param(arena, ast::GenericParam { name_span: span::make(g_name_start, g_name_end), span: span::make(g_name_start, g_name_end) });
+        }
+        gp_len = (*arena).generic_params.len - gp_start;
+        parser_types::expect(p, 56);
+    }
+
+    parser_types::expect(p, 70);
+    var param_start = (*arena).params.len;
+    if parser_types::peek_kind(p) != 71 {
+        var done = false;
+        while !done {
+            var p_id = -1;
+            if !parser.expr::parse_param(p, arena, @p_id) {
+                return false;
+            }
+            if parser_types::peek_kind(p) == 66 {
+                parser_types::advance(p);
+            } else {
+                done = true;
+            }
+        }
+    }
+    var param_len = (*arena).params.len - param_start;
+    parser_types::expect(p, 71);
+
+    var has_return_type = false;
+    var return_type_ref = ast::make_empty_type_ref();
+    if parser_types::peek_kind(p) == 64 {
+        parser_types::advance(p);
+        has_return_type = true;
+        if !parser.expr::parse_type_expr(p, arena, @return_type_ref) {
+            return false;
+        }
+    }
+
+    var wc_start = 0;
+    var wc_len = 0;
+    if parser_types::peek_kind(p) == 23 {
+        wc_start = (*arena).where_clauses.len;
+        while parser_types::peek_kind(p) == 23 {
+            var wc_span_start = parser_types::peek_span_start(p);
+            parser_types::advance(p);
+            while parser_types::peek_kind(p) != 72 and parser_types::peek_kind(p) != 76 {
+                parser_types::advance(p);
+            }
+            ast::push_where_clause(arena, ast::WhereClause {
+                target_span: span::make(0, 0),
+                constraint_start: 0,
+                constraint_len: 0,
+                span: span::make(wc_span_start, parser_types::peek_span_start(p))
+            });
+        }
+        wc_len = (*arena).where_clauses.len - wc_start;
+    }
+
+    var has_body = false;
+    var body_id = -1;
+    if parser_types::peek_kind(p) == 72 {
+        has_body = true;
+        if !parser.expr::parse_block(p, arena, @body_id) {
+            return false;
+        }
+    } else {
+        parser_types::expect(p, 65);
+    }
+
+    var end_s = parser_types::peek_span_end(p);
+    var func_info = ast::make_function_info(name_start, name_end, param_start, param_len, has_return_type, return_type_ref, body_id, gp_start, gp_len, wc_start, wc_len, start, end_s, false);
+    (*func_id) = ast::push_function(arena, func_info);
+    return true;
+}
+
+fn parse_import_item(p: @parser_types::Parser, arena: @ast::Arena, import_id: @int): bool {
+    var start = parser_types::peek_span_start(p);
+    parser_types::expect(p, 19);
+    var name_start = 0;
+    var name_end = 0;
+    if !parser_types::expect_identifier(p, @name_start, @name_end) {
+        return false;
+    }
+    while parser_types::peek_kind(p) == 68 {
+        parser_types::advance(p);
+        if !parser_types::expect_identifier(p, @name_start, @name_end) {
+            return false;
+        }
+    }
+    var end_s = parser_types::peek_span_end(p);
+    parser_types::expect(p, 65);
+
+    (*import_id) = ast::push_import(arena, ast::make_import_info(name_start, name_end, start, end_s));
+    return true;
+}
+
+fn parse_choice_decl(p: @parser_types::Parser, arena: @ast::Arena, choice_id: @int): bool {
+    var start = parser_types::peek_span_start(p);
+    parser_types::expect(p, 13);
+    var name_start = 0;
+    var name_end = 0;
+    if !parser_types::expect_identifier(p, @name_start, @name_end) {
+        return false;
+    }
+
+    var gp_start = 0;
+    var gp_len = 0;
+    if parser_types::peek_kind(p) == 55 {
+        gp_start = (*arena).generic_params.len;
+        parser_types::advance(p);
+        var g_name_start = 0;
+        var g_name_end = 0;
+        if !parser_types::expect_identifier(p, @g_name_start, @g_name_end) {
+            return false;
+        }
+        ast::push_generic_param(arena, ast::GenericParam { name_span: span::make(g_name_start, g_name_end), span: span::make(g_name_start, g_name_end) });
+        if parser_types::peek_kind(p) == 66 {
+            parser_types::advance(p);
+            if !parser_types::expect_identifier(p, @g_name_start, @g_name_end) {
+                return false;
+            }
+            ast::push_generic_param(arena, ast::GenericParam { name_span: span::make(g_name_start, g_name_end), span: span::make(g_name_start, g_name_end) });
+        }
+        gp_len = (*arena).generic_params.len - gp_start;
+        parser_types::expect(p, 56);
+    }
+
+    parser_types::expect(p, 72);
+    var variant_start = (*arena).choice_variants.len;
+    if parser_types::peek_kind(p) != 73 {
+        var done = false;
+        while !done {
+            var v_start = 0;
+            var v_end = 0;
+            if !parser_types::expect_identifier(p, @v_start, @v_end) {
+                return false;
+            }
+            var has_payload = false;
+            var payload_ref = ast::make_empty_type_ref();
+            if parser_types::peek_kind(p) == 70 {
+                parser_types::advance(p);
+                has_payload = true;
+                if !parser.expr::parse_type_expr(p, arena, @payload_ref) {
+                    return false;
+                }
+                parser_types::expect(p, 71);
+            }
+            ast::push_choice_variant(arena, ast::make_choice_variant(v_start, v_end, has_payload, payload_ref, v_start, v_end));
+            if parser_types::peek_kind(p) == 66 {
+                parser_types::advance(p);
+            } else {
+                done = true;
+            }
+        }
+    }
+    var variant_len = (*arena).choice_variants.len - variant_start;
+    var end_s = parser_types::peek_span_end(p);
+    parser_types::expect(p, 73);
+
+    (*choice_id) = ast::push_choice(arena, ast::make_choice_info(name_start, name_end, variant_start, variant_len, start, end_s));
+    var ci = (*arena).choices[(*choice_id)];
+    ci.generic_param_start = gp_start;
+    ci.generic_param_len = gp_len;
+    (*arena).choices[(*choice_id)] = ci;
+    return true;
+}
+
+export fn parse_item(p: @parser_types::Parser, arena: @ast::Arena, item_id: @int): bool {
+    var is_export = false;
+    if parser_types::peek_kind(p) == 20 {
+        parser_types::advance(p);
+        is_export = true;
+    }
+
+    var k = parser_types::peek_kind(p);
+    if k == 9 {
+        var func_id = -1;
+        if !parse_fn_decl(p, arena, @func_id) {
+            return false;
+        }
+        (*item_id) = ast::push_item(arena, ast::make_function_item(func_id, is_export, (*arena).functions[func_id].span));
+        return true;
+    } else if k == 10 {
+        var start = parser_types::peek_span_start(p);
+        parser_types::expect(p, 10);
+        var name_start = 0;
+        var name_end = 0;
+        if !parser_types::expect_identifier(p, @name_start, @name_end) {
+            return false;
+        }
+
+        parser_types::expect(p, 72);
+        var field_start = (*arena).struct_fields.len;
+        while parser_types::peek_kind(p) != 73 and parser_types::peek_kind(p) != 76 {
+            var f_name_start = 0;
+            var f_name_end = 0;
+            if !parser_types::expect_identifier(p, @f_name_start, @f_name_end) {
+                return false;
+            }
+            parser_types::expect(p, 64);
+            var f_type_ref = ast::make_empty_type_ref();
+            if !parser.expr::parse_type_expr(p, arena, @f_type_ref) {
+                return false;
+            }
+            parser_types::expect(p, 65);
+            ast::push_struct_field(arena, ast::make_struct_field(f_name_start, f_name_end, f_type_ref, f_name_start, f_name_end));
+        }
+        var field_len = (*arena).struct_fields.len - field_start;
+        var end_s = parser_types::peek_span_end(p);
+        parser_types::expect(p, 73);
+
+        var struct_id = ast::push_struct(arena, ast::make_struct_info(name_start, name_end, field_start, field_len, start, end_s));
+        (*item_id) = ast::push_item(arena, ast::make_struct_item(struct_id, is_export, span::make(start, end_s)));
+        return true;
+    } else if k == 12 {
+        var start = parser_types::peek_span_start(p);
+        parser_types::expect(p, 12);
+        var name_start = 0;
+        var name_end = 0;
+        if !parser_types::expect_identifier(p, @name_start, @name_end) {
+            return false;
+        }
+
+        parser_types::expect(p, 72);
+        var variant_start = (*arena).enum_variants.len;
+        if parser_types::peek_kind(p) != 73 {
+            var done = false;
+            while !done {
+                var v_start = 0;
+                var v_end = 0;
+                if !parser_types::expect_identifier(p, @v_start, @v_end) {
+                    return false;
+                }
+                ast::push_enum_variant(arena, ast::make_enum_variant(v_start, v_end, v_start, v_end));
+                if parser_types::peek_kind(p) == 66 {
+                    parser_types::advance(p);
+                } else {
+                    done = true;
+                }
+            }
+        }
+        var variant_len = (*arena).enum_variants.len - variant_start;
+        var end_s = parser_types::peek_span_end(p);
+        parser_types::expect(p, 73);
+
+        var enum_id = ast::push_enum(arena, ast::make_enum_info(name_start, name_end, variant_start, variant_len, start, end_s));
+        (*item_id) = ast::push_item(arena, ast::make_enum_item(enum_id, is_export, span::make(start, end_s)));
+        return true;
+    } else if k == 13 {
+        var choice_id = -1;
+        if !parse_choice_decl(p, arena, @choice_id) {
+            return false;
+        }
+        (*item_id) = ast::push_item(arena, ast::make_choice_item(choice_id, is_export, (*arena).choices[choice_id].span));
+        return true;
+    } else if k == 19 {
+        var import_id = -1;
+        if !parse_import_item(p, arena, @import_id) {
+            return false;
+        }
+        (*item_id) = ast::push_item(arena, ast::make_import_item(import_id, is_export, (*arena).imports[import_id].span));
+        return true;
+    } else if k == 28 {
+        return parse_extern_fn(p, arena, item_id, is_export);
+    } else if k == 11 {
+        return parse_class_decl(p, arena, item_id, is_export);
+    }
+
+    return false;
+}
+
+fn parse_extern_fn(p: @parser_types::Parser, arena: @ast::Arena, item_id: @int, is_export: bool): bool {
+    var start = parser_types::peek_span_start(p);
+    parser_types::expect(p, 28);
+    parser_types::advance(p);
+    parser_types::expect(p, 9);
+    var name_start = 0;
+    var name_end = 0;
+    if !parser_types::expect_identifier(p, @name_start, @name_end) {
+        return false;
+    }
+
+    parser_types::expect(p, 70);
+    var param_start = (*arena).params.len;
+    var is_var = false;
+    if parser_types::peek_kind(p) != 71 {
+        if parser_types::peek_kind(p) == 67 {
+            is_var = true;
+            parser_types::advance(p);
+        } else {
+            var done = false;
+            while !done {
+                var p_id = -1;
+                if !parser.expr::parse_param(p, arena, @p_id) {
+                    return false;
+                }
+                if parser_types::peek_kind(p) == 66 {
+                    parser_types::advance(p);
+                    if parser_types::peek_kind(p) == 67 {
+                        is_var = true;
+                        parser_types::advance(p);
+                        done = true;
+                    }
+                } else {
+                    done = true;
+                }
+            }
+        }
+    }
+    var param_len = (*arena).params.len - param_start;
+    parser_types::expect(p, 71);
+
+    var has_ret = false;
+    var ret_ref = ast::make_empty_type_ref();
+    if parser_types::peek_kind(p) == 64 {
+        parser_types::advance(p);
+        has_ret = true;
+        if !parser.expr::parse_type_expr(p, arena, @ret_ref) {
+            return false;
+        }
+    }
+
+    var end_s = parser_types::peek_span_end(p);
+    parser_types::expect(p, 65);
+
+    var fi = ast::make_function_info(name_start, name_end, param_start, param_len, has_ret, ret_ref, -1, 0, 0, 0, 0, start, end_s, is_var);
+    var func_id = ast::push_function(arena, fi);
+    (*item_id) = ast::push_item(arena, ast::make_function_item(func_id, is_export, span::make(start, end_s)));
+    return true;
+}
+
+fn parse_class_decl(p: @parser_types::Parser, arena: @ast::Arena, item_id: @int, is_export: bool): bool {
+    var start = parser_types::peek_span_start(p);
+    parser_types::expect(p, 11);
+    var name_start = 0;
+    var name_end = 0;
+    if !parser_types::expect_identifier(p, @name_start, @name_end) {
+        return false;
+    }
+
+    var gp_start = 0;
+    var gp_len = 0;
+    if parser_types::peek_kind(p) == 55 {
+        gp_start = (*arena).generic_params.len;
+        parser_types::advance(p);
+        var g_name_start = 0;
+        var g_name_end = 0;
+        if !parser_types::expect_identifier(p, @g_name_start, @g_name_end) {
+            return false;
+        }
+        ast::push_generic_param(arena, ast::GenericParam { name_span: span::make(g_name_start, g_name_end), span: span::make(g_name_start, g_name_end) });
+        if parser_types::peek_kind(p) == 66 {
+            parser_types::advance(p);
+            if !parser_types::expect_identifier(p, @g_name_start, @g_name_end) {
+                return false;
+            }
+            ast::push_generic_param(arena, ast::GenericParam { name_span: span::make(g_name_start, g_name_end), span: span::make(g_name_start, g_name_end) });
+        }
+        gp_len = (*arena).generic_params.len - gp_start;
+        parser_types::expect(p, 56);
+    }
+
+    var wc_start = 0;
+    var wc_len = 0;
+    if parser_types::peek_kind(p) == 23 {
+        wc_start = (*arena).where_clauses.len;
+        var wc_span_start = parser_types::peek_span_start(p);
+        while parser_types::peek_kind(p) != 72 and parser_types::peek_kind(p) != 76 {
+            parser_types::advance(p);
+        }
+        ast::push_where_clause(arena, ast::WhereClause {
+            target_span: span::make(0, 0),
+            constraint_start: 0,
+            constraint_len: 0,
+            span: span::make(wc_span_start, parser_types::peek_span_start(p))
+        });
+        wc_len = (*arena).where_clauses.len - wc_start;
+    }
+
+    parser_types::expect(p, 72);
+    var field_start = (*arena).class_fields.len;
+    var method_start = (*arena).class_methods.len;
+    var struct_start = (*arena).class_structs.len;
+
+    while parser_types::peek_kind(p) != 73 and parser_types::peek_kind(p) != 76 {
+        var visibility = 0;
+        if parser_types::peek_kind(p) == 21 {
+            parser_types::advance(p);
+            visibility = 1;
+        } else if parser_types::peek_kind(p) == 22 {
+            parser_types::advance(p);
+            visibility = 2;
+        }
+
+        if parser_types::peek_kind(p) == 9 {
+            var func_id = -1;
+            if !parse_fn_decl(p, arena, @func_id) {
+                return false;
+            }
+            var cm = ast::ClassMethod {
+                visibility: visibility,
+                function_id: func_id,
+                span: (*arena).functions[func_id].span
+            };
+            ast::push_class_method(arena, cm);
+        } else if parser_types::peek_kind(p) == 10 {
+            var s_start2 = parser_types::peek_span_start(p);
+            parser_types::expect(p, 10);
+            var s_name_start = 0;
+            var s_name_end = 0;
+            if !parser_types::expect_identifier(p, @s_name_start, @s_name_end) {
+                return false;
+            }
+            parser_types::expect(p, 72);
+            var s_field_start = (*arena).struct_fields.len;
+            while parser_types::peek_kind(p) != 73 and parser_types::peek_kind(p) != 76 {
+                var sf_name_start = 0;
+                var sf_name_end = 0;
+                if !parser_types::expect_identifier(p, @sf_name_start, @sf_name_end) {
+                    return false;
+                }
+                parser_types::expect(p, 64);
+                var sf_type_ref = ast::make_empty_type_ref();
+                if !parser.expr::parse_type_expr(p, arena, @sf_type_ref) {
+                    return false;
+                }
+                parser_types::expect(p, 65);
+                ast::push_struct_field(arena, ast::make_struct_field(sf_name_start, sf_name_end, sf_type_ref, sf_name_start, sf_name_end));
+            }
+            var s_field_len = (*arena).struct_fields.len - s_field_start;
+            var s_end_s = parser_types::peek_span_end(p);
+            parser_types::expect(p, 73);
+
+            var s_id = ast::push_struct(arena, ast::make_struct_info(s_name_start, s_name_end, s_field_start, s_field_len, s_start2, s_end_s));
+            var cs = ast::ClassStruct {
+                visibility: visibility,
+                struct_id: s_id,
+                span: span::make(s_start2, s_end_s)
+            };
+            ast::push_class_struct(arena, cs);
+        } else {
+            var is_const = false;
+            if parser_types::peek_kind(p) == 8 {
+                parser_types::advance(p);
+                is_const = true;
+            }
+            var f_name_start = 0;
+            var f_name_end = 0;
+            if !parser_types::expect_identifier(p, @f_name_start, @f_name_end) {
+                return false;
+            }
+            parser_types::expect(p, 64);
+            var f_type_ref = ast::make_empty_type_ref();
+            if !parser.expr::parse_type_expr(p, arena, @f_type_ref) {
+                return false;
+            }
+            parser_types::expect(p, 65);
+
+            var cf = ast::ClassField {
+                visibility: visibility,
+                is_const: is_const,
+                name_span: span::make(f_name_start, f_name_end),
+                type_ref: f_type_ref,
+                span: span::make(f_name_start, f_name_end)
+            };
+            ast::push_class_field(arena, cf);
+        }
+    }
+
+    var field_len = (*arena).class_fields.len - field_start;
+    var method_len = (*arena).class_methods.len - method_start;
+    var struct_len = (*arena).class_structs.len - struct_start;
+    var end_s = parser_types::peek_span_end(p);
+    parser_types::expect(p, 73);
+
+    var ci = ast::ClassInfo {
+        name_span: span::make(name_start, name_end),
+        generic_param_start: gp_start,
+        generic_param_len: gp_len,
+        where_clause_start: wc_start,
+        where_clause_len: wc_len,
+        field_start: field_start,
+        field_len: field_len,
+        method_start: method_start,
+        method_len: method_len,
+        struct_start: struct_start,
+        struct_len: struct_len,
+        span: span::make(start, end_s)
+    };
+    var class_id = ast::push_class(arena, ci);
+    (*item_id) = ast::push_item(arena, ast::make_class_item(class_id, is_export, span::make(start, end_s)));
+    return true;
+}

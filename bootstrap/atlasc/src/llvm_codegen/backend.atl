@@ -1,0 +1,2472 @@
+import array;
+import ast;
+import monomorphizer;
+import resolver;
+import semantic;
+import span;
+import string;
+import token;
+import cg_types;
+
+export fn codegen_expr(g: @cg_types::Codegen, p: @resolver::Project, expr_id: int, source: @array::Array<char>): int {
+    if expr_id < 0 { return -1; }
+    var expr = (*(*p).arena).exprs[expr_id];
+
+    if expr.kind == 2 {
+        var int_ty = cg_types::literal_type(p, expr.span, false);
+        var r = cg_types::next_temp(g);
+        cg_types::emit(g, "    ");
+        cg_types::push_temp(g, r);
+        cg_types::emit(g, "= add ");
+        cg_types::emit_type(g, int_ty, p);
+        cg_types::emit(g, " 0, ");
+        cg_types::emit_int_value(g, expr.int_value);
+        cg_types::newline(g);
+        cg_types::set_last(g, int_ty);
+        return r;
+    }
+
+    if expr.kind == 3 {
+        var r = cg_types::next_temp(g);
+        cg_types::emit(g, "    ");
+        cg_types::push_temp(g, r);
+        cg_types::emit(g, "= add i1 0, ");
+        cg_types::emit(g, cg_types::bool_str(expr.bool_value));
+        cg_types::newline(g);
+        cg_types::set_last(g, semantic::type_bool());
+        return r;
+    }
+
+    if expr.kind == 12 {
+        var float_ty = cg_types::literal_type(p, expr.span, true);
+        var r = cg_types::next_temp(g);
+        cg_types::emit(g, "    ");
+        cg_types::push_temp(g, r);
+        cg_types::emit(g, "= fadd ");
+        cg_types::emit_type(g, float_ty, p);
+        cg_types::emit(g, " 0.0, ");
+        var fi = expr.span.start;
+        while fi < expr.span.end {
+            var ch = (*(*p).source).data[fi];
+            if (ch >= '0' and ch <= '9') or ch == '.' {
+                (*g).output.push(ch);
+            }
+            fi = fi + 1;
+        }
+        cg_types::newline(g);
+        cg_types::set_last(g, float_ty);
+        return r;
+    }
+
+    if expr.kind == 13 {
+        if expr.child_len == 0 {
+            var r = cg_types::next_temp(g);
+            cg_types::emit(g, "    ");
+            cg_types::push_temp(g, r);
+            cg_types::emit(g, "= add i64 0, 0");
+            cg_types::newline(g);
+            cg_types::set_last(g, semantic::type_int());
+            return r;
+        }
+        var elem_type = semantic::type_int();
+        {
+            var errors: array::Array<semantic::SemanticError> = array::Array();
+            var summary = semantic::make_empty_summary();
+            var first_child = (*(*p).arena).exprs[(*(*p).arena).expr_refs[expr.child_start]];
+            if first_child.kind == 2 { elem_type = semantic::type_int(); }
+            else if first_child.kind == 3 { elem_type = semantic::type_bool(); }
+            else if first_child.kind == 7 { elem_type = semantic::type_char(); }
+            else if first_child.kind == 12 { elem_type = semantic::type_float(); }
+        }
+        var arr_ptr = cg_types::next_temp(g);
+        cg_types::emit_alloca(g, arr_ptr, elem_type, p);
+        var i = 0;
+        while i < expr.child_len {
+            var elem_reg = codegen_expr(g, p, (*(*p).arena).expr_refs[expr.child_start + i], source);
+            var elem_ptr = cg_types::next_temp(g);
+            cg_types::emit_gep(g, elem_ptr, elem_type, p, arr_ptr, 0, i);
+            if elem_type >= 1000 {
+                cg_types::emit_store_typed(g, elem_reg, elem_ptr, elem_type, p);
+            } else {
+                cg_types::emit_store(g, elem_reg, elem_ptr, elem_type, p);
+            }
+            i = i + 1;
+        }
+        cg_types::set_last(g, elem_type);
+        return arr_ptr;
+    }
+
+    if expr.kind == 14 {
+        if expr.child_len == 0 {
+            return -1;
+        }
+        var receiver_expr_id = (*(*p).arena).expr_refs[expr.child_start];
+        var receiver_expr = (*(*p).arena).exprs[receiver_expr_id];
+        var receiver_reg = -1;
+        var receiver_ty = semantic::type_unknown();
+        if receiver_expr.kind == 1 {
+            var receiver_slot = cg_types::lookup_local(g, p, receiver_expr.name_span);
+            receiver_ty = cg_types::lookup_local_type(g, p, receiver_expr.name_span);
+            if semantic::is_pointer_type(receiver_ty) {
+                receiver_reg = cg_types::next_temp(g);
+                cg_types::emit_load_typed(g, receiver_reg, receiver_slot, receiver_ty, p);
+            } else {
+                receiver_reg = receiver_slot;
+            }
+        } else {
+            receiver_reg = codegen_expr(g, p, receiver_expr_id, source);
+            receiver_ty = cg_types::get_last(g);
+            if !semantic::is_pointer_type(receiver_ty) {
+                var receiver_slot2 = cg_types::next_temp(g);
+                cg_types::emit_alloca_typed(g, receiver_slot2, receiver_ty, p);
+                cg_types::emit_store_typed(g, receiver_reg, receiver_slot2, receiver_ty, p);
+                receiver_reg = receiver_slot2;
+            }
+        }
+        var target_ty = receiver_ty;
+        if semantic::is_pointer_type(target_ty) {
+            target_ty = semantic::type_dereference(target_ty);
+        }
+        var method_fn_id = -1;
+        var found_class_id = -1;
+        if semantic::is_class_type(target_ty) {
+            found_class_id = target_ty - 4000;
+        }
+        if cg_types::class_name_is(p, target_ty, "HashMap") {
+            if cg_types::span_ends_with(p, expr.name_span, "length") {
+                var map_len_ptr = cg_types::next_temp(g);
+                cg_types::emit_gep(g, map_len_ptr, target_ty, p, receiver_reg, 0, 1);
+                var map_len = cg_types::next_temp(g);
+                cg_types::emit_load_typed(g, map_len, map_len_ptr, semantic::type_int(), p);
+                cg_types::set_last(g, semantic::type_int());
+                return map_len;
+            }
+            if expr.child_len > 1 and
+               (cg_types::span_ends_with(p, expr.name_span, "get") or
+                cg_types::span_ends_with(p, expr.name_span, "contains") or
+                cg_types::span_ends_with(p, expr.name_span, "remove")) {
+                var map_key = codegen_expr(g, p, (*(*p).arena).expr_refs[expr.child_start + 1], source);
+                var map_key_ty = cg_types::get_last(g);
+                var map_slot = cg_types::emit_hashmap_slot_ptr(g, p, receiver_reg, target_ty, map_key, map_key_ty);
+                if cg_types::span_ends_with(p, expr.name_span, "get") {
+                    cg_types::set_last(g, semantic::type_pointer(semantic::type_int(), true));
+                    return map_slot;
+                }
+                var map_value = cg_types::next_temp(g);
+                cg_types::emit_load_typed(g, map_value, map_slot, semantic::type_int(), p);
+                var map_zero = cg_types::next_temp(g);
+                cg_types::emit(g, "    "); cg_types::push_temp(g, map_zero); cg_types::emit(g, "= add i64 0, 0"); cg_types::newline(g);
+                var map_present = cg_types::next_temp(g);
+                cg_types::emit_icmp(g, map_present, "ne", semantic::type_int(), map_value, map_zero, p);
+                if cg_types::span_ends_with(p, expr.name_span, "remove") {
+                    cg_types::emit_store_typed(g, map_zero, map_slot, semantic::type_int(), p);
+                    var remove_len_ptr = cg_types::next_temp(g);
+                    cg_types::emit_gep(g, remove_len_ptr, target_ty, p, receiver_reg, 0, 1);
+                    var remove_len = cg_types::next_temp(g);
+                    cg_types::emit_load_typed(g, remove_len, remove_len_ptr, semantic::type_int(), p);
+                    var one = cg_types::next_temp(g);
+                    cg_types::emit(g, "    "); cg_types::push_temp(g, one); cg_types::emit(g, "= add i64 0, 1"); cg_types::newline(g);
+                    var new_len = cg_types::next_temp(g);
+                    cg_types::emit_binop(g, new_len, "sub", semantic::type_int(), remove_len, one, p);
+                    cg_types::emit_store_typed(g, new_len, remove_len_ptr, semantic::type_int(), p);
+                }
+                cg_types::set_last(g, semantic::type_bool());
+                return map_present;
+            }
+        }
+        if found_class_id >= 0 and found_class_id < (*(*p).arena).classes.len {
+            var cl = (*(*p).arena).classes[found_class_id];
+            var mi = 0;
+            while mi < cl.method_len {
+                var cm = (*(*p).arena).class_methods[cl.method_start + mi];
+                var mfunc = (*p).arena.functions[cm.function_id];
+                if semantic::name_equals((*(*p).source).data, mfunc.name_span, expr.name_span) {
+                    method_fn_id = cm.function_id;
+                    break;
+                }
+                mi = mi + 1;
+            }
+        }
+
+        if method_fn_id < 0 {
+            if cg_types::span_ends_with(p, expr.name_span, "equals") and expr.child_len > 1 {
+                var receiver_value = cg_types::next_temp(g);
+                cg_types::emit_load_typed(g, receiver_value, receiver_reg, target_ty, p);
+                var equals_arg = codegen_expr(g, p, (*(*p).arena).expr_refs[expr.child_start + 1], source);
+                var equals_reg = cg_types::next_temp(g);
+                if semantic::is_float_type(target_ty) {
+                    cg_types::emit_fcmp(g, equals_reg, "oeq", target_ty, receiver_value, equals_arg, p);
+                } else {
+                    cg_types::emit_icmp(g, equals_reg, "eq", target_ty, receiver_value, equals_arg, p);
+                }
+                cg_types::set_last(g, semantic::type_bool());
+                return equals_reg;
+            }
+            if cg_types::span_ends_with(p, expr.name_span, "hash") {
+                var hash_value = cg_types::next_temp(g);
+                cg_types::emit_load_typed(g, hash_value, receiver_reg, target_ty, p);
+                if cg_types::integer_width(target_ty) < 64 {
+                    var widened_hash = cg_types::next_temp(g);
+                    cg_types::emit(g, "    ");
+                    cg_types::push_temp(g, widened_hash);
+                    cg_types::emit(g, "= zext ");
+                    cg_types::emit_type(g, target_ty, p);
+                    cg_types::emit(g, " ");
+                    cg_types::push_reg(g, hash_value);
+                    cg_types::emit(g, " to i64");
+                    cg_types::newline(g);
+                    hash_value = widened_hash;
+                }
+                cg_types::set_last(g, semantic::type_int());
+                return hash_value;
+            }
+            if cg_types::span_ends_with(p, expr.name_span, "format") {
+                var string_class_id = -1;
+                var string_i = 0;
+                while string_i < (*(*p).arena).classes.len {
+                    var string_class = (*(*p).arena).classes[string_i];
+                    if cg_types::span_ends_with(p, string_class.name_span, "String") {
+                        string_class_id = string_i;
+                        break;
+                    }
+                    string_i = string_i + 1;
+                }
+                if string_class_id >= 0 {
+                    var empty_string_ptr = cg_types::next_temp(g);
+                    cg_types::emit(g, "    ");
+                    cg_types::push_temp(g, empty_string_ptr);
+                    cg_types::emit(g, "= insertvalue ");
+                    cg_types::emit_type(g, 4000 + string_class_id, p);
+                    cg_types::emit(g, " undef, ptr null, 0");
+                    cg_types::newline(g);
+                    var empty_string = cg_types::next_temp(g);
+                    cg_types::emit(g, "    ");
+                    cg_types::push_temp(g, empty_string);
+                    cg_types::emit(g, "= insertvalue ");
+                    cg_types::emit_type(g, 4000 + string_class_id, p);
+                    cg_types::emit(g, " ");
+                    cg_types::push_reg(g, empty_string_ptr);
+                    cg_types::emit(g, ", i64 0, 1");
+                    cg_types::newline(g);
+                    cg_types::set_last(g, 4000 + string_class_id);
+                    return empty_string;
+                }
+            }
+            return -1;
+        }
+
+        var method_info = (*p).arena.functions[method_fn_id];
+
+        var param_regs: array::Array<int> = array::Array();
+        var param_tys: array::Array<int> = array::Array();
+        param_regs.push(receiver_reg);
+        param_tys.push(semantic::type_pointer(target_ty, false));
+
+        var ai = 1;
+        while ai < expr.child_len {
+            var arg_reg = codegen_expr(g, p, (*(*p).arena).expr_refs[expr.child_start + ai], source);
+            param_regs.push(arg_reg);
+            param_tys.push(cg_types::get_last(g));
+            ai = ai + 1;
+        }
+
+        var ret_ty = semantic::type_void();
+        if method_info.has_return_type {
+            var errors: array::Array<semantic::SemanticError> = array::Array();
+            var summary = semantic::make_empty_summary();
+            ret_ty = semantic::resolve_type_ref(p, method_info.return_type_ref, @errors, @summary);
+        }
+
+        var ret_reg = cg_types::next_temp(g);
+        var fn_chars: array::Array<char> = array::Array();
+        var class_name = (*(*p).arena).classes[found_class_id].name_span;
+        var class_name_i = class_name.start;
+        while class_name_i < class_name.end {
+            fn_chars.push(source.data[class_name_i]);
+            class_name_i = class_name_i + 1;
+        }
+        fn_chars.push('.');
+        var csi = method_info.name_span.start;
+        while csi < method_info.name_span.end {
+            fn_chars.push((*(*p).source).data[csi]);
+            csi = csi + 1;
+        }
+        cg_types::emit_call(g, ret_reg, fn_chars.data, fn_chars.len, ret_ty, @param_regs, @param_tys, p);
+        cg_types::set_last(g, ret_ty);
+        return ret_reg;
+    }
+
+    if expr.kind == 15 {
+        if expr.child_len == 0 { return -1; }
+        var src_reg = codegen_expr(g, p, (*(*p).arena).expr_refs[expr.child_start], source);
+        var from_ty = cg_types::get_last(g);
+        var to_ty = cg_types::resolve_type_simple(p, ast::make_type_ref(6, expr.name_span.start, expr.name_span.end));
+        if to_ty == semantic::type_unknown() {
+            to_ty = semantic::type_int();
+        }
+        var r = cg_types::next_temp(g);
+        var cast_op = "trunc";
+        var from_is_float = (from_ty == semantic::type_float() or from_ty == semantic::type_float64() or from_ty == semantic::type_float32());
+        var to_is_float = (to_ty == semantic::type_float() or to_ty == semantic::type_float64() or to_ty == semantic::type_float32());
+        var from_is_ptr = semantic::is_pointer_type(from_ty);
+        var to_is_ptr = semantic::is_pointer_type(to_ty);
+
+        if from_is_float and !to_is_float {
+            cast_op = "fptosi";
+        } else if !from_is_float and to_is_float {
+            cast_op = "sitofp";
+        } else if from_is_float and to_is_float {
+            if from_ty == semantic::type_float32() and (to_ty == semantic::type_float64() or to_ty == semantic::type_float()) {
+                cast_op = "fpext";
+            } else {
+                cast_op = "fptrunc";
+            }
+        } else if from_is_ptr and !to_is_ptr {
+            cast_op = "ptrtoint";
+        } else if !from_is_ptr and to_is_ptr {
+            cast_op = "inttoptr";
+        } else {
+            cast_op = "trunc";
+        }
+
+        cg_types::emit(g, "    ");
+        cg_types::push_temp(g, r);
+        cg_types::emit(g, "= ");
+        cg_types::emit(g, cast_op);
+        cg_types::emit(g, " ");
+        cg_types::emit_type(g, from_ty, p);
+        cg_types::emit(g, " ");
+        cg_types::push_reg(g, src_reg);
+        cg_types::emit(g, " to ");
+        cg_types::emit_type(g, to_ty, p);
+        cg_types::newline(g);
+        cg_types::set_last(g, to_ty);
+        return r;
+    }
+
+    if expr.kind == 16 {
+        var ty = cg_types::resolve_type_simple(p, ast::make_type_ref(6, expr.name_span.start, expr.name_span.end));
+        var size = semantic::type_int(ty);
+        var r = cg_types::next_temp(g);
+        cg_types::emit(g, "    ");
+        cg_types::push_temp(g, r);
+        cg_types::emit(g, "= add i64 0, ");
+        cg_types::emit_int(g, size);
+        cg_types::newline(g);
+        cg_types::set_last(g, semantic::type_int());
+        return r;
+    }
+
+    if expr.kind == 17 {
+        if expr.child_len == 0 { return -1; }
+        var target_reg = codegen_expr(g, p, (*(*p).arena).expr_refs[expr.child_start], source);
+        var ty = cg_types::resolve_type_simple(p, ast::make_type_ref(6, expr.name_span.start, expr.name_span.end));
+        cg_types::emit(g, "    call void @\"");
+        {
+            var errors: array::Array<semantic::SemanticError> = array::Array();
+            var summary = semantic::make_empty_summary();
+        }
+        var ni = expr.name_span.start;
+        while ni < expr.name_span.end {
+            (*g).output.push(source.data[ni]);
+            ni = ni + 1;
+        }
+        cg_types::emit(g, ".destroy\"(ptr ");
+        cg_types::push_reg(g, target_reg);
+        cg_types::emit(g, ")");
+        cg_types::newline(g);
+        cg_types::set_last(g, semantic::type_int());
+        return target_reg;
+    }
+
+    if expr.kind == 18 {
+        var type_name = expr.callee_span;
+        var method_name = expr.name_span;
+        var ci = 0;
+        var found_fn_id = -1;
+        while ci < (*(*p).arena).classes.len and found_fn_id < 0 {
+            var class_info = (*(*p).arena).classes[ci];
+            if semantic::name_equals((*(*p).source).data, class_info.name_span, type_name) {
+                var mi = 0;
+                while mi < class_info.method_len {
+        var cm = (*(*p).arena).class_methods[class_info.method_start + mi];
+                    var mfunc = (*p).arena.functions[cm.function_id];
+                    if semantic::name_equals((*(*p).source).data, mfunc.name_span, method_name) {
+                        found_fn_id = cm.function_id;
+                        break;
+                    }
+                    mi = mi + 1;
+                }
+            }
+            ci = ci + 1;
+        }
+        if found_fn_id >= 0 {
+            var method_info = (*p).arena.functions[found_fn_id];
+            var param_regs: array::Array<int> = array::Array();
+            var param_tys: array::Array<int> = array::Array();
+            var ai = 0;
+            while ai < expr.child_len {
+                var arg_reg = codegen_expr(g, p, (*(*p).arena).expr_refs[expr.child_start + ai], source);
+                param_regs.push(arg_reg);
+                param_tys.push(cg_types::get_last(g));
+                ai = ai + 1;
+            }
+            var ret_ty = semantic::type_int();
+            if method_info.has_return_type {
+                var errors: array::Array<semantic::SemanticError> = array::Array();
+                var summary = semantic::make_empty_summary();
+                ret_ty = semantic::resolve_type_ref(p, method_info.return_type_ref, @errors, @summary);
+            }
+            var ret_reg = cg_types::next_temp(g);
+            var fn_chars: array::Array<char> = array::Array();
+            var csi = method_info.name_span.start;
+            while csi < method_info.name_span.end {
+                fn_chars.push(source.data[csi]);
+                csi = csi + 1;
+            }
+            cg_types::emit_call(g, ret_reg, fn_chars.data, fn_chars.len, ret_ty, @param_regs, @param_tys, p);
+            cg_types::set_last(g, ret_ty);
+            return ret_reg;
+        }
+        var enum_idx = -1;
+        var ei = 0;
+        while ei < (*p).arena.enums.len {
+            var ei2 = (*p).arena.enums[ei];
+            if semantic::name_equals((*(*p).source).data, ei2.name_span, type_name) { enum_idx = ei; break; }
+            ei = ei + 1;
+        }
+        if enum_idx >= 0 {
+            var r = cg_types::next_temp(g);
+            cg_types::emit(g, "    ");
+            cg_types::push_temp(g, r);
+            cg_types::emit(g, "= add i64 0, 0");
+            cg_types::newline(g);
+            cg_types::set_last(g, 2000 + enum_idx);
+            return r;
+        }
+        var choice_idx = -1;
+        var chi = 0;
+        while chi < (*p).arena.choices.len {
+            var chi2 = (*p).arena.choices[chi];
+            if semantic::name_equals((*(*p).source).data, chi2.name_span, type_name) { choice_idx = chi; break; }
+            chi = chi + 1;
+        }
+        if choice_idx >= 0 {
+            var variant_idx = -1;
+            var choice_info = (*p).arena.choices[choice_idx];
+            var vi = 0;
+            while vi < choice_info.variant_len {
+                var v = (*p).arena.choice_variants[choice_info.variant_start + vi];
+                if semantic::name_equals((*(*p).source).data, v.name_span, method_name) { variant_idx = vi; break; }
+                vi = vi + 1;
+            }
+            var r = cg_types::next_temp(g);
+            if variant_idx >= 0 {
+                var payload_reg = -1;
+                if expr.child_len > 0 {
+                    payload_reg = codegen_expr(g, p, (*(*p).arena).expr_refs[expr.child_start], source);
+                }
+                cg_types::emit(g, "    ");
+                cg_types::push_temp(g, r);
+                cg_types::emit(g, "= insertvalue ");
+                cg_types::emit_type(g, 3000 + choice_idx, p);
+                cg_types::emit(g, " undef, i64 ");
+                cg_types::emit_int(g, variant_idx);
+                cg_types::emit(g, ", 0");
+                cg_types::newline(g);
+                if payload_reg >= 0 {
+                    var r2 = cg_types::next_temp(g);
+                    cg_types::emit(g, "    ");
+                    cg_types::push_temp(g, r2);
+                    cg_types::emit(g, "= insertvalue ");
+                    cg_types::emit_type(g, 3000 + choice_idx, p);
+                    cg_types::emit(g, " ");
+                    cg_types::push_reg(g, r);
+                    cg_types::emit(g, ", i64 ");
+                    cg_types::push_reg(g, payload_reg);
+                    cg_types::emit(g, ", 1");
+                    cg_types::newline(g);
+                    cg_types::set_last(g, 3000 + choice_idx);
+                    return r2;
+                }
+            } else {
+                cg_types::emit(g, "    ");
+                cg_types::push_temp(g, r);
+                cg_types::emit(g, "= add i64 0, 0");
+                cg_types::newline(g);
+            }
+            cg_types::set_last(g, 3000 + choice_idx);
+            return r;
+        }
+        var struct_idx = -1;
+        var si = 0;
+        while si < (*p).arena.structs.len {
+            var si2 = (*p).arena.structs[si];
+            if semantic::name_equals((*(*p).source).data, si2.name_span, type_name) { struct_idx = si; break; }
+            si = si + 1;
+        }
+        if struct_idx >= 0 {
+            var si2 = (*p).arena.structs[struct_idx];
+            var r = cg_types::next_temp(g);
+            var prev_r = -1;
+            cg_types::emit(g, "    ");
+            cg_types::push_temp(g, r);
+            cg_types::emit(g, "= insertvalue ");
+            cg_types::emit_type(g, 1000 + struct_idx, p);
+            cg_types::emit(g, " undef, ");
+            var fi = 0;
+            while fi < expr.child_len and fi < si2.field_len {
+                var field_reg = codegen_expr(g, p, (*(*p).arena).expr_refs[expr.child_start + fi], source);
+                if fi > 0 {
+                    var new_r = cg_types::next_temp(g);
+                    cg_types::emit(g, "    ");
+                    cg_types::push_temp(g, new_r);
+                    cg_types::emit(g, "= insertvalue ");
+                    cg_types::emit_type(g, 1000 + struct_idx, p);
+                    cg_types::emit(g, " ");
+                    cg_types::push_reg(g, prev_r);
+                    cg_types::emit(g, ", ");
+                    prev_r = new_r;
+                } else {
+                    prev_r = r;
+                }
+                cg_types::emit_type(g, 1000 + struct_idx, p);
+                cg_types::emit(g, " ");
+                cg_types::push_reg(g, field_reg);
+                cg_types::emit(g, ", ");
+                cg_types::emit_int(g, fi);
+                cg_types::newline(g);
+                fi = fi + 1;
+            }
+            if prev_r < 0 { prev_r = r; }
+            cg_types::set_last(g, 1000 + struct_idx);
+            return prev_r;
+        }
+        var r = cg_types::next_temp(g);
+        cg_types::emit(g, "    ");
+        cg_types::push_temp(g, r);
+        cg_types::emit(g, "= add i64 0, 0");
+        cg_types::newline(g);
+        cg_types::set_last(g, semantic::type_int());
+        return r;
+    }
+
+    if expr.kind == 19 {
+        var type_name = expr.callee_span;
+        var member_name = expr.name_span;
+        var r = cg_types::next_temp(g);
+        cg_types::emit(g, "    ");
+        cg_types::push_temp(g, r);
+        cg_types::emit(g, "= add i64 0, 0");
+        cg_types::newline(g);
+        var enum_idx = -1;
+        var ei = 0;
+        while ei < (*p).arena.enums.len {
+            var ei2 = (*p).arena.enums[ei];
+            if semantic::name_equals((*(*p).source).data, ei2.name_span, type_name) { enum_idx = ei; break; }
+            ei = ei + 1;
+        }
+        if enum_idx >= 0 {
+            var vi = 0;
+            var enum_info = (*p).arena.enums[enum_idx];
+            while vi < enum_info.variant_len {
+                var v = (*p).arena.enum_variants[enum_info.variant_start + vi];
+                if semantic::name_equals((*(*p).source).data, v.name_span, member_name) {
+                    cg_types::emit(g, "    ");
+                    cg_types::push_temp(g, r);
+                    cg_types::emit(g, "= add i64 0, ");
+                    cg_types::emit_int(g, vi);
+                    cg_types::newline(g);
+                    break;
+                }
+                vi = vi + 1;
+            }
+            cg_types::set_last(g, 2000 + enum_idx);
+            return r;
+        }
+        cg_types::set_last(g, semantic::type_int());
+        return r;
+    }
+
+    if expr.kind == 20 {
+        if cg_types::span_ends_with(p, expr.callee_span, "cast") {
+            if expr.child_len == 0 {
+                return -1;
+            }
+            var src_reg = codegen_expr(g, p, (*(*p).arena).expr_refs[expr.child_start], source);
+            var from_ty = cg_types::get_last(g);
+            var type_arg_span = (*(*p).arena).name_refs[expr.name_ref_start];
+            var type_ref = ast::make_type_ref(6, type_arg_span.start, type_arg_span.end);
+            if source.data[type_arg_span.start] == '@' {
+                type_ref.token_kind = 61;
+            }
+            var errors: array::Array<semantic::SemanticError> = array::Array();
+            var summary = semantic::make_empty_summary();
+            var to_ty = semantic::resolve_type_ref(p, type_ref, @errors, @summary);
+            if from_ty == to_ty or cg_types::same_llvm_scalar_type(from_ty, to_ty) {
+                cg_types::set_last(g, to_ty);
+                return src_reg;
+            }
+            var r = cg_types::next_temp(g);
+            cg_types::emit(g, "    ");
+            cg_types::push_temp(g, r);
+            if semantic::is_pointer_type(from_ty) and semantic::is_pointer_type(to_ty) {
+                cg_types::emit(g, "= bitcast ");
+            } else if semantic::is_pointer_type(from_ty) {
+                cg_types::emit(g, "= ptrtoint ");
+            } else if semantic::is_pointer_type(to_ty) {
+                cg_types::emit(g, "= inttoptr ");
+            } else if semantic::is_float_type(from_ty) and cg_types::is_llvm_integer_type(to_ty) {
+                cg_types::emit(g, "= fptosi ");
+            } else if cg_types::is_llvm_integer_type(from_ty) and semantic::is_float_type(to_ty) {
+                cg_types::emit(g, "= sitofp ");
+            } else if semantic::is_float_type(from_ty) and semantic::is_float_type(to_ty) {
+                if from_ty == semantic::type_float32() {
+                    cg_types::emit(g, "= fpext ");
+                } else {
+                    cg_types::emit(g, "= fptrunc ");
+                }
+            } else if cg_types::is_llvm_integer_type(from_ty) and cg_types::is_llvm_integer_type(to_ty) {
+                if cg_types::integer_width(from_ty) < cg_types::integer_width(to_ty) {
+                    if from_ty == semantic::type_char() or from_ty == semantic::type_bool() {
+                        cg_types::emit(g, "= zext ");
+                    } else {
+                        cg_types::emit(g, "= sext ");
+                    }
+                } else {
+                    cg_types::emit(g, "= trunc ");
+                }
+            } else if from_ty == semantic::type_unknown() and cg_types::is_llvm_integer_type(to_ty) {
+                cg_types::emit(g, "= trunc ");
+            } else {
+                cg_types::emit(g, "= bitcast ");
+            }
+            cg_types::emit_type(g, from_ty, p);
+            cg_types::emit(g, " ");
+            cg_types::push_reg(g, src_reg);
+            cg_types::emit(g, " to ");
+            cg_types::emit_type(g, to_ty, p);
+            cg_types::newline(g);
+            cg_types::set_last(g, to_ty);
+            return r;
+        }
+        if cg_types::span_ends_with(p, expr.callee_span, "sizeof") {
+            var type_arg_span2 = (*(*p).arena).name_refs[expr.name_ref_start];
+            var type_ref2 = ast::make_type_ref(6, type_arg_span2.start, type_arg_span2.end);
+            if source.data[type_arg_span2.start] == '@' {
+                type_ref2.token_kind = 61;
+            }
+            var errors2: array::Array<semantic::SemanticError> = array::Array();
+            var summary2 = semantic::make_empty_summary();
+            var target_ty = semantic::resolve_type_ref(p, type_ref2, @errors2, @summary2);
+            var gep_reg = cg_types::next_temp(g);
+            cg_types::emit(g, "    ");
+            cg_types::push_temp(g, gep_reg);
+            cg_types::emit(g, "= getelementptr ");
+            cg_types::emit_type(g, target_ty, p);
+            cg_types::emit(g, ", ptr null, i32 1");
+            cg_types::newline(g);
+            var size_reg = cg_types::next_temp(g);
+            cg_types::emit(g, "    ");
+            cg_types::push_temp(g, size_reg);
+            cg_types::emit(g, "= ptrtoint ptr ");
+            cg_types::push_reg(g, gep_reg);
+            cg_types::emit(g, " to i64");
+            cg_types::newline(g);
+            cg_types::set_last(g, semantic::type_int());
+            return size_reg;
+        }
+        if cg_types::span_ends_with(p, expr.callee_span, "destroy") {
+            if expr.child_len > 0 {
+                var value_reg = codegen_expr(g, p, (*(*p).arena).expr_refs[expr.child_start], source);
+                return value_reg;
+            }
+            return -1;
+        }
+        var param_regs: array::Array<int> = array::Array();
+        var param_tys: array::Array<int> = array::Array();
+        var ai = 0;
+        while ai < expr.child_len {
+            var arg_reg = codegen_expr(g, p, (*(*p).arena).expr_refs[expr.child_start + ai], source);
+            param_regs.push(arg_reg);
+            param_tys.push(cg_types::get_last(g));
+            ai = ai + 1;
+        }
+
+        var fn_name_span = expr.callee_span;
+        var fn_index = -1;
+        var ni = 0;
+        while ni < (*(*p).arena).functions.len {
+            var fn2 = (*(*p).arena).functions[ni];
+            if fn2.name_span.start == fn_name_span.start and fn2.name_span.end == fn_name_span.end {
+                fn_index = ni;
+                break;
+            }
+            ni = ni + 1;
+        }
+
+        if fn_index >= 0 {
+            var type_arg_span = (*(*p).arena).name_refs[expr.name_ref_start];
+            var concrete_fn_id = monomorphizer::instantiate_generic(p, fn_index, type_arg_span);
+            if concrete_fn_id >= 0 {
+                var concrete_func = (*(*p).arena).functions[concrete_fn_id];
+                fn_name_span = concrete_func.name_span;
+            }
+        }
+
+        var fn_chars: array::Array<char> = array::Array();
+        var csi = fn_name_span.start;
+        while csi < fn_name_span.end {
+            fn_chars.push(source.data[csi]);
+            csi = csi + 1;
+        }
+        var ret_reg = cg_types::next_temp(g);
+        cg_types::emit_call(g, ret_reg, fn_chars.data, fn_chars.len, semantic::type_int(), @param_regs, @param_tys, p);
+        cg_types::set_last(g, semantic::type_int());
+        return ret_reg;
+    }
+
+    if expr.kind == 7 {
+        var r = cg_types::next_temp(g);
+        cg_types::emit(g, "    ");
+        cg_types::push_temp(g, r);
+        cg_types::emit(g, "= add i8 0, ");
+        cg_types::emit_int(g, cast<int>(expr.char_value));
+        cg_types::newline(g);
+        cg_types::set_last(g, semantic::type_char());
+        return r;
+    }
+
+    if expr.kind == 8 {
+        var sc = (*g).str_counter;
+        (*g).str_counter = sc + 1;
+        cg_types::emit_str_buf(@(*g).string_globals, "@.str.");
+        cg_types::emit_int_buf(@(*g).string_globals, sc);
+        cg_types::emit_str_buf(@(*g).string_globals, " = private unnamed_addr constant [");
+        var slen = expr.span.end - expr.span.start - 2;
+        cg_types::emit_int_buf(@(*g).string_globals, slen + 1);
+        cg_types::emit_str_buf(@(*g).string_globals, " x i8] c\"");
+        var si = expr.span.start + 1;
+        var sei = expr.span.end - 1;
+        while si < sei {
+            var ch = (*(*p).source).data[si];
+            var q = cast<char>(34);
+            if ch == '\n' { cg_types::emit_str_buf(@(*g).string_globals, "\\0A"); }
+            else if ch == q { cg_types::emit_str_buf(@(*g).string_globals, "\\22"); }
+            else if ch == '\\' { cg_types::emit_str_buf(@(*g).string_globals, "\\\\"); }
+            else { (*g).string_globals.push(ch); }
+            si = si + 1;
+        }
+        cg_types::emit_str_buf(@(*g).string_globals, "\\00\"");
+        (*g).string_globals.push('\n');
+
+        var ptr_reg = cg_types::next_temp(g);
+        cg_types::emit(g, "    ");
+        cg_types::push_temp(g, ptr_reg);
+        cg_types::emit(g, "= getelementptr inbounds [");
+        cg_types::emit_int(g, slen + 1);
+        cg_types::emit(g, " x i8], [");
+        cg_types::emit_int(g, slen + 1);
+        cg_types::emit(g, " x i8]* @.str.");
+        cg_types::emit_int(g, sc);
+        cg_types::emit(g, ", i64 0, i64 0");
+        cg_types::newline(g);
+
+        var len_reg = cg_types::next_temp(g);
+        cg_types::emit(g, "    ");
+        cg_types::push_temp(g, len_reg);
+        cg_types::emit(g, "= add i64 0, ");
+        cg_types::emit_int(g, slen);
+        cg_types::newline(g);
+
+        var r = cg_types::next_temp(g);
+        cg_types::emit(g, "    ");
+        cg_types::push_temp(g, r);
+        cg_types::emit(g, "= insertvalue { ptr, i64 } undef, ptr ");
+        cg_types::push_reg(g, ptr_reg);
+        cg_types::emit(g, ", 0");
+        cg_types::newline(g);
+        var r2 = cg_types::next_temp(g);
+        cg_types::emit(g, "    ");
+        cg_types::push_temp(g, r2);
+        cg_types::emit(g, "= insertvalue { ptr, i64 } ");
+        cg_types::push_reg(g, r);
+        cg_types::emit(g, ", i64 ");
+        cg_types::push_reg(g, len_reg);
+        cg_types::emit(g, ", 1");
+        cg_types::newline(g);
+        cg_types::set_last(g, semantic::type_string_literal());
+        return r2;
+    }
+
+    if expr.kind == 1 {
+        var reg = cg_types::lookup_local(g, p, expr.name_span);
+        if reg < 0 {
+            var null_span = expr.name_span;
+            var nn = (*(*p).source).data;
+            if null_span.end - null_span.start == 4 and nn[null_span.start] == 'n' and nn[null_span.start + 1] == 'u' and nn[null_span.start + 2] == 'l' and nn[null_span.start + 3] == 'l' {
+                var r = cg_types::next_temp(g);
+                cg_types::emit(g, "    ");
+                cg_types::push_temp(g, r);
+                cg_types::emit(g, "= add i64 0, 0");
+                cg_types::newline(g);
+                cg_types::set_last(g, semantic::type_int());
+                return r;
+            }
+            return -1;
+        }
+        var ty = cg_types::lookup_local_type(g, p, expr.name_span);
+        var r = cg_types::next_temp(g);
+        if ty >= 1000 or ty >= 2000 or ty >= 3000 or ty >= 4000 {
+            cg_types::emit_load_typed(g, r, reg, ty, p);
+        } else {
+            cg_types::emit_load(g, r, reg, ty, p);
+        }
+        cg_types::set_last(g, ty);
+        return r;
+    }
+
+    if expr.kind == 4 {
+        return codegen_expr(g, p, (*(*p).arena).expr_refs[expr.child_start], source);
+    }
+
+    if expr.kind == 5 {
+        var is_unary = expr.child_len == 1;
+        if expr.child_len == 0 { return -1; }
+        if expr.op_kind == 74 {
+            var indexed_ptr = codegen_lvalue(g, p, expr_id, source);
+            var indexed_ty = cg_types::get_last(g);
+            var indexed_value = cg_types::next_temp(g);
+            cg_types::emit_load_typed(g, indexed_value, indexed_ptr, indexed_ty, p);
+            cg_types::set_last(g, indexed_ty);
+            return indexed_value;
+        }
+        if expr.op_kind == 61 and is_unary {
+            var addressed_ptr = codegen_lvalue(g, p, (*(*p).arena).expr_refs[expr.child_start], source);
+            var addressed_ty = cg_types::get_last(g);
+            cg_types::set_last(g, semantic::type_pointer(addressed_ty, false));
+            return addressed_ptr;
+        }
+        var lhs_reg = codegen_expr(g, p, (*(*p).arena).expr_refs[expr.child_start], source);
+        var lhs_ty = cg_types::get_last(g);
+        var rhs_reg = -1;
+        var rhs_ty = semantic::type_int();
+        if expr.child_len > 1 {
+            rhs_reg = codegen_expr(g, p, (*(*p).arena).expr_refs[expr.child_start + 1], source);
+            rhs_ty = cg_types::get_last(g);
+        }
+
+        if !is_unary and lhs_ty >= 10000 and rhs_ty == semantic::type_int() {
+            var new_rhs = cg_types::next_temp(g);
+            cg_types::emit(g, "    "); cg_types::push_temp(g, new_rhs); cg_types::emit(g, "= inttoptr i64 "); cg_types::push_reg(g, rhs_reg); cg_types::emit(g, " to "); cg_types::emit_type(g, lhs_ty, p); cg_types::newline(g);
+            rhs_reg = new_rhs;
+            rhs_ty = lhs_ty;
+        } else if !is_unary and rhs_ty >= 10000 and lhs_ty == semantic::type_int() {
+            var new_lhs = cg_types::next_temp(g);
+            cg_types::emit(g, "    "); cg_types::push_temp(g, new_lhs); cg_types::emit(g, "= inttoptr i64 "); cg_types::push_reg(g, lhs_reg); cg_types::emit(g, " to "); cg_types::emit_type(g, rhs_ty, p); cg_types::newline(g);
+            lhs_reg = new_lhs;
+            lhs_ty = rhs_ty;
+        }
+
+        var op = expr.op_kind;
+        var r = cg_types::next_temp(g);
+        var aty = lhs_ty;
+
+        if op == 46 or op == 49 or op == 50 {
+            if !is_unary and try_emit_overloaded_binary_op(g, p, op, r, lhs_reg, rhs_reg, source) {
+                return r;
+            }
+            var opstr = "add";
+            if op == 49 { opstr = "sdiv"; }
+            if op == 50 { opstr = "srem"; }
+            var arith_ty = cg_types::get_last(g);
+            if arith_ty == semantic::type_float() or arith_ty == semantic::type_float64() {
+                if op == 46 { opstr = "fadd"; }
+                if op == 49 { opstr = "fdiv"; }
+                if op == 50 { opstr = "frem"; }
+            }
+            cg_types::emit_binop(g, r, opstr, arith_ty, lhs_reg, rhs_reg, p);
+            cg_types::set_last(g, arith_ty);
+            return r;
+        }
+        if op == 47 {
+            var arith_ty = cg_types::get_last(g);
+            if is_unary {
+                emit_binop_with_zero(g, r, "sub", lhs_reg, p);
+            } else {
+                var opstr = "sub";
+                if arith_ty == semantic::type_float() or arith_ty == semantic::type_float64() { opstr = "fsub"; }
+                cg_types::emit_binop(g, r, opstr, arith_ty, lhs_reg, rhs_reg, p);
+            }
+            cg_types::set_last(g, arith_ty);
+            return r;
+        }
+        if op == 48 {
+            if is_unary {
+                var ptr_ty = cg_types::get_last(g);
+                if semantic::is_pointer_type(ptr_ty) {
+                    var target_ty = semantic::type_dereference(ptr_ty);
+                    var r = cg_types::next_temp(g);
+                    cg_types::push_temp(g, r);
+                    cg_types::emit(g, "= load ");
+                    if target_ty >= 4000 {
+                        var ci2 = target_ty - 4000;
+                        if ci2 < (*(*p).arena).classes.len {
+                            cg_types::emit(g, "%class.");
+                            var cls = (*(*p).arena).classes[ci2];
+                            var ni8 = cls.name_span.start;
+                            while ni8 < cls.name_span.end {
+                                (*g).output.push((*(*p).source).data[ni8]);
+                                ni8 = ni8 + 1;
+                            }
+                        } else { cg_types::emit(g, "i64"); }
+                    } else if target_ty >= 3000 {
+                        var ci3 = target_ty - 3000;
+                        if ci3 < (*(*p).arena).choices.len {
+                            cg_types::emit(g, "%choice.");
+                            var ch2 = (*(*p).arena).choices[ci3];
+                            var ni9 = ch2.name_span.start;
+                            while ni9 < ch2.name_span.end {
+                                (*g).output.push((*(*p).source).data[ni9]);
+                                ni9 = ni9 + 1;
+                            }
+                        } else { cg_types::emit(g, "i64"); }
+                    } else if target_ty >= 1000 {
+                        var si = target_ty - 1000;
+                        if si < (*(*p).arena).structs.len {
+                            cg_types::emit(g, "%struct.");
+                            var st = (*(*p).arena).structs[si];
+                            var ni10 = st.name_span.start;
+                            while ni10 < st.name_span.end {
+                                (*g).output.push((*(*p).source).data[ni10]);
+                                ni10 = ni10 + 1;
+                            }
+                        } else { cg_types::emit(g, "i64"); }
+                    } else { cg_types::emit_type(g, target_ty, p); }
+                    cg_types::emit(g, ", ptr ");
+                    cg_types::push_reg(g, lhs_reg);
+                    cg_types::newline(g);
+                    cg_types::set_last(g, target_ty);
+                    return r;
+                }
+                return lhs_reg;
+            }
+            var arith_ty = cg_types::get_last(g);
+            var opstr = "mul";
+            if arith_ty == semantic::type_float() or arith_ty == semantic::type_float64() { opstr = "fmul"; }
+            cg_types::emit_binop(g, r, opstr, arith_ty, lhs_reg, rhs_reg, p);
+            cg_types::set_last(g, arith_ty);
+            return r;
+        }
+        if op == 61 { return lhs_reg; }
+        if op == 62 {
+            var tag_reg = cg_types::next_temp(g);
+            cg_types::emit(g, "    ");
+            cg_types::push_temp(g, tag_reg);
+            cg_types::emit(g, "= extractvalue ");
+            cg_types::emit_type(g, lhs_ty, p);
+            cg_types::emit(g, " ");
+            cg_types::push_reg(g, lhs_reg);
+            cg_types::emit(g, ", 0");
+            cg_types::newline(g);
+            var zero_reg = cg_types::next_temp(g);
+            cg_types::emit(g, "    ");
+            cg_types::push_temp(g, zero_reg);
+            cg_types::emit(g, "= add i64 0, 0");
+            cg_types::newline(g);
+            var is_ok_reg = cg_types::next_temp(g);
+            cg_types::emit_icmp(g, is_ok_reg, "eq", semantic::type_int(), tag_reg, zero_reg, p);
+            var ok_label = cg_types::next_label(g);
+            var err_label = cg_types::next_label(g);
+            var end_label = cg_types::next_label(g);
+            cg_types::emit_cond_br(g, is_ok_reg, ok_label, err_label);
+
+            (*g).block_terminated = false;
+            cg_types::emit_label(g, ok_label);
+            var payload_reg = cg_types::next_temp(g);
+            cg_types::emit(g, "    ");
+            cg_types::push_temp(g, payload_reg);
+            cg_types::emit(g, "= extractvalue ");
+            cg_types::emit_type(g, lhs_ty, p);
+            cg_types::emit(g, " ");
+            cg_types::push_reg(g, lhs_reg);
+            cg_types::emit(g, ", 1");
+            cg_types::newline(g);
+            cg_types::emit_br(g, end_label);
+
+            (*g).block_terminated = false;
+            cg_types::emit_label(g, err_label);
+            var save_ret = (*g).fn_return_type;
+            (*g).fn_return_type = lhs_ty;
+            cg_types::emit_ret(g, lhs_reg, lhs_ty, p);
+            (*g).fn_return_type = save_ret;
+
+            (*g).block_terminated = false;
+            cg_types::emit_label(g, end_label);
+            var propagated_ty = semantic::type_int();
+            if semantic::is_choice_type(lhs_ty) {
+                var propagated_choice = (*(*p).arena).choices[lhs_ty - 3000];
+                if propagated_choice.variant_len > 0 {
+                    var propagated_variant = (*(*p).arena).choice_variants[propagated_choice.variant_start];
+                    if propagated_variant.has_payload {
+                        var propagated_errors: array::Array<semantic::SemanticError> = array::Array();
+                        var propagated_summary = semantic::make_empty_summary();
+                        propagated_ty = semantic::resolve_type_ref(p, propagated_variant.payload_type_ref, @propagated_errors, @propagated_summary);
+                    }
+                }
+            }
+            cg_types::set_last(g, propagated_ty);
+            return payload_reg;
+        }
+        if op == 74 {
+            var base_ty = cg_types::get_last(g);
+            if base_ty >= 4000 and !is_unary {
+                if try_emit_overloaded_binary_op(g, p, 74, r, lhs_reg, rhs_reg, source) {
+                    return r;
+                }
+            }
+            var ptr_reg = lhs_reg;
+            var idx_reg = rhs_reg;
+            var elem_ptr = cg_types::next_temp(g);
+            cg_types::emit_gep(g, elem_ptr, base_ty, p, ptr_reg, 0, 0);
+            var loaded = cg_types::next_temp(g);
+            cg_types::emit_load_typed(g, loaded, elem_ptr, base_ty, p);
+            cg_types::set_last(g, base_ty);
+            return loaded;
+        }
+        if op == 55 or op == 56 or op == 53 or op == 54 {
+            var cmp = "slt";
+            if op == 55 { cmp = "slt"; }
+            if op == 56 { cmp = "sgt"; }
+            if op == 53 { cmp = "sle"; }
+            if op == 54 { cmp = "sge"; }
+            var cmp_ty = cg_types::get_last(g);
+            if cmp_ty == semantic::type_float() or cmp_ty == semantic::type_float64() {
+                if op == 55 { cmp = "olt"; }
+                if op == 56 { cmp = "ogt"; }
+                if op == 53 { cmp = "ole"; }
+                if op == 54 { cmp = "oge"; }
+                cg_types::emit_fcmp(g, r, cmp, cmp_ty, lhs_reg, rhs_reg, p);
+            } else {
+                cg_types::emit_icmp(g, r, cmp, aty, lhs_reg, rhs_reg, p);
+            }
+            cg_types::set_last(g, semantic::type_bool());
+            return r;
+        }
+        if op == 51 {
+            var cmp_ty = cg_types::get_last(g);
+            if cmp_ty == semantic::type_float() or cmp_ty == semantic::type_float64() {
+                cg_types::emit_fcmp(g, r, "oeq", cmp_ty, lhs_reg, rhs_reg, p);
+            } else {
+                cg_types::emit_icmp(g, r, "eq", aty, lhs_reg, rhs_reg, p);
+            }
+            cg_types::set_last(g, semantic::type_bool());
+            return r;
+        }
+        if op == 52 {
+            var cmp_ty = cg_types::get_last(g);
+            if cmp_ty == semantic::type_float() or cmp_ty == semantic::type_float64() {
+                cg_types::emit_fcmp(g, r, "one", cmp_ty, lhs_reg, rhs_reg, p);
+            } else {
+                cg_types::emit_icmp(g, r, "ne", aty, lhs_reg, rhs_reg, p);
+            }
+            cg_types::set_last(g, semantic::type_bool());
+            return r;
+        }
+        if op == 25 or op == 59 {
+            if is_unary { return lhs_reg; }
+            var and_r = cg_types::next_temp(g);
+            cg_types::emit_binop(g, and_r, "and", semantic::type_bool(), lhs_reg, rhs_reg, p);
+            cg_types::set_last(g, semantic::type_bool());
+            return and_r;
+        }
+        if op == 26 or op == 60 {
+            if is_unary { return lhs_reg; }
+            var or_r = cg_types::next_temp(g);
+            cg_types::emit_binop(g, or_r, "or", semantic::type_bool(), lhs_reg, rhs_reg, p);
+            cg_types::set_last(g, semantic::type_bool());
+            return or_r;
+        }
+        if op == 27 or op == 58 {
+            cg_types::set_last(g, semantic::type_bool());
+            var xor_r = cg_types::next_temp(g);
+            var tru_reg = cg_types::next_temp(g);
+            cg_types::emit(g, "    ");
+            cg_types::push_temp(g, tru_reg);
+            cg_types::emit(g, "= add i1 0, true");
+            cg_types::newline(g);
+            cg_types::emit(g, "    ");
+            cg_types::push_temp(g, xor_r);
+            cg_types::emit(g, "= xor i1 ");
+            cg_types::push_reg(g, lhs_reg);
+            cg_types::emit(g, ", true");
+            cg_types::newline(g);
+            return xor_r;
+        }
+
+        return r;
+    }
+
+    if expr.kind == 6 {
+        var callee_name_arr: array::Array<char> = array::Array();
+        var si = expr.callee_span.start;
+        while si < expr.callee_span.end {
+            callee_name_arr.push((*(*p).source).data[si]);
+            si = si + 1;
+        }
+
+        var param_regs: array::Array<int> = array::Array();
+        var param_tys: array::Array<int> = array::Array();
+        var j = 0;
+        while j < expr.child_len {
+            var arg_reg = codegen_expr(g, p, (*(*p).arena).expr_refs[expr.child_start + j], source);
+            param_regs.push(arg_reg);
+            param_tys.push(cg_types::get_last(g));
+            j = j + 1;
+        }
+
+        var ret_reg = -1;
+        if param_regs.len > 0 or true {
+            ret_reg = cg_types::next_temp(g);
+        }
+        var fn_chars: array::Array<char> = array::Array();
+        var csi = expr.callee_span.start;
+        var csi_end = expr.callee_span.end;
+        while csi < csi_end {
+            if csi < csi_end - 1 and (*(*p).source).data[csi] == ':' and (*(*p).source).data[csi + 1] == ':' {
+                fn_chars.push('.');
+                csi = csi + 2;
+            } else {
+                fn_chars.push((*(*p).source).data[csi]);
+                csi = csi + 1;
+            }
+        }
+        var is_ctor = false;
+        var ctor_class_id = -1;
+        var is_choice_ctor = false;
+        var choice_id = -1;
+        var variant_id = -1;
+
+        var double_colon_idx = -1;
+        var ci_char = expr.callee_span.start;
+        while ci_char < expr.callee_span.end - 1 {
+            if (*(*p).source).data[ci_char] == ':' and (*(*p).source).data[ci_char + 1] == ':' {
+                double_colon_idx = ci_char;
+                ci_char = ci_char + 2;
+            } else {
+                ci_char = ci_char + 1;
+            }
+        }
+
+        if double_colon_idx >= 0 {
+            var choice_span = cg_types::last_segment(span::make(expr.callee_span.start, double_colon_idx), source);
+            var variant_span = span::make(double_colon_idx + 2, expr.callee_span.end);
+            var ch_i = 0;
+            while ch_i < (*(*p).arena).choices.len {
+                var ch = (*(*p).arena).choices[ch_i];
+                if semantic::name_equals((*(*p).source).data, ch.name_span, choice_span) {
+                    var v_i = 0;
+                    while v_i < ch.variant_len {
+                        var v = (*(*p).arena).choice_variants[ch.variant_start + v_i];
+                        if semantic::name_equals((*(*p).source).data, v.name_span, variant_span) {
+                            is_choice_ctor = true;
+                            choice_id = ch_i;
+                            variant_id = v_i;
+                            break;
+                        }
+                        v_i = v_i + 1;
+                    }
+                }
+                if is_choice_ctor { break; }
+                ch_i = ch_i + 1;
+            }
+        }
+
+        if is_choice_ctor {
+            var choice_ty = 3000 + choice_id;
+            var tag_reg = cg_types::next_temp(g);
+            cg_types::emit(g, "    ");
+            cg_types::push_temp(g, tag_reg);
+            cg_types::emit(g, "= insertvalue ");
+            cg_types::emit_type(g, choice_ty, p);
+            cg_types::emit(g, " undef, i64 ");
+            cg_types::emit_int(g, variant_id);
+            cg_types::emit(g, ", 0");
+            cg_types::newline(g);
+            var result_reg = tag_reg;
+            if param_regs.len > 0 {
+                var payload_reg = param_regs[0];
+                result_reg = cg_types::next_temp(g);
+                cg_types::emit(g, "    ");
+                cg_types::push_temp(g, result_reg);
+                cg_types::emit(g, "= insertvalue ");
+                cg_types::emit_type(g, choice_ty, p);
+                cg_types::emit(g, " ");
+                cg_types::push_reg(g, tag_reg);
+                cg_types::emit(g, ", ");
+                cg_types::emit_type(g, param_tys[0], p);
+                cg_types::emit(g, " ");
+                cg_types::push_reg(g, payload_reg);
+                cg_types::emit(g, ", 1");
+                cg_types::newline(g);
+            }
+            cg_types::set_last(g, choice_ty);
+            return result_reg;
+        }
+
+        var positional_struct_id = -1;
+        var positional_candidate = cg_types::last_segment(expr.callee_span, source);
+        var positional_struct_i = 0;
+        while positional_struct_i < (*(*p).arena).structs.len {
+            var positional_struct = (*(*p).arena).structs[positional_struct_i];
+            if semantic::name_equals(source.data, positional_struct.name_span, positional_candidate) {
+                positional_struct_id = positional_struct_i;
+                break;
+            }
+            positional_struct_i = positional_struct_i + 1;
+        }
+        if positional_struct_id >= 0 {
+            var positional_ty = 1000 + positional_struct_id;
+            var positional_value = -1;
+            var positional_i = 0;
+            while positional_i < param_regs.len {
+                var inserted = cg_types::next_temp(g);
+                cg_types::emit(g, "    ");
+                cg_types::push_temp(g, inserted);
+                cg_types::emit(g, "= insertvalue ");
+                cg_types::emit_type(g, positional_ty, p);
+                cg_types::emit(g, " ");
+                if positional_value < 0 {
+                    cg_types::emit(g, "undef");
+                } else {
+                    cg_types::push_reg(g, positional_value);
+                }
+                cg_types::emit(g, ", ");
+                cg_types::emit_type(g, param_tys[positional_i], p);
+                cg_types::emit(g, " ");
+                cg_types::push_reg(g, param_regs[positional_i]);
+                cg_types::emit(g, ", ");
+                cg_types::emit_int(g, positional_i);
+                cg_types::newline(g);
+                positional_value = inserted;
+                positional_i = positional_i + 1;
+            }
+            if positional_value < 0 {
+                positional_value = cg_types::next_temp(g);
+                cg_types::emit(g, "    ");
+                cg_types::push_temp(g, positional_value);
+                cg_types::emit(g, "= insertvalue ");
+                cg_types::emit_type(g, positional_ty, p);
+                cg_types::emit(g, " undef, i64 0, 0");
+                cg_types::newline(g);
+            }
+            cg_types::set_last(g, positional_ty);
+            return positional_value;
+        }
+
+        var ci = 0;
+        var constructor_candidate = cg_types::last_segment(expr.callee_span, source);
+        while ci < (*(*p).arena).classes.len {
+            var cl = (*(*p).arena).classes[ci];
+            if semantic::name_equals((*(*p).source).data, cl.name_span, constructor_candidate) {
+                is_ctor = true;
+                ctor_class_id = ci;
+                break;
+            }
+            ci = ci + 1;
+        }
+        if is_ctor {
+            if cg_types::class_name_is(p, 4000 + ctor_class_id, "HashMap") {
+                var map_ty = 4000 + ctor_class_id;
+                var map_alloca = cg_types::next_temp(g);
+                cg_types::emit_alloca_typed(g, map_alloca, map_ty, p);
+                cg_types::emit_default_store(g, map_alloca, map_ty, p);
+                var malloc_size = cg_types::next_temp(g);
+                cg_types::emit(g, "    "); cg_types::push_temp(g, malloc_size); cg_types::emit(g, "= add i64 0, 8192"); cg_types::newline(g);
+                var malloc_name: array::Array<char> = array::Array();
+                malloc_name.push('m'); malloc_name.push('a'); malloc_name.push('l'); malloc_name.push('l'); malloc_name.push('o'); malloc_name.push('c');
+                var malloc_regs: array::Array<int> = array::Array();
+                var malloc_tys: array::Array<int> = array::Array();
+                malloc_regs.push(malloc_size);
+                malloc_tys.push(semantic::type_int());
+                var map_data = cg_types::next_temp(g);
+                cg_types::emit_call(g, map_data, malloc_name.data, malloc_name.len, semantic::type_pointer(semantic::type_char(), false), @malloc_regs, @malloc_tys, p);
+                var map_entries = cg_types::next_temp(g);
+                cg_types::emit_gep(g, map_entries, map_ty, p, map_alloca, 0, 0);
+                var map_data_field = cg_types::next_temp(g);
+                cg_types::emit_gep(g, map_data_field, cg_types::find_named_class_type(p, "Array"), p, map_entries, 0, 0);
+                cg_types::emit_store_typed(g, map_data, map_data_field, semantic::type_pointer(semantic::type_int(), false), p);
+                var map_result = cg_types::next_temp(g);
+                cg_types::emit_load_typed(g, map_result, map_alloca, map_ty, p);
+                cg_types::set_last(g, map_ty);
+                return map_result;
+            }
+            var ctor_chars: array::Array<char> = array::Array();
+            var ctor_name = (*(*p).arena).classes[ctor_class_id].name_span;
+            var ctor_name_i = ctor_name.start;
+            while ctor_name_i < ctor_name.end {
+                ctor_chars.push(source.data[ctor_name_i]);
+                ctor_name_i = ctor_name_i + 1;
+            }
+            ctor_chars.push('.');
+            ctor_chars.push('i'); ctor_chars.push('n'); ctor_chars.push('i'); ctor_chars.push('t');
+            var alloca_reg = cg_types::next_temp(g);
+            cg_types::emit_alloca_typed(g, alloca_reg, 4000 + ctor_class_id, p);
+            cg_types::emit_default_store(g, alloca_reg, 4000 + ctor_class_id, p);
+            var new_regs: array::Array<int> = array::Array();
+            var new_tys: array::Array<int> = array::Array();
+            new_regs.push(alloca_reg);
+            new_tys.push(semantic::type_pointer(4000 + ctor_class_id, false));
+            var j2 = 0;
+            while j2 < param_regs.len {
+                new_regs.push(param_regs[j2]);
+                new_tys.push(param_tys[j2]);
+                j2 = j2 + 1;
+            }
+            var ignore_reg = cg_types::next_temp(g);
+            cg_types::emit_call(g, ignore_reg, ctor_chars.data, ctor_chars.len, semantic::type_void(), @new_regs, @new_tys, p);
+            var result_reg = cg_types::next_temp(g);
+            cg_types::emit_load_typed(g, result_reg, alloca_reg, 4000 + ctor_class_id, p);
+            cg_types::set_last(g, 4000 + ctor_class_id);
+            return result_reg;
+        } else {
+            var call_ret_ty = semantic::type_int();
+            var direct_fn_id = cg_types::find_function_for_codegen(p, expr.callee_span);
+            if direct_fn_id >= 0 {
+                var direct_info = (*(*p).arena).functions[direct_fn_id];
+                if double_colon_idx >= 0 {
+                    var qualified_owner = span::make(expr.callee_span.start, double_colon_idx);
+                    var qualified_owner_name = cg_types::last_segment(qualified_owner, source);
+                    var owner_is_class = false;
+                    var owner_class_id = -1;
+                    var owner_i = 0;
+                    while owner_i < (*(*p).arena).classes.len {
+                        if semantic::name_equals(source.data, (*(*p).arena).classes[owner_i].name_span, qualified_owner_name) {
+                            owner_is_class = true;
+                            owner_class_id = owner_i;
+                            break;
+                        }
+                        owner_i = owner_i + 1;
+                    }
+                    fn_chars.len = 0;
+                    if owner_is_class {
+                        var owner_class_name = (*(*p).arena).classes[owner_class_id].name_span;
+                        var owner_name_i = owner_class_name.start;
+                        while owner_name_i < owner_class_name.end {
+                            fn_chars.push(source.data[owner_name_i]);
+                            owner_name_i = owner_name_i + 1;
+                        }
+                        fn_chars.push('.');
+                    }
+                    var direct_name_i = direct_info.name_span.start;
+                    while direct_name_i < direct_info.name_span.end {
+                        fn_chars.push(source.data[direct_name_i]);
+                        direct_name_i = direct_name_i + 1;
+                    }
+                }
+                if direct_info.has_return_type {
+                    var direct_errors: array::Array<semantic::SemanticError> = array::Array();
+                    var direct_summary = semantic::make_empty_summary();
+                    call_ret_ty = semantic::resolve_type_ref(p, direct_info.return_type_ref, @direct_errors, @direct_summary);
+                } else {
+                    call_ret_ty = semantic::type_void();
+                }
+            }
+            if direct_fn_id >= 0 {
+                var generic_direct_info = (*(*p).arena).functions[direct_fn_id];
+                if generic_direct_info.generic_param_len > 0 and
+                   (cg_types::span_ends_with(p, expr.callee_span, "print") or cg_types::span_ends_with(p, expr.callee_span, "println")) {
+                    cg_types::set_last(g, semantic::type_void());
+                    return -1;
+                }
+            }
+            if direct_fn_id < 0 and expr.resolved_def_id >= 0 and expr.resolved_def_id < (*(*p).arena).items.len {
+                var call_item = (*(*p).arena).items[expr.resolved_def_id];
+                if call_item.kind == 1 {
+                    var call_info = (*(*p).arena).functions[call_item.function_id];
+                    if call_info.has_return_type {
+                        var call_errors: array::Array<semantic::SemanticError> = array::Array();
+                        var call_summary = semantic::make_empty_summary();
+                        call_ret_ty = semantic::resolve_type_ref(p, call_info.return_type_ref, @call_errors, @call_summary);
+                    } else {
+                        call_ret_ty = semantic::type_void();
+                    }
+                }
+            }
+            cg_types::prepare_call_arguments(g, p, expr, @param_regs, @param_tys);
+            cg_types::emit_call(g, ret_reg, fn_chars.data, fn_chars.len, call_ret_ty, @param_regs, @param_tys, p);
+            cg_types::set_last(g, call_ret_ty);
+            return ret_reg;
+        }
+    }
+
+    if expr.kind == 9 {
+        if expr.child_len == 0 { return -1; }
+        var base_val = codegen_expr(g, p, (*(*p).arena).expr_refs[expr.child_start], source);
+        if base_val < 0 { return -1; }
+        var base_ty = cg_types::get_last(g);
+        
+        var is_len = false;
+        if expr.name_span.end - expr.name_span.start == 3 {
+            var sdata = (*(*p).source).data;
+            if sdata[expr.name_span.start] == 'l' and sdata[expr.name_span.start+1] == 'e' and sdata[expr.name_span.start+2] == 'n' {
+                is_len = true;
+            }
+        }
+        if is_len and base_ty >= 50000 {
+            var r = cg_types::next_temp(g);
+            cg_types::emit(g, "    "); cg_types::push_temp(g, r); cg_types::emit(g, "= extractvalue "); cg_types::emit_type(g, base_ty, p); cg_types::emit(g, " "); cg_types::push_reg(g, base_val); cg_types::emit(g, ", 1"); cg_types::newline(g);
+            cg_types::set_last(g, semantic::type_int());
+            return r;
+        }
+
+        var field_idx = -1;
+        var field_ty = semantic::type_int();
+        var member_target_ty = base_ty;
+        if semantic::is_pointer_type(member_target_ty) {
+            member_target_ty = semantic::type_dereference(member_target_ty);
+        }
+        if semantic::is_struct_type(member_target_ty) {
+            var si = member_target_ty - 1000;
+            var st = (*(*p).arena).structs[si];
+            var fi = 0;
+            while fi < st.field_len {
+                var f = (*(*p).arena).struct_fields[st.field_start + fi];
+                if semantic::name_equals((*(*p).source).data, f.name_span, expr.name_span) {
+                    field_idx = fi;
+                    field_ty = cg_types::resolve_type_simple(p, f.type_ref);
+                    break;
+                }
+                fi = fi + 1;
+            }
+        }
+        if semantic::is_class_type(member_target_ty) {
+            var ci = member_target_ty - 4000;
+            var cl = (*(*p).arena).classes[ci];
+            var fi = 0;
+            while fi < cl.field_len {
+                var f = (*(*p).arena).class_fields[cl.field_start + fi];
+                if semantic::name_equals((*(*p).source).data, f.name_span, expr.name_span) {
+                    field_idx = fi;
+                    field_ty = cg_types::resolve_type_simple(p, f.type_ref);
+                    break;
+                }
+                fi = fi + 1;
+            }
+        }
+        if field_idx < 0 { return -1; }
+        var r = cg_types::next_temp(g);
+        if semantic::is_pointer_type(base_ty) {
+            var field_ptr = cg_types::next_temp(g);
+            cg_types::emit_gep(g, field_ptr, member_target_ty, p, base_val, 0, field_idx);
+            cg_types::emit_load_typed(g, r, field_ptr, field_ty, p);
+        } else {
+            cg_types::emit(g, "    ");
+            cg_types::push_temp(g, r);
+            cg_types::emit(g, "= extractvalue ");
+            cg_types::emit_type(g, member_target_ty, p);
+            cg_types::emit(g, " ");
+            cg_types::push_reg(g, base_val);
+            cg_types::emit(g, ", ");
+            cg_types::emit_int(g, field_idx);
+            cg_types::newline(g);
+        }
+        cg_types::set_last(g, field_ty);
+        return r;
+    }
+
+    if expr.kind == 10 {
+        var struct_ty = semantic::type_int();
+        var si = 0;
+        while si < (*(*p).arena).structs.len {
+            var st = (*(*p).arena).structs[si];
+            if semantic::name_equals((*(*p).source).data, st.name_span, expr.callee_span) {
+                struct_ty = 1000 + si;
+                break;
+            }
+            si = si + 1;
+        }
+        var accum_value = -1;
+        var fi = 0;
+        while fi < expr.child_len {
+            var val_reg = codegen_expr(g, p, (*(*p).arena).expr_refs[expr.child_start + fi], source);
+            if val_reg >= 0 {
+                var field_ty = cg_types::get_last(g);
+                var new_accum = cg_types::next_temp(g);
+                cg_types::emit(g, "    ");
+                cg_types::push_temp(g, new_accum);
+                cg_types::emit(g, "= insertvalue ");
+                cg_types::emit_type(g, struct_ty, p);
+                cg_types::emit(g, " ");
+                if accum_value < 0 {
+                    cg_types::emit(g, "undef");
+                } else {
+                    cg_types::push_reg(g, accum_value);
+                }
+                cg_types::emit(g, ", ");
+                cg_types::emit_type(g, field_ty, p);
+                cg_types::emit(g, " ");
+                cg_types::push_reg(g, val_reg);
+                cg_types::emit(g, ", ");
+                cg_types::emit_int(g, fi);
+                cg_types::newline(g);
+                accum_value = new_accum;
+            }
+            fi = fi + 1;
+        }
+        cg_types::set_last(g, struct_ty);
+        return accum_value;
+    }
+
+    if expr.kind == 11 {
+        var ei = 0;
+        while ei < (*(*p).arena).enums.len {
+            var enum_info = (*(*p).arena).enums[ei];
+            if semantic::name_equals((*(*p).source).data, enum_info.name_span, expr.callee_span) {
+                var vi = 0;
+                while vi < enum_info.variant_len {
+                    var variant = (*(*p).arena).enum_variants[enum_info.variant_start + vi];
+                    if semantic::name_equals((*(*p).source).data, variant.name_span, expr.name_span) {
+                        var r = cg_types::next_temp(g);
+                        cg_types::emit(g, "    ");
+                        cg_types::push_temp(g, r);
+                        cg_types::emit(g, "= add i64 0, ");
+                        cg_types::emit_int(g, vi);
+                        cg_types::newline(g);
+                        cg_types::set_last(g, semantic::type_int());
+                        return r;
+                    }
+                    vi = vi + 1;
+                }
+            }
+            ei = ei + 1;
+        }
+        var ci = 0;
+        while ci < (*(*p).arena).choices.len {
+            var choice_info = (*(*p).arena).choices[ci];
+            if semantic::name_equals((*(*p).source).data, choice_info.name_span, expr.callee_span) {
+                var vi = 0;
+                while vi < choice_info.variant_len {
+                    var variant = (*(*p).arena).choice_variants[choice_info.variant_start + vi];
+                    if semantic::name_equals((*(*p).source).data, variant.name_span, expr.name_span) {
+                        var choice_ty = 3000 + ci;
+                        var tag_reg = cg_types::next_temp(g);
+                        cg_types::emit(g, "    ");
+                        cg_types::push_temp(g, tag_reg);
+                        cg_types::emit(g, "= insertvalue ");
+                        cg_types::emit_type(g, choice_ty, p);
+                        cg_types::emit(g, " undef, i64 ");
+                        cg_types::emit_int(g, vi);
+                        cg_types::emit(g, ", 0");
+                        cg_types::newline(g);
+                        var accum = tag_reg;
+                        if variant.has_payload and expr.child_len > 0 {
+                            var payload_reg = codegen_expr(g, p, (*(*p).arena).expr_refs[expr.child_start], source);
+                            if payload_reg >= 0 {
+                                var result_reg = cg_types::next_temp(g);
+                                cg_types::emit(g, "    ");
+                                cg_types::push_temp(g, result_reg);
+                                cg_types::emit(g, "= insertvalue ");
+                                cg_types::emit_type(g, choice_ty, p);
+                                cg_types::emit(g, " ");
+                                cg_types::push_reg(g, accum);
+                                cg_types::emit(g, ", ");
+                                cg_types::emit_type(g, cg_types::get_last(g), p);
+                                cg_types::emit(g, " ");
+                                cg_types::push_reg(g, payload_reg);
+                                cg_types::emit(g, ", 1");
+                                cg_types::newline(g);
+                                accum = result_reg;
+                            }
+                        }
+                        cg_types::set_last(g, choice_ty);
+                        return accum;
+                    }
+                    vi = vi + 1;
+                }
+            }
+            ci = ci + 1;
+        }
+        return -1;
+    }
+
+    return -1;
+}
+
+export fn codegen_lvalue(g: @cg_types::Codegen, p: @resolver::Project, expr_id: int, source: @array::Array<char>): int {
+    if expr_id < 0 {
+        return -1;
+    }
+    var expr = (*(*p).arena).exprs[expr_id];
+    if expr.kind == 4 and expr.child_len > 0 {
+        return codegen_lvalue(g, p, (*(*p).arena).expr_refs[expr.child_start], source);
+    }
+    if expr.kind == 1 {
+        var slot = cg_types::lookup_local(g, p, expr.name_span);
+        cg_types::set_last(g, cg_types::lookup_local_type(g, p, expr.name_span));
+        return slot;
+    }
+    if expr.kind == 5 and expr.op_kind == 48 and expr.child_len == 1 {
+        var pointer_value = codegen_expr(g, p, (*(*p).arena).expr_refs[expr.child_start], source);
+        var pointer_ty = cg_types::get_last(g);
+        cg_types::set_last(g, semantic::type_dereference(pointer_ty));
+        return pointer_value;
+    }
+    if expr.kind == 5 and expr.op_kind == 74 and expr.child_len == 2 {
+        var base_expr_id = (*(*p).arena).expr_refs[expr.child_start];
+        var index_expr_id = (*(*p).arena).expr_refs[expr.child_start + 1];
+        var base_expr = (*(*p).arena).exprs[base_expr_id];
+        var base_ptr = -1;
+        var base_ty = semantic::type_unknown();
+        if base_expr.kind == 1 {
+            base_ptr = cg_types::lookup_local(g, p, base_expr.name_span);
+            base_ty = cg_types::lookup_local_type(g, p, base_expr.name_span);
+        } else {
+            base_ptr = codegen_expr(g, p, base_expr_id, source);
+            base_ty = cg_types::get_last(g);
+        }
+        var index_reg = codegen_expr(g, p, index_expr_id, source);
+        var element_ty = semantic::type_int();
+        var element_ptr = -1;
+        if semantic::is_array_type(base_ty) {
+            element_ty = semantic::array_element_type(base_ty);
+            element_ptr = cg_types::next_temp(g);
+            cg_types::emit(g, "    ");
+            cg_types::push_temp(g, element_ptr);
+            cg_types::emit(g, "= getelementptr inbounds ");
+            cg_types::emit_type(g, base_ty, p);
+            cg_types::emit(g, ", ptr ");
+            cg_types::push_reg(g, base_ptr);
+            cg_types::emit(g, ", i64 0, i64 ");
+            cg_types::push_reg(g, index_reg);
+        } else if semantic::is_slice_type(base_ty) {
+            element_ty = semantic::slice_element_type(base_ty);
+            var slice_value = base_ptr;
+            if base_expr.kind == 1 {
+                slice_value = cg_types::next_temp(g);
+                cg_types::emit_load_typed(g, slice_value, base_ptr, base_ty, p);
+            }
+            var data_reg = cg_types::next_temp(g);
+            cg_types::emit(g, "    ");
+            cg_types::push_temp(g, data_reg);
+            cg_types::emit(g, "= extractvalue ");
+            cg_types::emit_type(g, base_ty, p);
+            cg_types::emit(g, " ");
+            cg_types::push_reg(g, slice_value);
+            cg_types::emit(g, ", 0");
+            cg_types::newline(g);
+            element_ptr = cg_types::next_temp(g);
+            cg_types::emit(g, "    ");
+            cg_types::push_temp(g, element_ptr);
+            cg_types::emit(g, "= getelementptr inbounds ");
+            cg_types::emit_type(g, element_ty, p);
+            cg_types::emit(g, ", ptr ");
+            cg_types::push_reg(g, data_reg);
+            cg_types::emit(g, ", i64 ");
+            cg_types::push_reg(g, index_reg);
+        } else if semantic::is_pointer_type(base_ty) {
+            element_ty = semantic::type_dereference(base_ty);
+            if base_expr.kind == 1 {
+                var loaded_base_ptr = cg_types::next_temp(g);
+                cg_types::emit_load_typed(g, loaded_base_ptr, base_ptr, base_ty, p);
+                base_ptr = loaded_base_ptr;
+            }
+            element_ptr = cg_types::next_temp(g);
+            cg_types::emit(g, "    ");
+            cg_types::push_temp(g, element_ptr);
+            cg_types::emit(g, "= getelementptr inbounds ");
+            cg_types::emit_type(g, element_ty, p);
+            cg_types::emit(g, ", ptr ");
+            cg_types::push_reg(g, base_ptr);
+            cg_types::emit(g, ", i64 ");
+            cg_types::push_reg(g, index_reg);
+        } else {
+            element_ptr = cg_types::next_temp(g);
+            cg_types::emit(g, "    ");
+            cg_types::push_temp(g, element_ptr);
+            cg_types::emit(g, "= getelementptr inbounds i64, ptr ");
+            cg_types::push_reg(g, base_ptr);
+            cg_types::emit(g, ", i64 ");
+            cg_types::push_reg(g, index_reg);
+        }
+        cg_types::newline(g);
+        cg_types::set_last(g, element_ty);
+        return element_ptr;
+    }
+    if expr.kind == 9 and expr.child_len > 0 {
+        var aggregate_ptr = codegen_lvalue(g, p, (*(*p).arena).expr_refs[expr.child_start], source);
+        var aggregate_ty = cg_types::get_last(g);
+        var target_ty = aggregate_ty;
+        if semantic::is_pointer_type(target_ty) {
+            target_ty = semantic::type_dereference(target_ty);
+        }
+        var field_idx = -1;
+        var field_ty = semantic::type_unknown();
+        if semantic::is_struct_type(target_ty) {
+            var struct_info = (*(*p).arena).structs[target_ty - 1000];
+            var fi = 0;
+            while fi < struct_info.field_len {
+                var field = (*(*p).arena).struct_fields[struct_info.field_start + fi];
+                if semantic::name_equals(source.data, field.name_span, expr.name_span) {
+                    field_idx = fi;
+                    field_ty = cg_types::resolve_type_simple(p, field.type_ref);
+                    break;
+                }
+                fi = fi + 1;
+            }
+        } else if semantic::is_class_type(target_ty) {
+            var class_info = (*(*p).arena).classes[target_ty - 4000];
+            var fi2 = 0;
+            while fi2 < class_info.field_len {
+                var field2 = (*(*p).arena).class_fields[class_info.field_start + fi2];
+                if semantic::name_equals(source.data, field2.name_span, expr.name_span) {
+                    field_idx = fi2;
+                    field_ty = cg_types::resolve_type_simple(p, field2.type_ref);
+                    break;
+                }
+                fi2 = fi2 + 1;
+            }
+        }
+        if field_idx >= 0 {
+            var field_ptr = cg_types::next_temp(g);
+            cg_types::emit_gep(g, field_ptr, target_ty, p, aggregate_ptr, 0, field_idx);
+            cg_types::set_last(g, field_ty);
+            return field_ptr;
+        }
+    }
+    return -1;
+}
+
+export fn operator_method_name(op_kind: int): []char {
+    if op_kind == 46 { return "operator+"; }
+    if op_kind == 47 { return "operator-"; }
+    if op_kind == 48 { return "operator*"; }
+    if op_kind == 49 { return "operator/"; }
+    if op_kind == 50 { return "operator%"; }
+    if op_kind == 51 { return "operator=="; }
+    if op_kind == 52 { return "operator!="; }
+    if op_kind == 55 { return "operator<"; }
+    if op_kind == 56 { return "operator>"; }
+    if op_kind == 53 { return "operator<="; }
+    if op_kind == 54 { return "operator>="; }
+    if op_kind == 74 { return "operator[]"; }
+    return "";
+}
+
+export fn try_emit_overloaded_binary_op(g: @cg_types::Codegen, p: @resolver::Project, op_kind: int, dest_reg: int, lhs_reg: int, rhs_reg: int, source: @array::Array<char>): bool {
+    var lhs_ty = cg_types::get_last(g);
+    if lhs_ty < 4000 { return false; }
+    var ci = lhs_ty - 4000;
+    if ci < 0 or ci >= (*(*p).arena).classes.len { return false; }
+    var class_info = (*(*p).arena).classes[ci];
+    var op_name = operator_method_name(op_kind);
+    if op_name.len == 0 { return false; }
+    var mi = 0;
+    while mi < class_info.method_len {
+        var cm = (*p).arena.class_methods[class_info.method_start + mi];
+        var mfunc = (*p).arena.functions[cm.function_id];
+        var matched = true;
+        var oni = 0;
+        while oni < op_name.len {
+            if oni >= mfunc.name_span.end - mfunc.name_span.start { matched = false; break; }
+            if source.data[mfunc.name_span.start + oni] != op_name[oni] { matched = false; break; }
+            oni = oni + 1;
+        }
+        if matched and oni == mfunc.name_span.end - mfunc.name_span.start {
+            var lhs_ptr = cg_types::next_temp(g);
+            cg_types::emit_alloca_typed(g, lhs_ptr, lhs_ty, p);
+            cg_types::emit_store_typed(g, lhs_reg, lhs_ptr, lhs_ty, p);
+            var rhs_ty = cg_types::get_last(g);
+            var rhs_ptr = cg_types::next_temp(g);
+            cg_types::emit_alloca_typed(g, rhs_ptr, rhs_ty, p);
+            cg_types::emit_store_typed(g, rhs_reg, rhs_ptr, rhs_ty, p);
+            var param_regs: array::Array<int> = array::Array();
+            var param_tys: array::Array<int> = array::Array();
+            param_regs.push(lhs_ptr);
+            param_tys.push(semantic::type_pointer(lhs_ty, false));
+            param_regs.push(rhs_ptr);
+            param_tys.push(semantic::type_pointer(rhs_ty, false));
+            var ret_ty = semantic::type_int();
+            if mfunc.has_return_type {
+                var errors: array::Array<semantic::SemanticError> = array::Array();
+                var summary = semantic::make_empty_summary();
+                ret_ty = semantic::resolve_type_ref(p, mfunc.return_type_ref, @errors, @summary);
+            }
+            var fn_chars: array::Array<char> = array::Array();
+            var class_name_i = class_info.name_span.start;
+            while class_name_i < class_info.name_span.end {
+                fn_chars.push(source.data[class_name_i]);
+                class_name_i = class_name_i + 1;
+            }
+            fn_chars.push('.');
+            var csi = mfunc.name_span.start;
+            while csi < mfunc.name_span.end {
+                fn_chars.push(source.data[csi]);
+                csi = csi + 1;
+            }
+            cg_types::emit_call(g, dest_reg, fn_chars.data, fn_chars.len, ret_ty, @param_regs, @param_tys, p);
+            cg_types::set_last(g, ret_ty);
+            return true;
+        }
+        mi = mi + 1;
+    }
+    return false;
+}
+
+export fn find_struct_field_index_for_codegen(p: @resolver::Project, member: span::Span): int {
+    var si = 0;
+    while si < (*(*p).arena).structs.len {
+        var st = (*(*p).arena).structs[si];
+        var fi = 0;
+        while fi < st.field_len {
+            var f = (*(*p).arena).struct_fields[st.field_start + fi];
+            if semantic::name_equals((*(*p).source).data, f.name_span, member) {
+                return fi;
+            }
+            fi = fi + 1;
+        }
+        si = si + 1;
+    }
+    var ci = 0;
+    while ci < (*(*p).arena).classes.len {
+        var cl = (*(*p).arena).classes[ci];
+        var fi = 0;
+        while fi < cl.field_len {
+            var f = (*(*p).arena).class_fields[cl.field_start + fi];
+            if semantic::name_equals((*(*p).source).data, f.name_span, member) {
+                return fi;
+            }
+            fi = fi + 1;
+        }
+        ci = ci + 1;
+    }
+    return -1;
+}
+
+export fn emit_binop_with_zero(g: @cg_types::Codegen, dest_reg: int, op: []char, rhs_reg: int, p: @resolver::Project) {
+    var ty = cg_types::get_last(g);
+    if (ty == semantic::type_float() or ty == semantic::type_float32() or ty == semantic::type_float64()) {
+        cg_types::push_temp(g, dest_reg);
+        cg_types::emit(g, "= fsub ");
+        cg_types::emit_type(g, ty, p);
+        cg_types::emit(g, " 0.0, ");
+        cg_types::push_reg(g, rhs_reg);
+        cg_types::newline(g);
+        return;
+    }
+    var zero_reg = cg_types::next_temp(g);
+    cg_types::emit(g, "    ");
+    cg_types::push_temp(g, zero_reg);
+    cg_types::emit(g, "= add ");
+    cg_types::emit_type(g, ty, p);
+    cg_types::emit(g, " 0, 0");
+    cg_types::newline(g);
+    cg_types::push_temp(g, dest_reg);
+    cg_types::emit(g, "= ");
+    cg_types::emit(g, op);
+    cg_types::emit(g, " i64 0, ");
+    cg_types::push_reg(g, rhs_reg);
+    cg_types::newline(g);
+}
+
+
+export fn llvm_fn_ty(return_ty: int): []char {
+    if return_ty == cg_types::type_void_val() { return "void"; }
+    return cg_types::llvm_type(return_ty);
+}
+
+export fn coerce_type(g: @cg_types::Codegen, p: @resolver::Project, from_reg: int, from_ty: int, to_ty: int): int {
+    if from_ty == to_ty { return from_reg; }
+    if from_ty == semantic::type_string_literal() and semantic::is_class_type(to_ty) {
+        var class_id = to_ty - 4000;
+        if class_id >= 0 and class_id < (*(*p).arena).classes.len {
+            var class_info = (*(*p).arena).classes[class_id];
+            if cg_types::span_ends_with(p, class_info.name_span, "String") {
+                var fn_name: array::Array<char> = array::Array();
+                var name_i = class_info.name_span.start;
+                while name_i < class_info.name_span.end {
+                    fn_name.push((*(*p).source).data[name_i]);
+                    name_i = name_i + 1;
+                }
+                fn_name.push('.');
+                fn_name.push('f'); fn_name.push('r'); fn_name.push('o'); fn_name.push('m');
+                var regs: array::Array<int> = array::Array();
+                var tys: array::Array<int> = array::Array();
+                regs.push(from_reg);
+                tys.push(from_ty);
+                var converted = cg_types::next_temp(g);
+                cg_types::emit_call(g, converted, fn_name.data, fn_name.len, to_ty, @regs, @tys, p);
+                return converted;
+            }
+        }
+    }
+    if to_ty >= 10000 and from_ty == semantic::type_int() {
+        var r = cg_types::next_temp(g);
+        cg_types::emit(g, "    "); cg_types::push_temp(g, r); cg_types::emit(g, "= inttoptr i64 "); cg_types::push_reg(g, from_reg); cg_types::emit(g, " to "); cg_types::emit_type(g, to_ty, p); cg_types::newline(g);
+        return r;
+    }
+    if from_ty >= 10000 and to_ty == semantic::type_int() {
+        var r = cg_types::next_temp(g);
+        cg_types::emit(g, "    "); cg_types::push_temp(g, r); cg_types::emit(g, "= ptrtoint "); cg_types::emit_type(g, from_ty, p); cg_types::emit(g, " "); cg_types::push_reg(g, from_reg); cg_types::emit(g, " to i64"); cg_types::newline(g);
+        return r;
+    }
+    return from_reg;
+}
+
+export fn codegen_stmt(g: @cg_types::Codegen, p: @resolver::Project, stmt: ast::Stmt, source: @array::Array<char>) {
+    if (*g).block_terminated { return; }
+
+    if stmt.kind == 10 {
+        codegen_expr(g, p, stmt.expr_id, source);
+    } else if stmt.kind == 1 {
+        var init_reg = -1;
+        var init_ty = semantic::type_int();
+        var ty = semantic::type_int();
+        if stmt.var_decl.has_init {
+            init_reg = codegen_expr(g, p, stmt.var_decl.init_expr_id, source);
+            init_ty = cg_types::get_last(g);
+            ty = init_ty;
+        }
+        if stmt.var_decl.has_type_hint {
+            var errors: array::Array<semantic::SemanticError> = array::Array();
+            var summary = semantic::make_empty_summary();
+            ty = semantic::resolve_type_ref(p, stmt.var_decl.type_ref, @errors, @summary);
+        }
+        if init_reg >= 0 {
+            init_reg = coerce_type(g, p, init_reg, init_ty, ty);
+        }
+        var reg = cg_types::next_temp(g);
+        if ty >= 1000 or ty >= 2000 or ty >= 3000 or ty >= 4000 {
+            cg_types::emit_alloca_typed(g, reg, ty, p);
+        } else {
+            cg_types::emit_alloca(g, reg, ty, p);
+        }
+        if init_reg >= 0 {
+            if ty >= 1000 or ty >= 2000 or ty >= 3000 or ty >= 4000 {
+                cg_types::emit_store_typed(g, init_reg, reg, ty, p);
+            } else {
+                cg_types::emit_store(g, init_reg, reg, ty, p);
+            }
+        } else {
+            cg_types::emit_default_store(g, reg, ty, p);
+        }
+        cg_types::register_local(g, p, stmt.var_decl.name_span, ty, reg);
+        if ty >= 4000 { cg_types::register_cleanup(g, reg, ty); }
+    } else if stmt.kind == 2 {
+        var init_reg = codegen_expr(g, p, stmt.const_decl.init_expr_id, source);
+        var init_ty = cg_types::get_last(g);
+        var ty = init_ty;
+        if stmt.const_decl.has_type_hint {
+            var errors: array::Array<semantic::SemanticError> = array::Array();
+            var summary = semantic::make_empty_summary();
+            ty = semantic::resolve_type_ref(p, stmt.const_decl.type_ref, @errors, @summary);
+        }
+        init_reg = coerce_type(g, p, init_reg, init_ty, ty);
+        var reg = cg_types::next_temp(g);
+        if ty >= 1000 or ty >= 2000 or ty >= 3000 or ty >= 4000 {
+            cg_types::emit_alloca_typed(g, reg, ty, p);
+        } else {
+            cg_types::emit_alloca(g, reg, ty, p);
+        }
+        if init_reg >= 0 {
+            if ty >= 1000 or ty >= 2000 or ty >= 3000 or ty >= 4000 {
+                cg_types::emit_store_typed(g, init_reg, reg, ty, p);
+            } else {
+                cg_types::emit_store(g, init_reg, reg, ty, p);
+            }
+        }
+        cg_types::register_local(g, p, stmt.const_decl.name_span, ty, reg);
+        if ty >= 4000 { cg_types::register_cleanup(g, reg, ty); }
+    } else if stmt.kind == 4 {
+        cg_types::push_scope(g);
+        codegen_block_flat(g, p, stmt.block_id, source);
+        cg_types::emit_cleanups_to_depth(g, p, (*g).scope_depth);
+        cg_types::pop_scope(g);
+    } else if stmt.kind == 3 {
+        var value_reg = codegen_expr(g, p, stmt.assign_stmt.value_expr_id, source);
+        var value_ty = cg_types::get_last(g);
+        var assignment_target_expr = (*(*p).arena).exprs[stmt.assign_stmt.target_expr_id];
+        if assignment_target_expr.kind == 5 and assignment_target_expr.op_kind == 74 and assignment_target_expr.child_len > 1 {
+            var map_base_expr_id = (*(*p).arena).expr_refs[assignment_target_expr.child_start];
+            var map_base_ptr = codegen_lvalue(g, p, map_base_expr_id, source);
+            var map_base_ty = cg_types::get_last(g);
+            if map_base_ptr >= 0 and cg_types::class_name_is(p, map_base_ty, "HashMap") {
+                var map_key_expr_id = (*(*p).arena).expr_refs[assignment_target_expr.child_start + 1];
+                var map_key_reg = codegen_expr(g, p, map_key_expr_id, source);
+                var map_key_ty = cg_types::get_last(g);
+                var map_slot_ptr = cg_types::emit_hashmap_slot_ptr(g, p, map_base_ptr, map_base_ty, map_key_reg, map_key_ty);
+                cg_types::emit_store_typed(g, value_reg, map_slot_ptr, semantic::type_int(), p);
+                var map_len_ptr = cg_types::next_temp(g);
+                cg_types::emit_gep(g, map_len_ptr, map_base_ty, p, map_base_ptr, 0, 1);
+                var old_map_len = cg_types::next_temp(g);
+                cg_types::emit_load_typed(g, old_map_len, map_len_ptr, semantic::type_int(), p);
+                var map_one = cg_types::next_temp(g);
+                cg_types::emit(g, "    "); cg_types::push_temp(g, map_one); cg_types::emit(g, "= add i64 0, 1"); cg_types::newline(g);
+                var new_map_len = cg_types::next_temp(g);
+                cg_types::emit_binop(g, new_map_len, "add", semantic::type_int(), old_map_len, map_one, p);
+                cg_types::emit_store_typed(g, new_map_len, map_len_ptr, semantic::type_int(), p);
+                return;
+            }
+        }
+        var target_ptr = codegen_lvalue(g, p, stmt.assign_stmt.target_expr_id, source);
+        var target_ty = cg_types::get_last(g);
+        if target_ptr >= 0 and value_reg >= 0 {
+            value_reg = coerce_type(g, p, value_reg, value_ty, target_ty);
+            cg_types::emit_store_typed(g, value_reg, target_ptr, target_ty, p);
+            return;
+        }
+        var is_deref = false;
+        var is_deref_member = false;
+        if (*(*p).source).data[stmt.assign_stmt.span.start] == '*' { is_deref = true; }
+        if (*(*p).source).data[stmt.assign_stmt.span.start] == '(' { is_deref_member = true; }
+        if is_deref_member {
+            var si = stmt.assign_stmt.target_name_span.start + 2;
+            var name_end = si;
+            while name_end < stmt.assign_stmt.target_name_span.end and (*(*p).source).data[name_end] != ')' { name_end = name_end + 1; }
+            var inner_name = span::make(si, name_end);
+            var dot_idx = name_end + 1;
+            while dot_idx < stmt.assign_stmt.target_name_span.end and (*(*p).source).data[dot_idx] != '.' { dot_idx = dot_idx + 1; }
+            var field_name_start = dot_idx + 1;
+            var field_name_end = stmt.assign_stmt.target_name_span.end;
+            var field_name_span = span::make(field_name_start, field_name_end);
+            var ptr_reg = cg_types::lookup_local(g, p, inner_name);
+            if ptr_reg >= 0 and value_reg >= 0 {
+                var ty = cg_types::lookup_local_type(g, p, inner_name);
+                var loaded_ptr = cg_types::next_temp(g);
+                cg_types::emit_load(g, loaded_ptr, ptr_reg, ty, p);
+                var field_idx = find_struct_field_index_for_codegen(p, field_name_span);
+                if field_idx >= 0 {
+                    var base_ty = semantic::type_int();
+                    var si2 = 0;
+                    while si2 < (*(*p).arena).structs.len {
+                        var st = (*(*p).arena).structs[si2];
+                        var fi = 0;
+                        while fi < st.field_len {
+                            var f = (*(*p).arena).struct_fields[st.field_start + fi];
+                            if semantic::name_equals((*(*p).source).data, f.name_span, field_name_span) { base_ty = 1000 + si2; break; }
+                            fi = fi + 1;
+                        }
+                        si2 = si2 + 1;
+                    }
+                    var ci3 = 0;
+                    while ci3 < (*(*p).arena).classes.len {
+                        var cl = (*(*p).arena).classes[ci3];
+                        var fi2 = 0;
+                        while fi2 < cl.field_len {
+                            var f2 = (*(*p).arena).class_fields[cl.field_start + fi2];
+                            if semantic::name_equals((*(*p).source).data, f2.name_span, field_name_span) { base_ty = 4000 + ci3; break; }
+                            fi2 = fi2 + 1;
+                        }
+                        ci3 = ci3 + 1;
+                    }
+                    var field_ptr = cg_types::next_temp(g);
+                    cg_types::emit_gep(g, field_ptr, base_ty, p, loaded_ptr, 0, field_idx);
+                    cg_types::emit_store(g, value_reg, field_ptr, semantic::type_int(), p);
+                }
+            }
+        } else if is_deref {
+            var name_start_deref = stmt.assign_stmt.target_name_span.start + 1;
+            var name_end_deref = stmt.assign_stmt.target_name_span.end;
+            var deref_name_span = span::make(name_start_deref, name_end_deref);
+            var ptr_reg = cg_types::lookup_local(g, p, deref_name_span);
+            if ptr_reg >= 0 and value_reg >= 0 {
+                var ty = cg_types::lookup_local_type(g, p, deref_name_span);
+                var loaded_ptr = cg_types::next_temp(g);
+                cg_types::emit_load(g, loaded_ptr, ptr_reg, ty, p);
+                var deref_ty = semantic::type_int();
+                cg_types::emit_store(g, value_reg, loaded_ptr, deref_ty, p);
+            }
+        } else {
+        var target_reg = cg_types::lookup_local(g, p, stmt.assign_stmt.target_name_span);
+        if target_reg >= 0 and value_reg >= 0 {
+            var ty = cg_types::lookup_local_type(g, p, stmt.assign_stmt.target_name_span);
+            var value_ty = cg_types::get_last(g);
+            value_reg = coerce_type(g, p, value_reg, value_ty, ty);
+            if ty >= 1000 or ty >= 2000 or ty >= 3000 or ty >= 4000 {
+                cg_types::emit_store_typed(g, value_reg, target_reg, ty, p);
+            } else {
+                cg_types::emit_store(g, value_reg, target_reg, ty, p);
+            }
+        }
+        }
+    } else if stmt.kind == 9 {
+        if stmt.return_stmt.has_value {
+            var keep_reg = -1;
+            var return_expr = (*(*p).arena).exprs[stmt.return_stmt.value_expr_id];
+            if return_expr.kind == 1 {
+                keep_reg = cg_types::lookup_local(g, p, return_expr.name_span);
+            }
+            var ret_reg = codegen_expr(g, p, stmt.return_stmt.value_expr_id, source);
+            var ret_ty = cg_types::get_last(g);
+            var expected_ret_ty = (*g).fn_return_type;
+            ret_reg = coerce_type(g, p, ret_reg, ret_ty, expected_ret_ty);
+            cg_types::emit_all_cleanups_except(g, p, keep_reg);
+            cg_types::emit_ret(g, ret_reg, expected_ret_ty, p);
+        } else {
+            cg_types::emit_all_cleanups(g, p);
+            cg_types::emit_ret(g, -1, (*g).fn_return_type, p);
+        }
+    } else if stmt.kind == 5 {
+        var cond_reg = codegen_expr(g, p, stmt.if_stmt.condition_expr_id, source);
+        var then_label = cg_types::next_label(g);
+        var else_label = cg_types::next_label(g);
+        var end_label = cg_types::next_label(g);
+        cg_types::emit_cond_br(g, cond_reg, then_label, else_label);
+
+        (*g).block_terminated = false;
+        cg_types::emit_label(g, then_label);
+        codegen_block_flat(g, p, stmt.if_stmt.then_block_id, source);
+        if !(*g).block_terminated { cg_types::emit_br(g, end_label); }
+
+        (*g).block_terminated = false;
+        cg_types::emit_label(g, else_label);
+        if stmt.if_stmt.has_else_block {
+            codegen_block_flat(g, p, stmt.if_stmt.else_block_id, source);
+        }
+        if !(*g).block_terminated { cg_types::emit_br(g, end_label); }
+
+        (*g).block_terminated = false;
+        cg_types::emit_label(g, end_label);
+    } else if stmt.kind == 6 {
+        var cond_label = cg_types::next_label(g);
+        var body_label = cg_types::next_label(g);
+        var end_label = cg_types::next_label(g);
+
+        var old_break = (*g).loop_break;
+        var old_continue = (*g).loop_continue;
+        cg_types::push_loop(g, end_label, cond_label);
+
+        cg_types::emit_br(g, cond_label);
+        cg_types::emit_label(g, cond_label);
+        var cond_reg = codegen_expr(g, p, stmt.while_stmt.condition_expr_id, source);
+        cg_types::emit_cond_br(g, cond_reg, body_label, end_label);
+
+        (*g).block_terminated = false;
+        cg_types::emit_label(g, body_label);
+        codegen_block_flat(g, p, stmt.while_stmt.body_block_id, source);
+        if !(*g).block_terminated { cg_types::emit_br(g, cond_label); }
+
+        (*g).block_terminated = false;
+        cg_types::emit_label(g, end_label);
+        cg_types::pop_loop(g, old_break, old_continue);
+    } else if stmt.kind == 7 {
+        if (*g).loop_break >= 0 { cg_types::emit_all_cleanups(g, p); cg_types::emit_br(g, (*g).loop_break); (*g).block_terminated = true; }
+    } else if stmt.kind == 8 {
+        if (*g).loop_continue >= 0 { cg_types::emit_all_cleanups(g, p); cg_types::emit_br(g, (*g).loop_continue); (*g).block_terminated = true; }
+    } else if stmt.kind == 11 {
+        var val_reg = codegen_expr(g, p, stmt.match_stmt.value_expr_id, source);
+        var val_ty = cg_types::get_last(g);
+        var end_label = cg_types::next_label(g);
+        var tag_reg = val_reg;
+        if val_ty >= 3000 and val_ty < 4000 {
+            tag_reg = cg_types::next_temp(g);
+            cg_types::emit(g, "    ");
+            cg_types::push_temp(g, tag_reg);
+            cg_types::emit(g, "= extractvalue ");
+            cg_types::emit_type(g, val_ty, p);
+            cg_types::emit(g, " ");
+            cg_types::push_reg(g, val_reg);
+            cg_types::emit(g, ", 0");
+            cg_types::newline(g);
+        }
+        var i = 0;
+        while i < stmt.match_stmt.arm_len {
+            var arm = (*(*p).arena).match_arms[stmt.match_stmt.arm_start + i];
+            var arm_label = cg_types::next_label(g);
+            var next_check_label = cg_types::next_label(g);
+            var is_wildcard = arm.variant_span.start == 0 and arm.type_span.start == 0;
+            var is_single_underscore = arm.variant_span.start > 0 and arm.type_span.start == 0 and arm.variant_span.end - arm.variant_span.start == 1 and source.data[arm.variant_span.start] == '_';
+            if is_wildcard or is_single_underscore {
+                (*g).block_terminated = false;
+                cg_types::emit_br(g, arm_label);
+            } else if arm.variant_span.start > 0 and arm.type_span.start == 0 {
+                var lit_val = cg_types::next_temp(g);
+                cg_types::emit(g, "    ");
+                cg_types::push_temp(g, lit_val);
+                cg_types::emit(g, "= add i64 0, ");
+                var li = arm.variant_span.start;
+                while li < arm.variant_span.end {
+                    (*g).output.push(source.data[li]);
+                    li = li + 1;
+                }
+                cg_types::newline(g);
+                var cmp_reg = cg_types::next_temp(g);
+                cg_types::emit_icmp(g, cmp_reg, "eq", semantic::type_int(), val_reg, lit_val, p);
+                cg_types::emit_cond_br(g, cmp_reg, arm_label, next_check_label);
+            } else if arm.variant_span.start > 0 {
+                var disc = cg_types::next_temp(g);
+                cg_types::emit(g, "    ");
+                cg_types::push_temp(g, disc);
+                cg_types::emit(g, "= add i64 0, ");
+                cg_types::emit_int(g, i);
+                cg_types::newline(g);
+                var cmp_reg = cg_types::next_temp(g);
+                cg_types::emit_icmp(g, cmp_reg, "eq", semantic::type_int(), tag_reg, disc, p);
+                cg_types::emit_cond_br(g, cmp_reg, arm_label, next_check_label);
+            } else {
+                cg_types::emit_br(g, next_check_label);
+            }
+            (*g).block_terminated = false;
+            cg_types::emit_label(g, arm_label);
+            if val_ty >= 3000 and val_ty < 4000 and arm.has_binding {
+                var payload_raw = cg_types::next_temp(g);
+                cg_types::emit(g, "    ");
+                cg_types::push_temp(g, payload_raw);
+                cg_types::emit(g, "= extractvalue ");
+                cg_types::emit_type(g, val_ty, p);
+                cg_types::emit(g, " ");
+                cg_types::push_reg(g, val_reg);
+                cg_types::emit(g, ", 1");
+                cg_types::newline(g);
+                var binding_alloca = cg_types::next_temp(g);
+                cg_types::emit_alloca(g, binding_alloca, semantic::type_int(), p);
+                cg_types::emit_store(g, payload_raw, binding_alloca, semantic::type_int(), p);
+                cg_types::register_local(g, p, arm.binding_span, semantic::type_int(), binding_alloca);
+            }
+            codegen_block_flat(g, p, arm.block_id, source);
+            if !(*g).block_terminated { cg_types::emit_br(g, end_label); }
+            (*g).block_terminated = false;
+            cg_types::emit_label(g, next_check_label);
+            i = i + 1;
+        }
+        cg_types::emit_br(g, end_label);
+        (*g).block_terminated = false;
+        cg_types::emit_label(g, end_label);
+    }
+}
+
+export fn codegen_block_flat(g: @cg_types::Codegen, p: @resolver::Project, block_id: int, source: @array::Array<char>) {
+    if block_id < 0 { return; }
+    var block = (*(*p).arena).blocks[block_id];
+    var i = 0;
+    while i < block.stmt_ref_len {
+        if (*g).block_terminated { break; }
+        var stmt = (*(*p).arena).stmts[(*(*p).arena).stmt_refs[block.stmt_ref_start + i]];
+        codegen_stmt(g, p, stmt, source);
+        i = i + 1;
+    }
+}
+
+export fn codegen_function(g: @cg_types::Codegen, p: @resolver::Project, fn_id: int, source: @array::Array<char>) {
+    var fn_info = (*(*p).arena).functions[fn_id];
+    (*g).temp_counter = 0;
+    (*g).label_counter = 0;
+    (*g).cleanup_regs.len = 0;
+    (*g).cleanup_classes.len = 0;
+    (*g).cleanup_depths.len = 0;
+    (*g).scope_depth = 0;
+    (*g).local_count = 0;
+
+    // DEBUG TRACE
+    cg_types::emit(g, "; DEBUG: codegen_function for ");
+    var ni2 = fn_info.name_span.start;
+    while ni2 < fn_info.name_span.end {
+        (*g).output.push(source.data[ni2]);
+        ni2 = ni2 + 1;
+    }
+    cg_types::emit(g, ", generic_param_len: "); cg_types::emit_int(g, fn_info.generic_param_len);
+    cg_types::emit(g, ", body_block_id: "); cg_types::emit_int(g, fn_info.body_block_id);
+    cg_types::newline(g);
+
+    var ret_ty: int;
+    ret_ty = semantic::type_void();
+    if fn_info.has_return_type {
+        var errors: array::Array<semantic::SemanticError> = array::Array();
+        var summary = semantic::make_empty_summary();
+        ret_ty = semantic::resolve_type_ref(p, fn_info.return_type_ref, @errors, @summary);
+    }
+
+    if fn_info.body_block_id < 0 {
+        var is_variadic = false;
+        {
+            var param_end = fn_info.span.end;
+            var scan = fn_info.name_span.end;
+            while scan < param_end - 1 {
+                if source.data[scan] == '.' and source.data[scan+1] == '.' and source.data[scan+2] == '.' {
+                    is_variadic = true;
+                    break;
+                }
+                scan = scan + 1;
+            }
+        }
+        cg_types::emit(g, "declare ");
+        cg_types::emit_type(g, ret_ty, p);
+        cg_types::emit(g, " @\"");
+        var class_prefix_span = span::make(0, 0);
+        var ci = 0;
+        while ci < (*(*p).arena).classes.len {
+            var cl = (*(*p).arena).classes[ci];
+            var mi = 0;
+            while mi < cl.method_len {
+                var cm = (*(*p).arena).class_methods[cl.method_start + mi];
+                if cm.function_id == fn_id {
+                    class_prefix_span = cl.name_span;
+                    break;
+                }
+                mi = mi + 1;
+            }
+            if class_prefix_span.start != 0 or class_prefix_span.end != 0 { break; }
+            ci = ci + 1;
+        }
+        if class_prefix_span.start != 0 or class_prefix_span.end != 0 {
+            var pi2 = class_prefix_span.start;
+            while pi2 < class_prefix_span.end {
+                (*g).output.push(source.data[pi2]);
+                pi2 = pi2 + 1;
+            }
+            (*g).output.push('.');
+        }
+        var ni = fn_info.name_span.start;
+        while ni < fn_info.name_span.end {
+            (*g).output.push(source.data[ni]);
+            ni = ni + 1;
+        }
+        cg_types::emit(g, "\"(");
+        var pi = 0;
+        while pi < fn_info.param_len {
+            var param = (*(*p).arena).params[fn_info.param_start + pi];
+            var pty = semantic::type_int();
+            if param.has_type_hint {
+                var errors: array::Array<semantic::SemanticError> = array::Array();
+                var summary = semantic::make_empty_summary();
+                pty = semantic::resolve_type_ref(p, param.type_ref, @errors, @summary);
+            }
+            if pi > 0 { cg_types::emit(g, ", "); }
+            cg_types::emit_type(g, pty, p);
+            pi = pi + 1;
+        }
+        if is_variadic { cg_types::emit(g, ", ..."); }
+        cg_types::emit(g, ")");
+        cg_types::newline(g);
+        cg_types::newline(g);
+        return;
+    }
+
+    cg_types::emit(g, "define ");
+    cg_types::emit_type(g, ret_ty, p);
+    cg_types::emit(g, " @\"");
+    var class_prefix_span2 = span::make(0, 0);
+    var ci2 = 0;
+    while ci2 < (*(*p).arena).classes.len {
+        var cl2 = (*(*p).arena).classes[ci2];
+        var mi2 = 0;
+        while mi2 < cl2.method_len {
+            var cm2 = (*(*p).arena).class_methods[cl2.method_start + mi2];
+            if cm2.function_id == fn_id {
+                class_prefix_span2 = cl2.name_span;
+                break;
+            }
+            mi2 = mi2 + 1;
+        }
+        if class_prefix_span2.start != 0 or class_prefix_span2.end != 0 { break; }
+        ci2 = ci2 + 1;
+    }
+    if class_prefix_span2.start != 0 or class_prefix_span2.end != 0 {
+        var pi3 = class_prefix_span2.start;
+        while pi3 < class_prefix_span2.end {
+            (*g).output.push(source.data[pi3]);
+            pi3 = pi3 + 1;
+        }
+        (*g).output.push('.');
+    }
+    var ni = fn_info.name_span.start;
+    while ni < fn_info.name_span.end {
+        (*g).output.push(source.data[ni]);
+        ni = ni + 1;
+    }
+    cg_types::emit(g, "\"(");
+    var pi = 0;
+    while pi < fn_info.param_len {
+        var param = (*(*p).arena).params[fn_info.param_start + pi];
+        var pty = semantic::type_int();
+        if param.has_type_hint {
+            var errors: array::Array<semantic::SemanticError> = array::Array();
+            var summary = semantic::make_empty_summary();
+            pty = semantic::resolve_type_ref(p, param.type_ref, @errors, @summary);
+        } else if pi == 0 and ci2 < (*(*p).arena).classes.len {
+            pty = semantic::type_pointer(4000 + ci2, false);
+        }
+        if pi > 0 { cg_types::emit(g, ", "); }
+        cg_types::emit_type(g, pty, p);
+        cg_types::emit(g, " %");
+        var pj = param.name_span.start;
+        while pj < param.name_span.end {
+            (*g).output.push(source.data[pj]);
+            pj = pj + 1;
+        }
+        pi = pi + 1;
+    }
+    cg_types::emit(g, ") {");
+    cg_types::newline(g);
+    cg_types::emit(g, "entry:");
+    cg_types::newline(g);
+
+    pi = 0;
+    while pi < fn_info.param_len {
+        var param = (*(*p).arena).params[fn_info.param_start + pi];
+        var pty = semantic::type_int();
+        if param.has_type_hint {
+            var errors: array::Array<semantic::SemanticError> = array::Array();
+            var summary = semantic::make_empty_summary();
+            pty = semantic::resolve_type_ref(p, param.type_ref, @errors, @summary);
+        } else if pi == 0 and ci2 < (*(*p).arena).classes.len {
+            pty = semantic::type_pointer(4000 + ci2, false);
+        }
+        var alloca_reg = 10000 + pi;
+        if pty >= 1000 or pty >= 2000 or pty >= 3000 or pty >= 4000 {
+            cg_types::emit_alloca_typed(g, alloca_reg, pty, p);
+        } else {
+            cg_types::emit_alloca(g, alloca_reg, pty, p);
+        }
+        cg_types::register_local(g, p, param.name_span, pty, alloca_reg);
+        if pty >= 1000 or pty >= 2000 or pty >= 3000 or pty >= 4000 {
+            cg_types::emit(g, "    store ");
+            cg_types::emit_type(g, pty, p);
+            cg_types::emit(g, " %");
+            var pj = param.name_span.start;
+            while pj < param.name_span.end {
+                (*g).output.push(source.data[pj]);
+                pj = pj + 1;
+            }
+            cg_types::emit(g, ", ptr ");
+            cg_types::push_reg(g, alloca_reg);
+            cg_types::newline(g);
+        } else {
+        var load_reg = cg_types::next_temp(g);
+        cg_types::emit(g, "    ");
+        cg_types::push_temp(g, load_reg);
+        cg_types::emit(g, "= add ");
+        cg_types::emit_type(g, pty, p);
+        cg_types::emit(g, " 0, %");
+        var pj = param.name_span.start;
+        while pj < param.name_span.end {
+            (*g).output.push(source.data[pj]);
+            pj = pj + 1;
+        }
+        cg_types::newline(g);
+        if pty >= 1000 or pty >= 2000 or pty >= 3000 or pty >= 4000 {
+            cg_types::emit_store_typed(g, load_reg, alloca_reg, pty, p);
+        } else {
+            cg_types::emit_store(g, load_reg, alloca_reg, pty, p);
+        }
+        }
+        pi = pi + 1;
+    }
+
+    (*g).current_fn_id = fn_id;
+    (*g).fn_return_type = ret_ty;
+    (*g).block_terminated = false;
+    (*g).local_count = 0;
+    codegen_block_flat(g, p, fn_info.body_block_id, source);
+    if !(*g).block_terminated {
+        cg_types::emit_all_cleanups(g, p);
+        if ret_ty == cg_types::type_void_val() {
+            cg_types::emit_ret_void(g);
+        } else {
+            cg_types::emit_ret(g, -1, ret_ty, p);
+        }
+    }
+    cg_types::emit(g, "}");
+    cg_types::newline(g);
+    cg_types::newline(g);
+}
