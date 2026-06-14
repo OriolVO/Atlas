@@ -1,0 +1,11 @@
+export struct Span {
+    start: int;
+    end: int;
+}
+
+export fn make(start: int, end: int): Span {
+    return Span {
+        start: start,
+        end: end
+    };
+}

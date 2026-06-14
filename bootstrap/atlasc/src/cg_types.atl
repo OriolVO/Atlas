@@ -965,11 +965,11 @@ export fn resolve_type_simple(p: @resolver::Project, type_ref: ast::TypeRef): in
     if type_ref.token_kind == 0 { return semantic::type_unknown(); }
     if type_ref.token_kind == 3 { return semantic::type_null(); }
     if type_ref.token_kind == 61 {
-        var inner = resolve_inner_pointer_type(p, type_ref);
+        var inner = semantic::resolve_inner_type_for_pointer(p, type_ref);
         return semantic::type_pointer(inner, false);
     }
     if type_ref.token_kind == 62 {
-        var inner = resolve_inner_pointer_type(p, type_ref);
+        var inner = semantic::resolve_inner_type_for_pointer(p, type_ref);
         return semantic::type_pointer(inner, true);
     }
     if type_ref.token_kind == 6 {

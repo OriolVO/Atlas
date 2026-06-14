@@ -1,0 +1,36 @@
+--- compiler/src/typechecker/native.rs
++++ compiler/src/typechecker/native.rs
+@@ -1659,10 +1659,20 @@
+                     }
+                 }
++                let class_name_stripped = if let Some(idx) = class_name.rfind("::") {
++                    &class_name[idx + 2..]
++                } else {
++                    class_name
++                };
+                 let method = self
+                     .classes
+-                    .get(class_name)
++                    .get(class_name_stripped)
+                     .and_then(|class_ty| class_ty.methods.get(method_name))
+                     .cloned();
+                 let Some(method) = method else {
++                    if let Some(sig) = self.fn_sigs.get(method_name) {
++                        // It's a module function call, e.g. io::puts
++                        let mut is_valid = true;
++                        if sig.params.len() != args.len() {
++                            is_valid = false;
++                        }
++                        if is_valid {
++                            for (arg, (_, expected_ty)) in args.iter().zip(sig.params.iter()) {
++                                let actual = self.check_expr_with_expected(arg, expected_ty, locals)?;
++                                if !is_assignable_to(expected_ty, &actual) {
++                                    is_valid = false;
++                                }
++                            }
++                        }
++                        if is_valid {
++                            return Ok(sig.ret_ty.clone());
++                        }
++                    }
+                     self.errors.push(AtlasError::TypeError {

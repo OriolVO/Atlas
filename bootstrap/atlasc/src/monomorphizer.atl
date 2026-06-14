@@ -396,8 +396,10 @@ export fn instantiate_class(
         mi = mi + 1;
     }
 
-    (*(*p).arena).classes[new_cl_id].method_start = method_start;
-    (*(*p).arena).classes[new_cl_id].method_len = concrete_method_count;
+    var cl2 = (*(*p).arena).classes[new_cl_id];
+    cl2.method_start = method_start;
+    cl2.method_len = concrete_method_count;
+    (*(*p).arena).classes[new_cl_id] = cl2;
 
     return new_cl_id;
 }

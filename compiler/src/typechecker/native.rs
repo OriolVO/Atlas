@@ -50,7 +50,9 @@ impl NativeTypeChecker {
         };
 
         let mut checker = Checker::new();
+        println!("DEBUG: Topological order: {:?}", project.topological_order);
         for mod_name in &project.topological_order {
+            println!("DEBUG: Checking module: {}", mod_name);
             if let Some(ast) = project.modules.get(mod_name) {
                 checker.collect_type_names_from_ast(ast);
             }
@@ -402,7 +404,12 @@ impl Checker {
                 if self.classes.contains_key(&mangled) {
                     return Some(AtlasType::Class(mangled));
                 }
-                if let Some(template) = self.generic_class_templates.get(base).cloned() {
+                let base_stripped = if let Some(idx) = base.rfind("::") {
+                    &base[idx + 2..]
+                } else {
+                    base
+                };
+                if let Some(template) = self.generic_class_templates.get(base_stripped).cloned() {
                     if template.generic_params.len() != resolved_args.len() {
                         return None;
                     }
@@ -532,6 +539,7 @@ impl Checker {
                 if !decl.generic_params.is_empty() || !decl.where_clauses.is_empty() {
                     continue;
                 }
+                println!("DEBUG: Collecting class: {}", decl.name.0);
                 self.register_class_decl(decl);
             }
         }
@@ -727,6 +735,9 @@ impl Checker {
                                     format!("{}.{}", class_name, method.decl.name.0),
                                     sig.clone(),
                                 );
+                                if class_name == "String" {
+                                    println!("DEBUG: Registering String method: {}", method.decl.name.0);
+                                }
                                 if let Some(class_ty) = self.classes.get_mut(&class_name) {
                                     class_ty.methods.insert(
                                         method.decl.name.0.clone(),
@@ -1674,12 +1685,41 @@ impl Checker {
                         }
                     }
                 }
+                let class_name_stripped = if let Some(idx) = class_name.rfind("::") {
+                    &class_name[idx + 2..]
+                } else {
+                    class_name
+                };
                 let method = self
                     .classes
-                    .get(class_name)
+                    .get(class_name_stripped)
                     .and_then(|class_ty| class_ty.methods.get(method_name))
                     .cloned();
                 let Some(method) = method else {
+                    if self.classes.contains_key(method_name) || self.structs.contains_key(method_name) || self.choices.contains_key(method_name) {
+                        return self.check_expr(&Expr::Call {
+                            callee: method_name.clone(),
+                            args: args.clone(),
+                            span: *span,
+                        }, locals);
+                    }
+                    if let Some(sig) = self.fn_sigs.get(method_name).cloned() {
+                        let mut is_valid = true;
+                        if sig.params.len() != args.len() {
+                            is_valid = false;
+                        }
+                        if is_valid {
+                            for (arg, (_, expected_ty)) in args.iter().zip(sig.params.iter()) {
+                                let actual = self.check_expr_with_expected(arg, expected_ty, locals)?;
+                                if !is_assignable_to(expected_ty, &actual) {
+                                    is_valid = false;
+                                }
+                            }
+                        }
+                        if is_valid {
+                            return Ok(sig.ret_ty.clone());
+                        }
+                    }
                     self.errors.push(AtlasError::TypeError {
                         span: *span,
                         message: format!("class '{}' has no static method '{}'", class_name, method_name),

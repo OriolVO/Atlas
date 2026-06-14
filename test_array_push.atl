@@ -1,0 +1,13 @@
+
+import array;
+
+fn do_push(arr: @array::Array<char>) {
+    arr.push('x');
+}
+
+export fn main(): int {
+    var arr: array::Array<char> = array::Array();
+    do_push(@arr);
+    return 0;
+}
+    

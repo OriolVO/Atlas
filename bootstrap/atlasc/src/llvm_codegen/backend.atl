@@ -1929,65 +1929,21 @@ export fn codegen_lvalue(g: @cg_types::Codegen, p: @resolver::Project, expr_id: 
             cg_types::push_reg(g, index_reg);
         } else if semantic::is_pointer_type(base_ty) {
             var pointee_ty = semantic::type_dereference(base_ty);
-            if semantic::is_class_type(pointee_ty) {
-                var class_id = pointee_ty - 4000;
-                var class_info = (*(*p).arena).classes[class_id];
-                element_ty = semantic::type_unknown();
-                if class_info.concrete_arg_len > 0 {
-                    element_ty = (*(*p).arena).concrete_type_args[class_info.concrete_arg_start];
-                }
-                if element_ty == semantic::type_unknown() and class_info.field_len > 0 {
-                    var data_field = (*(*p).arena).class_fields[class_info.field_start];
-                    var data_field_ty = cg_types::resolve_type_simple(p, data_field.type_ref);
-                    if semantic::is_pointer_type(data_field_ty) {
-                        element_ty = semantic::type_dereference(data_field_ty);
-                    }
-                }
-                if element_ty == semantic::type_unknown() {
-                    element_ty = semantic::type_int();
-                }
-                if base_expr.kind == 1 {
-                    var loaded_class_ptr = cg_types::next_temp(g);
-                    cg_types::emit_load_typed(g, loaded_class_ptr, base_ptr, base_ty, p);
-                    base_ptr = loaded_class_ptr;
-                }
-                var data_field_ptr = cg_types::next_temp(g);
-                cg_types::emit(g, "    ");
-                cg_types::push_temp(g, data_field_ptr);
-                cg_types::emit(g, "= getelementptr inbounds ");
-                cg_types::emit_type(g, pointee_ty, p);
-                cg_types::emit(g, ", ptr ");
-                cg_types::push_reg(g, base_ptr);
-                cg_types::emit(g, ", i64 0, i32 0");
-                cg_types::newline(g);
-                var data_reg = cg_types::next_temp(g);
-                cg_types::emit_load_typed(g, data_reg, data_field_ptr, semantic::type_pointer(element_ty, true), p);
-                element_ptr = cg_types::next_temp(g);
-                cg_types::emit(g, "    ");
-                cg_types::push_temp(g, element_ptr);
-                cg_types::emit(g, "= getelementptr inbounds ");
-                cg_types::emit_type(g, element_ty, p);
-                cg_types::emit(g, ", ptr ");
-                cg_types::push_reg(g, data_reg);
-                cg_types::emit(g, ", i64 ");
-                cg_types::push_reg(g, index_reg);
-            } else {
-                element_ty = pointee_ty;
-                if base_expr.kind == 1 {
-                    var loaded_base_ptr = cg_types::next_temp(g);
-                    cg_types::emit_load_typed(g, loaded_base_ptr, base_ptr, base_ty, p);
-                    base_ptr = loaded_base_ptr;
-                }
-                element_ptr = cg_types::next_temp(g);
-                cg_types::emit(g, "    ");
-                cg_types::push_temp(g, element_ptr);
-                cg_types::emit(g, "= getelementptr inbounds ");
-                cg_types::emit_type(g, element_ty, p);
-                cg_types::emit(g, ", ptr ");
-                cg_types::push_reg(g, base_ptr);
-                cg_types::emit(g, ", i64 ");
-                cg_types::push_reg(g, index_reg);
+            element_ty = pointee_ty;
+            if base_expr.kind == 1 {
+                var loaded_base_ptr = cg_types::next_temp(g);
+                cg_types::emit_load_typed(g, loaded_base_ptr, base_ptr, base_ty, p);
+                base_ptr = loaded_base_ptr;
             }
+            element_ptr = cg_types::next_temp(g);
+            cg_types::emit(g, "    ");
+            cg_types::push_temp(g, element_ptr);
+            cg_types::emit(g, "= getelementptr inbounds ");
+            cg_types::emit_type(g, element_ty, p);
+            cg_types::emit(g, ", ptr ");
+            cg_types::push_reg(g, base_ptr);
+            cg_types::emit(g, ", i64 ");
+            cg_types::push_reg(g, index_reg);
         } else if semantic::is_class_type(base_ty) {
             element_ty = semantic::type_int();
             var indexed_class_id = base_ty - 4000;
@@ -2917,7 +2873,7 @@ export fn codegen_function(g: @cg_types::Codegen, p: @resolver::Project, fn_id: 
         } else {
             cg_types::emit_alloca(g, alloca_reg, pty, p);
         }
-        cg_types::register_local(g, p, param.name_span, pty, alloca_reg);
+        cg_types::emit(g, "; DEBUG PARAM PTY: "); cg_types::emit_int(g, pty); cg_types::newline(g); cg_types::emit(g, "; DEBUG PARAM PTY: "); cg_types::emit_int(g, pty); cg_types::newline(g); cg_types::emit(g, "; DEBUG PARAM PTY: "); cg_types::emit_int(g, pty); cg_types::newline(g); cg_types::register_local(g, p, param.name_span, pty, alloca_reg);
         if pty >= 1000 or pty >= 2000 or pty >= 3000 or pty >= 4000 {
             cg_types::emit(g, "    store ");
             cg_types::emit_type(g, pty, p);
