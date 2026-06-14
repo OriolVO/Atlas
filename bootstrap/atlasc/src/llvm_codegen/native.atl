@@ -34,7 +34,7 @@ fn is_hashmap_generated_method(p: @resolver::Project, function_id: int): bool {
 
 fn emit_hashmap_destroy_stub(g: @cg_types::Codegen, p: @resolver::Project, class_id: int) {
     var class_info = (*(*p).arena).classes[class_id];
-    var source = (*(*p).source).data;
+    var source = p.source.data;
     var has_suffix = false;
     var i = class_info.name_span.start;
     while i < class_info.name_span.end {
@@ -148,7 +148,7 @@ export fn generate(g: @cg_types::Codegen, p: @resolver::Project) {
             var item = (*(*p).arena).items[j];
             if item.kind == 1 {
                 if item.function_id >= 0 and item.function_id < (*(*p).arena).functions.len {
-                    llvm_codegen.backend::codegen_function(g, p, item.function_id, (*(*p).source));
+            llvm_codegen.backend::codegen_function(g, p, item.function_id, p.source);
                 }
             }
             if item.kind == 6 {
@@ -160,7 +160,7 @@ export fn generate(g: @cg_types::Codegen, p: @resolver::Project) {
                     while m < ci.method_len {
                         var method = (*(*p).arena).class_methods[ci.method_start + m];
                         if !cg_types::span_ends_with(p, ci.name_span, "HashMap") {
-                            llvm_codegen.backend::codegen_function(g, p, method.function_id, (*(*p).source));
+            llvm_codegen.backend::codegen_function(g, p, method.function_id, p.source);
                         }
                         m = m + 1;
                     }
@@ -212,7 +212,7 @@ export fn generate(g: @cg_types::Codegen, p: @resolver::Project) {
     while generated_i < generated_count {
         var generated_function = (*(*p).arena).functions[generated_i];
         if generated_function.generic_param_len == 0 and generated_function.body_block_id >= 0 and !is_hashmap_generated_method(p, generated_i) {
-            llvm_codegen.backend::codegen_function(g, p, generated_i, (*(*p).source));
+            llvm_codegen.backend::codegen_function(g, p, generated_i, p.source);
         }
         generated_i = generated_i + 1;
     }
@@ -235,7 +235,7 @@ fn has_method_named(p: @resolver::Project, class_id: int, name: []char): bool {
             var matches = true;
             var ni = 0;
             while ni < name.len {
-                if (*(*p).source).data[fn_info.name_span.start + ni] != name[ni] {
+                if p.source.data[fn_info.name_span.start + ni] != name[ni] {
                     matches = false;
                     break;
                 }

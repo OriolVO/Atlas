@@ -3,7 +3,7 @@ import ast;
 import span;
 import resolver;
 
-fn spans_equal(source: []char, a: span::Span, b: span::Span): bool {
+fn mono_spans_equal(source: @char?, a: span::Span, b: span::Span): bool {
     var len_a = a.end - a.start;
     if len_a != b.end - b.start { return false; }
     var i = 0;
@@ -15,7 +15,7 @@ fn spans_equal(source: []char, a: span::Span, b: span::Span): bool {
 }
 
 fn resolve_type_arg(p: @resolver::Project, type_arg_span: span::Span): int {
-    var source = (*(*p).source).data;
+    var source = p.source.data;
     var scan = type_arg_span.end - 1;
     while scan > type_arg_span.start {
         if source[scan] == ':' and source[scan - 1] == ':' {
@@ -47,7 +47,7 @@ fn resolve_type_arg(p: @resolver::Project, type_arg_span: span::Span): int {
         else if item.kind == 4 { item_name = (*(*p).arena).choices[item.choice_id].name_span; }
         else if item.kind == 6 { item_name = (*(*p).arena).classes[item.class_id].name_span; }
 
-        if spans_equal(source, item_name, type_arg_span) {
+        if mono_spans_equal(source, item_name, type_arg_span) {
             if item.kind == 2 { return 1000 + item.struct_id; }
             if item.kind == 3 { return 2000 + item.enum_id; }
             if item.kind == 4 { return 3000 + item.choice_id; }
@@ -91,7 +91,7 @@ fn find_generic_param_index(p: @resolver::Project, func_id: int, param_name: spa
     var i = 0;
     while i < func.generic_param_len {
         var gp = (*p).arena.generic_params[func.generic_param_start + i];
-        if spans_equal((*(*p).source).data, gp.name_span, param_name) {
+        if mono_spans_equal(p.source.data, gp.name_span, param_name) {
             return i;
         }
         i = i + 1;
@@ -104,7 +104,7 @@ fn find_class_generic_param_index(p: @resolver::Project, class_id: int, param_na
     var i = 0;
     while i < cl.generic_param_len {
         var gp = (*p).arena.generic_params[cl.generic_param_start + i];
-        if spans_equal((*(*p).source).data, gp.name_span, param_name) {
+        if mono_spans_equal(p.source.data, gp.name_span, param_name) {
             return i;
         }
         i = i + 1;
@@ -117,7 +117,7 @@ fn find_choice_generic_param_index(p: @resolver::Project, choice_id: int, param_
     var i = 0;
     while i < ch.generic_param_len {
         var gp = (*p).arena.generic_params[ch.generic_param_start + i];
-        if spans_equal((*(*p).source).data, gp.name_span, param_name) {
+        if mono_spans_equal(p.source.data, gp.name_span, param_name) {
             return i;
         }
         i = i + 1;
@@ -135,10 +135,10 @@ fn is_class_type_var(p: @resolver::Project, class_id: int, type_span: span::Span
 
 fn class_method_type_name(p: @resolver::Project, type_ref: ast::TypeRef): span::Span {
     var type_name = type_ref.name_span;
-    if type_name.end > type_name.start and (*(*p).source).data[type_name.start] == '@' {
+    if type_name.end > type_name.start and p.source.data[type_name.start] == '@' {
         type_name = span::make(type_name.start + 1, type_name.end);
     }
-    if type_name.end > type_name.start and (*(*p).source).data[type_name.end - 1] == '?' {
+    if type_name.end > type_name.start and p.source.data[type_name.end - 1] == '?' {
         type_name = span::make(type_name.start, type_name.end - 1);
     }
     return type_name;
@@ -153,7 +153,7 @@ fn clone_class_method(
     concrete_type: int
 ): int {
     var func = (*(*p).arena).functions[function_id];
-    var mangled_name = mangle_name_into_source((*p).source, func.name_span, type_arg_span);
+    var mangled_name = mangle_name_into_source(p.source, func.name_span, type_arg_span);
 
     var new_param_start = (*(*p).arena).params.len;
     var pi = 0;
@@ -167,10 +167,10 @@ fn clone_class_method(
             } else {
                 var param_len = orig.name_span.end - orig.name_span.start;
                 if param_len == 4 and
-                   (*(*p).source).data[orig.name_span.start] == 's' and
-                   (*(*p).source).data[orig.name_span.start + 1] == 'e' and
-                   (*(*p).source).data[orig.name_span.start + 2] == 'l' and
-                   (*(*p).source).data[orig.name_span.start + 3] == 'f' {
+                   p.source.data[orig.name_span.start] == 's' and
+                   p.source.data[orig.name_span.start + 1] == 'e' and
+                   p.source.data[orig.name_span.start + 2] == 'l' and
+                   p.source.data[orig.name_span.start + 3] == 'f' {
                     new_type.resolved_def_id = 4000 + concrete_class_id;
                 }
             }
@@ -212,7 +212,7 @@ fn find_existing_mono_fn(p: @resolver::Project, mangled_name: span::Span): int {
     var i = 0;
     while i < (*p).arena.functions.len {
         var fn2 = (*p).arena.functions[i];
-        if spans_equal((*(*p).source).data, fn2.name_span, mangled_name) {
+        if mono_spans_equal(p.source.data, fn2.name_span, mangled_name) {
             return i;
         }
         i = i + 1;
@@ -224,7 +224,7 @@ fn find_existing_mono_class(p: @resolver::Project, mangled_name: span::Span): in
     var i = 0;
     while i < (*p).arena.classes.len {
         var cl = (*p).arena.classes[i];
-        if spans_equal((*(*p).source).data, cl.name_span, mangled_name) {
+        if mono_spans_equal(p.source.data, cl.name_span, mangled_name) {
             return i;
         }
         i = i + 1;
@@ -236,7 +236,7 @@ fn find_existing_mono_choice(p: @resolver::Project, mangled_name: span::Span): i
     var i = 0;
     while i < (*p).arena.choices.len {
         var ch = (*p).arena.choices[i];
-        if spans_equal((*(*p).source).data, ch.name_span, mangled_name) {
+        if mono_spans_equal(p.source.data, ch.name_span, mangled_name) {
             return i;
         }
         i = i + 1;
@@ -255,7 +255,7 @@ export fn instantiate_generic(
     var concrete_type = resolve_type_arg(p, type_arg_span);
     if concrete_type < 0 { return -1; }
 
-    var mangled_name = mangle_name_into_source((*p).source, func.name_span, type_arg_span);
+    var mangled_name = mangle_name_into_source(p.source, func.name_span, type_arg_span);
     var existing = find_existing_mono_fn(p, mangled_name);
     if existing >= 0 { return existing; }
 
@@ -329,9 +329,12 @@ export fn instantiate_class(
     var concrete_type = resolve_type_arg(p, type_arg_span);
     if concrete_type < 0 { return -1; }
 
-    var mangled_name = mangle_name_into_source((*p).source, cl.name_span, type_arg_span);
+    var mangled_name = mangle_name_into_source(p.source, cl.name_span, type_arg_span);
     var existing = find_existing_mono_class(p, mangled_name);
     if existing >= 0 { return existing; }
+
+    var concrete_arg_start = (*(*p).arena).concrete_type_args.len;
+    (*(*p).arena).concrete_type_args.push(concrete_type);
 
     var field_start = (*(*p).arena).class_fields.len;
     var fi = 0;
@@ -339,10 +342,10 @@ export fn instantiate_class(
         var orig_field = (*(*p).arena).class_fields[cl.field_start + fi];
         var new_type_ref = orig_field.type_ref;
         var field_type_name = new_type_ref.name_span;
-        if field_type_name.end > field_type_name.start and (*(*p).source).data[field_type_name.start] == '@' {
+        if field_type_name.end > field_type_name.start and p.source.data[field_type_name.start] == '@' {
             field_type_name = span::make(field_type_name.start + 1, field_type_name.end);
         }
-        if field_type_name.end > field_type_name.start and (*(*p).source).data[field_type_name.end - 1] == '?' {
+        if field_type_name.end > field_type_name.start and p.source.data[field_type_name.end - 1] == '?' {
             field_type_name = span::make(field_type_name.start, field_type_name.end - 1);
         }
         if is_class_type_var(p, generic_class_id, field_type_name) {
@@ -362,6 +365,9 @@ export fn instantiate_class(
         name_span: mangled_name,
         generic_param_start: 0,
         generic_param_len: 0,
+        generic_base_id: generic_class_id,
+        concrete_arg_start: concrete_arg_start,
+        concrete_arg_len: 1,
         where_clause_start: 0,
         where_clause_len: 0,
         field_start: field_start,
@@ -407,7 +413,7 @@ export fn instantiate_choice(
     var concrete_type = resolve_type_arg(p, type_arg_span);
     if concrete_type < 0 { return -1; }
 
-    var mangled_name = mangle_name_into_source((*p).source, ch.name_span, type_arg_span);
+    var mangled_name = mangle_name_into_source(p.source, ch.name_span, type_arg_span);
     var existing = find_existing_mono_choice(p, mangled_name);
     if existing >= 0 { return existing; }
 

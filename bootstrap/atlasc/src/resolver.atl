@@ -71,9 +71,9 @@ fn build_module_path(prefix_data: @char?, prefix_len: int, name_data: @char?, na
 
 fn build_import_path(p: @Project, name_chars: []char, name_len: int, suffix: []char): array::Array<char> {
     var path_arr: array::Array<char> = array::Array();
-    var ri = (*p).source_root_start;
-    while ri < (*p).source_root_end {
-        path_arr.push((*(*p).source).data[ri]);
+    var ri = p.source_root_start;
+    while ri < p.source_root_end {
+        path_arr.push(p.source.data[ri]);
         ri = ri + 1;
     }
     var ni = 0;
@@ -106,7 +106,7 @@ fn is_module_loaded(p: @Project, name_span: span::Span): bool {
                 var matched = true;
                 var k = 0;
                 while k < name_span.end - name_span.start {
-                    if (*(*p).source).data[existing.start + k] != (*(*p).source).data[name_span.start + k] {
+                    if p.source.data[existing.start + k] != p.source.data[name_span.start + k] {
                         matched = false;
                         break;
                     }
@@ -126,13 +126,13 @@ fn load_prelude_modules(p: @Project, stdlib_chars: @char?, stdlib_len: int, erro
         var name = prelude_module_name(pi);
         var name_len = name.len;
 
-        var name_start = (*(*p).source).len;
+        var name_start = p.source.len;
         var ni = 0;
         while ni < name_len {
-            (*(*p).source).push(name[ni]);
+            p.source.push(name[ni]);
             ni = ni + 1;
         }
-        var name_span = span::make(name_start, (*(*p).source).len);
+        var name_span = span::make(name_start, p.source.len);
 
         if !is_module_loaded(p, name_span) {
             var name_chars: array::Array<char> = array::Array();
@@ -172,15 +172,15 @@ export fn load_and_resolve(entry_path: @string::String, stdlib_path: @string::St
         }
         si = si + 1;
     }
-    var root_start = (*(*p).source).len;
+    var root_start = p.source.len;
     if last_slash >= 0 {
         var ri = 0;
         while ri <= last_slash {
-            (*(*p).source).push((*entry_path).data[ri]);
+            p.source.push((*entry_path).data[ri]);
             ri = ri + 1;
         }
     }
-    var root_end = (*(*p).source).len;
+    var root_end = p.source.len;
     p.source_root_start = root_start;
     p.source_root_end = root_end;
 
@@ -204,17 +204,17 @@ export fn load_and_resolve(entry_path: @string::String, stdlib_path: @string::St
 }
 
 fn load_module(p: @Project, path_chars: @char?, path_len: int, stdlib_chars: @char?, stdlib_len: int, name_span: span::Span, errors: @array::Array<ast::ParseError>): bool {
-    var start_offset = (*(*p).source).len;
+    var start_offset = p.source.len;
 
     var path_str = string::String::from_chars(path_chars, path_len);
-    if !fs::read_file(path_str.c_str(), (*p).source) {
+    if !fs::read_file(path_str.c_str(), p.source) {
         return false;
     }
 
     var tokens: array::Array<token::Token> = array::Array();
     var lex_errors: array::Array<error::LexError> = array::Array();
 
-    lexer::tokenize((*p).source, start_offset, @tokens, @lex_errors);
+    lexer::tokenize(p.source, start_offset, @tokens, @lex_errors);
 
     if lex_errors.len > 0 {
         return false;
@@ -246,7 +246,7 @@ fn load_module(p: @Project, path_chars: @char?, path_len: int, stdlib_chars: @ch
             var name_chars: array::Array<char> = array::Array();
             var j = 0;
             while j < name_len {
-                name_chars.push((*(*p).source).data[import_name_span.start + j]);
+                name_chars.push(p.source.data[import_name_span.start + j]);
                 j = j + 1;
             }
             name_chars.push('\0');
@@ -255,9 +255,9 @@ fn load_module(p: @Project, path_chars: @char?, path_len: int, stdlib_chars: @ch
                 var before_count = (*(*p).modules).len;
                 // Build source prefix from project's source root
                 var src_pre_arr: array::Array<char> = array::Array();
-                var src_ri = (*p).source_root_start;
-                while src_ri < (*p).source_root_end {
-                    src_pre_arr.push((*(*p).source).data[src_ri]);
+                var src_ri = p.source_root_start;
+                while src_ri < p.source_root_end {
+                    src_pre_arr.push(p.source.data[src_ri]);
                     src_ri = src_ri + 1;
                 }
                 var atl_suf = string::String::from(".atl");
@@ -281,7 +281,7 @@ fn load_module(p: @Project, path_chars: @char?, path_len: int, stdlib_chars: @ch
                             var matched = true;
                             var k = 0;
                             while k < name_len {
-                                if (*(*p).source).data[existing.start + k] != (*(*p).source).data[import_name_span.start + k] {
+                                if p.source.data[existing.start + k] != p.source.data[import_name_span.start + k] {
                                     matched = false;
                                     break;
                                 }
@@ -387,7 +387,7 @@ export fn resolve_names(p: @Project, errors: @array::Array<ast::ParseError>): bo
     var order: array::Array<int> = array::Array();
     var i = 0;
     while i < (*(*p).modules).len {
-        (*order).push(i);
+        order.push(i);
         i = i + 1;
     }
     return resolve_names_in_order(p, @order, errors);
@@ -399,7 +399,7 @@ fn resolve_function(p: @Project, mod_idx: int, func_id: int, errors: @array::Arr
 
     if func.has_return_type {
         var func_copy = (*(*p).arena).functions[func_id];
-        if !resolve_type_ref(p, mod_idx, @func_copy.return_type_ref, errors) { ok = false; }
+        if !resolve_type_ref_in_module(p, mod_idx, @func_copy.return_type_ref, errors) { ok = false; }
         (*(*p).arena).functions[func_id] = func_copy;
     }
 
@@ -408,7 +408,7 @@ fn resolve_function(p: @Project, mod_idx: int, func_id: int, errors: @array::Arr
     while i < end_i {
         var param = (*(*p).arena).params[i];
         if param.has_type_hint {
-            if !resolve_type_ref(p, mod_idx, @param.type_ref, errors) { ok = false; }
+            if !resolve_type_ref_in_module(p, mod_idx, @param.type_ref, errors) { ok = false; }
         }
         (*(*p).arena).params[i] = param;
         i = i + 1;
@@ -429,7 +429,7 @@ fn resolve_struct(p: @Project, mod_idx: int, struct_id: int, errors: @array::Arr
     var end_i = s.field_start + s.field_len;
     while i < end_i {
         var field = (*(*p).arena).struct_fields[i];
-        if !resolve_type_ref(p, mod_idx, @field.type_ref, errors) { ok = false; }
+        if !resolve_type_ref_in_module(p, mod_idx, @field.type_ref, errors) { ok = false; }
         (*(*p).arena).struct_fields[i] = field;
         i = i + 1;
     }
@@ -444,7 +444,7 @@ fn resolve_class(p: @Project, mod_idx: int, class_id: int, errors: @array::Array
     var end_i = c.field_start + c.field_len;
     while i < end_i {
         var field = (*(*p).arena).class_fields[i];
-        if !resolve_type_ref(p, mod_idx, @field.type_ref, errors) { ok = false; }
+        if !resolve_type_ref_in_module(p, mod_idx, @field.type_ref, errors) { ok = false; }
         (*(*p).arena).class_fields[i] = field;
         i = i + 1;
     }
@@ -470,7 +470,7 @@ fn resolve_choice(p: @Project, mod_idx: int, choice_id: int, errors: @array::Arr
     while i < end_i {
         var variant = (*(*p).arena).choice_variants[i];
         if variant.has_payload {
-            if !resolve_type_ref(p, mod_idx, @(*(*p).arena).choice_variants[i].payload_type_ref, errors) { ok = false; }
+            if !resolve_type_ref_in_module(p, mod_idx, @(*(*p).arena).choice_variants[i].payload_type_ref, errors) { ok = false; }
         }
         i = i + 1;
     }
@@ -489,14 +489,14 @@ fn resolve_block(p: @Project, mod_idx: int, block_id: int, errors: @array::Array
             if !resolve_expr(p, mod_idx, stmt.expr_id, errors) { ok = false; }
         } else if stmt.kind == 1 {
             if stmt.var_decl.has_type_hint {
-                if !resolve_type_ref(p, mod_idx, @(*(*p).arena).stmts[stmt_idx].var_decl.type_ref, errors) { ok = false; }
+                if !resolve_type_ref_in_module(p, mod_idx, @(*(*p).arena).stmts[stmt_idx].var_decl.type_ref, errors) { ok = false; }
             }
             if stmt.var_decl.has_init {
                 if !resolve_expr(p, mod_idx, stmt.var_decl.init_expr_id, errors) { ok = false; }
             }
         } else if stmt.kind == 2 {
             if stmt.const_decl.has_type_hint {
-                if !resolve_type_ref(p, mod_idx, @(*(*p).arena).stmts[stmt_idx].const_decl.type_ref, errors) { ok = false; }
+                if !resolve_type_ref_in_module(p, mod_idx, @(*(*p).arena).stmts[stmt_idx].const_decl.type_ref, errors) { ok = false; }
             }
             if !resolve_expr(p, mod_idx, stmt.const_decl.init_expr_id, errors) { ok = false; }
         } else if stmt.kind == 3 {
@@ -589,13 +589,13 @@ fn resolve_expr(p: @Project, mod_idx: int, expr_id: int, errors: @array::Array<a
     return ok;
 }
 
-fn resolve_type_ref(p: @Project, mod_idx: int, type_ref: @ast::TypeRef, errors: @array::Array<ast::ParseError>): bool {
+fn resolve_type_ref_in_module(p: @Project, mod_idx: int, type_ref: @ast::TypeRef, errors: @array::Array<ast::ParseError>): bool {
     if (*type_ref).token_kind == 6 {
         var name_span = (*type_ref).name_span;
         if (*type_ref).type_arg_len > 0 {
             var si = name_span.start;
             while si < name_span.end {
-                if (*(*p).source).data[si] == '<' {
+                if p.source.data[si] == '<' {
                     name_span = span::make(name_span.start, si);
                     break;
                 }
@@ -606,10 +606,23 @@ fn resolve_type_ref(p: @Project, mod_idx: int, type_ref: @ast::TypeRef, errors: 
         (*type_ref).resolved_def_id = def_id;
     } else if (*type_ref).token_kind == 61 or (*type_ref).token_kind == 62 {
         var name_span = (*type_ref).name_span;
-        if name_span.end > name_span.start and (*(*p).source).data[name_span.start] == '@' {
+        while name_span.end > name_span.start and p.source.data[name_span.start] == '@' {
             name_span = span::make(name_span.start + 1, name_span.end);
         }
-        var def_id = find_name(p, mod_idx, span::make(0, 0), name_span);
+        if (*type_ref).has_qualifier {
+            name_span = span::make((*type_ref).qualifier_span.end + 2, name_span.end);
+        }
+        if (*type_ref).type_arg_len > 0 {
+            var si = name_span.start;
+            while si < name_span.end {
+                if p.source.data[si] == '<' {
+                    name_span = span::make(name_span.start, si);
+                    break;
+                }
+                si = si + 1;
+            }
+        }
+        var def_id = find_name(p, mod_idx, (*type_ref).qualifier_span, name_span);
         (*type_ref).resolved_def_id = def_id;
     }
     return true;
@@ -644,7 +657,7 @@ fn find_name_in_module(p: @Project, target_mod_idx: int, name: span::Span, requi
             continue;
         }
         var item_name_span = get_item_name_span(p, item);
-        if spans_equal((*p).source, item_name_span, name) {
+        if spans_equal(p.source, item_name_span, name) {
             return i;
         }
         i = i + 1;
@@ -666,10 +679,10 @@ fn find_name(p: @Project, mod_idx: int, qualifier: span::Span, name: span::Span)
             var item = (*(*p).arena).items[i];
             if item.kind == 5 {
                 var import_name = get_item_name_span(p, item);
-                if spans_equal((*p).source, import_name, qualifier) {
+                if spans_equal(p.source, import_name, qualifier) {
                     var j = 0;
                     while j < (*(*p).modules).len {
-                        if spans_equal((*p).source, (*(*p).modules)[j].name_span, qualifier) {
+                        if spans_equal(p.source, (*(*p).modules)[j].name_span, qualifier) {
                             target_mod_idx = j;
                             break;
                         }
@@ -685,7 +698,7 @@ fn find_name(p: @Project, mod_idx: int, qualifier: span::Span, name: span::Span)
             var pi2 = 0;
             while pi2 < (*(*p).modules).len {
                 if is_prelude_module_idx(p, pi2) {
-                    if spans_equal((*p).source, (*(*p).modules)[pi2].name_span, qualifier) {
+                    if spans_equal(p.source, (*(*p).modules)[pi2].name_span, qualifier) {
                         target_mod_idx = pi2;
                         break;
                     }

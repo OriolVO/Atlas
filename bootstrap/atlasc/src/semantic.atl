@@ -133,7 +133,7 @@ export fn find_field_type(
     }
     if target >= 50000 {
         var slen = member_name.end - member_name.start;
-        var s = (*(*p).source).data;
+        var s = p.source.data;
         if slen == 3 and s[member_name.start] == 'l' and s[member_name.start+1] == 'e' and s[member_name.start+2] == 'n' {
             return type_int();
         }
@@ -162,7 +162,7 @@ export fn find_field_type(
     var i = 0;
     while i < struct_info.field_len {
         var field = (*(*p).arena).struct_fields[struct_info.field_start + i];
-        if name_equals((*(*p).source).data, field.name_span, member_name) {
+        if name_equals(p.source.data, field.name_span, member_name) {
             return resolve_type_ref(p, field.type_ref, errors, summary);
         }
         i = i + 1;
@@ -177,7 +177,7 @@ export fn find_struct_field_index(p: @resolver::Project, struct_id: int, member_
     var i = 0;
     while i < struct_info.field_len {
         var field = (*(*p).arena).struct_fields[struct_info.field_start + i];
-        if name_equals((*(*p).source).data, field.name_span, member_name) {
+        if name_equals(p.source.data, field.name_span, member_name) {
             return i;
         }
         i = i + 1;
@@ -190,7 +190,7 @@ export fn find_enum_variant_index(p: @resolver::Project, enum_id: int, variant_n
     var i = 0;
     while i < enum_info.variant_len {
         var variant = (*(*p).arena).enum_variants[enum_info.variant_start + i];
-        if name_equals((*(*p).source).data, variant.name_span, variant_name) {
+        if name_equals(p.source.data, variant.name_span, variant_name) {
             return i;
         }
         i = i + 1;
@@ -203,7 +203,7 @@ export fn find_choice_variant_index(p: @resolver::Project, choice_id: int, varia
     var i = 0;
     while i < choice_info.variant_len {
         var variant = (*(*p).arena).choice_variants[choice_info.variant_start + i];
-        if name_equals((*(*p).source).data, variant.name_span, variant_name) {
+        if name_equals(p.source.data, variant.name_span, variant_name) {
             return i;
         }
         i = i + 1;
@@ -223,96 +223,136 @@ export fn get_base_type_name_span(source: @array::Array<char>, name: span::Span)
     return name;
 }
 
+fn wrap_inner_pointer_depth(base_type: int, pointer_depth: int): int {
+    var result = base_type;
+    var depth_i = 1;
+    while depth_i < pointer_depth {
+        result = type_pointer(result, false);
+        depth_i = depth_i + 1;
+    }
+    return result;
+}
+
 export fn resolve_inner_type_for_pointer(p: @resolver::Project, type_ref: ast::TypeRef): int {
-    if type_ref.resolved_def_id >= 0 {
+    var pointer_depth = 0;
+    var pointer_scan = type_ref.name_span.start;
+    while pointer_scan < type_ref.name_span.end and p.source.data[pointer_scan] == '@' {
+        pointer_depth = pointer_depth + 1;
+        pointer_scan = pointer_scan + 1;
+    }
+    if !type_ref.has_qualifier and type_ref.resolved_def_id >= 0 {
         if type_ref.resolved_def_id >= type_int() and type_ref.resolved_def_id <= type_char() {
-            return type_ref.resolved_def_id;
+            return wrap_inner_pointer_depth(type_ref.resolved_def_id, pointer_depth);
         }
         if type_ref.resolved_def_id >= 1000 and type_ref.resolved_def_id >= (*(*p).arena).items.len {
-            return type_ref.resolved_def_id;
+            return wrap_inner_pointer_depth(type_ref.resolved_def_id, pointer_depth);
         }
         if type_ref.resolved_def_id < (*(*p).arena).items.len {
             var item = (*(*p).arena).items[type_ref.resolved_def_id];
-            if item.kind == 2 { return 1000 + item.struct_id; }
-            if item.kind == 3 { return 2000 + item.enum_id; }
-            if item.kind == 4 { return 3000 + item.choice_id; }
-            if item.kind == 6 { return 4000 + item.class_id; }
+            if item.kind == 2 { return wrap_inner_pointer_depth(1000 + item.struct_id, pointer_depth); }
+            if item.kind == 3 { return wrap_inner_pointer_depth(2000 + item.enum_id, pointer_depth); }
+            if item.kind == 4 { return wrap_inner_pointer_depth(3000 + item.choice_id, pointer_depth); }
+            if item.kind == 6 {
+                if type_ref.type_arg_len > 0 {
+                    var type_arg_span = (*(*p).arena).name_refs[type_ref.type_arg_start];
+                    var concrete_class_id = monomorphizer::instantiate_class(p, item.class_id, type_arg_span);
+                    if concrete_class_id >= 0 {
+                        return wrap_inner_pointer_depth(4000 + concrete_class_id, pointer_depth);
+                    }
+                }
+                return wrap_inner_pointer_depth(4000 + item.class_id, pointer_depth);
+            }
         }
     }
     var raw_name = type_ref.name_span;
-    if raw_name.end > raw_name.start and (*(*p).source).data[raw_name.start] == '@' {
+    while raw_name.end > raw_name.start and p.source.data[raw_name.start] == '@' {
         raw_name = span::make(raw_name.start + 1, raw_name.end);
     }
-    var name = get_base_type_name_span((*p).source, raw_name);
+    if raw_name.end > raw_name.start and p.source.data[raw_name.end - 1] == '?' {
+        raw_name = span::make(raw_name.start, raw_name.end - 1);
+    }
+    var name = get_base_type_name_span(p.source, raw_name);
+    name = last_path_segment_name(p.source, name);
     var primitive = resolve_numeric_alias(p, name);
-    if primitive != type_unknown() { return primitive; }
+    if primitive != type_unknown() {
+        return wrap_inner_pointer_depth(primitive, pointer_depth);
+    }
     var primitive_len = name.end - name.start;
-    var primitive_source = (*(*p).source).data;
-    if primitive_len == 4 and primitive_source[name.start] == 'c' and primitive_source[name.start + 1] == 'h' and primitive_source[name.start + 2] == 'a' and primitive_source[name.start + 3] == 'r' { return type_char(); }
-    if primitive_len == 4 and primitive_source[name.start] == 'b' and primitive_source[name.start + 1] == 'o' and primitive_source[name.start + 2] == 'o' and primitive_source[name.start + 3] == 'l' { return type_bool(); }
+    var primitive_source = p.source.data;
+    if primitive_len == 4 and primitive_source[name.start] == 'c' and primitive_source[name.start + 1] == 'h' and primitive_source[name.start + 2] == 'a' and primitive_source[name.start + 3] == 'r' { return wrap_inner_pointer_depth(type_char(), pointer_depth); }
+    if primitive_len == 4 and primitive_source[name.start] == 'b' and primitive_source[name.start + 1] == 'o' and primitive_source[name.start + 2] == 'o' and primitive_source[name.start + 3] == 'l' { return wrap_inner_pointer_depth(type_bool(), pointer_depth); }
     var i = 0;
     while i < (*(*p).arena).items.len {
         var item = (*(*p).arena).items[i];
         if item.kind == 2 {
             var si = (*(*p).arena).structs[item.struct_id];
-            if name_equals((*(*p).source).data, si.name_span, name) { return 1000 + item.struct_id; }
+            if name_equals(p.source.data, si.name_span, name) { return wrap_inner_pointer_depth(1000 + item.struct_id, pointer_depth); }
         } else if item.kind == 3 {
             var ei = (*(*p).arena).enums[item.enum_id];
-            if name_equals((*(*p).source).data, ei.name_span, name) { return 2000 + item.enum_id; }
+            if name_equals(p.source.data, ei.name_span, name) { return wrap_inner_pointer_depth(2000 + item.enum_id, pointer_depth); }
         } else if item.kind == 4 {
             var ci = (*(*p).arena).choices[item.choice_id];
-            if name_equals((*(*p).source).data, ci.name_span, name) { return 3000 + item.choice_id; }
+            if name_equals(p.source.data, ci.name_span, name) { return wrap_inner_pointer_depth(3000 + item.choice_id, pointer_depth); }
         } else if item.kind == 6 {
             var ci = (*(*p).arena).classes[item.class_id];
-            if name_equals((*(*p).source).data, ci.name_span, name) { return 4000 + item.class_id; }
+            if name_equals(p.source.data, ci.name_span, name) {
+                if type_ref.type_arg_len > 0 {
+                    var type_arg_span = (*(*p).arena).name_refs[type_ref.type_arg_start];
+                    var concrete_class_id = monomorphizer::instantiate_class(p, item.class_id, type_arg_span);
+                    if concrete_class_id >= 0 {
+                        return wrap_inner_pointer_depth(4000 + concrete_class_id, pointer_depth);
+                    }
+                }
+                return wrap_inner_pointer_depth(4000 + item.class_id, pointer_depth);
+            }
         }
         i = i + 1;
     }
     var ci = 0;
     while ci < (*(*p).arena).classes.len {
         var cls = (*(*p).arena).classes[ci];
-        if name_equals((*(*p).source).data, cls.name_span, name) { return 4000 + ci; }
+        if name_equals(p.source.data, cls.name_span, name) { return wrap_inner_pointer_depth(4000 + ci, pointer_depth); }
         ci = ci + 1;
     }
     var si = 0;
     while si < (*(*p).arena).structs.len {
         var struc = (*(*p).arena).structs[si];
-        if name_equals((*(*p).source).data, struc.name_span, name) { return 1000 + si; }
+        if name_equals(p.source.data, struc.name_span, name) { return wrap_inner_pointer_depth(1000 + si, pointer_depth); }
         si = si + 1;
     }
     return type_unknown();
 }
 
 export fn resolve_type_ref_from_name(p: @resolver::Project, raw_name: span::Span): int {
-    var name = get_base_type_name_span((*p).source, raw_name);
+    var name = get_base_type_name_span(p.source, raw_name);
     var i = 0;
     while i < (*(*p).arena).items.len {
         var item = (*(*p).arena).items[i];
         if item.kind == 2 {
             var si = (*(*p).arena).structs[item.struct_id];
-            if name_equals((*(*p).source).data, si.name_span, name) { return 1000 + item.struct_id; }
+            if name_equals(p.source.data, si.name_span, name) { return 1000 + item.struct_id; }
         } else if item.kind == 3 {
             var ei = (*(*p).arena).enums[item.enum_id];
-            if name_equals((*(*p).source).data, ei.name_span, name) { return 2000 + item.enum_id; }
+            if name_equals(p.source.data, ei.name_span, name) { return 2000 + item.enum_id; }
         } else if item.kind == 4 {
             var ci = (*(*p).arena).choices[item.choice_id];
-            if name_equals((*(*p).source).data, ci.name_span, name) { return 3000 + item.choice_id; }
+            if name_equals(p.source.data, ci.name_span, name) { return 3000 + item.choice_id; }
         } else if item.kind == 6 {
             var ci = (*(*p).arena).classes[item.class_id];
-            if name_equals((*(*p).source).data, ci.name_span, name) { return 4000 + item.class_id; }
+            if name_equals(p.source.data, ci.name_span, name) { return 4000 + item.class_id; }
         }
         i = i + 1;
     }
     i = 0;
     while i < (*(*p).arena).structs.len {
-        if name_equals((*(*p).source).data, (*(*p).arena).structs[i].name_span, name) {
+        if name_equals(p.source.data, (*(*p).arena).structs[i].name_span, name) {
             return 1000 + i;
         }
         i = i + 1;
     }
     i = 0;
     while i < (*(*p).arena).classes.len {
-        if name_equals((*(*p).source).data, (*(*p).arena).classes[i].name_span, name) {
+        if name_equals(p.source.data, (*(*p).arena).classes[i].name_span, name) {
             return 4000 + i;
         }
         i = i + 1;
@@ -320,7 +360,7 @@ export fn resolve_type_ref_from_name(p: @resolver::Project, raw_name: span::Span
     var num_type = resolve_numeric_alias(p, name);
     if num_type != type_unknown() { return num_type; }
     var name_len = name.end - name.start;
-    var name_src = (*(*p).source).data;
+    var name_src = p.source.data;
     var ns = name.start;
     if name_len == 4 and name_src[ns] == 'b' and name_src[ns+1] == 'o' and name_src[ns+2] == 'o' and name_src[ns+3] == 'l' { return type_bool(); }
     if name_len == 4 and name_src[ns] == 'c' and name_src[ns+1] == 'h' and name_src[ns+2] == 'a' and name_src[ns+3] == 'r' { return type_char(); }
@@ -329,7 +369,7 @@ export fn resolve_type_ref_from_name(p: @resolver::Project, raw_name: span::Span
 
 export fn resolve_numeric_alias(p: @resolver::Project, name: span::Span): int {
     var slen = name.end - name.start;
-    var s = (*(*p).source).data;
+    var s = p.source.data;
     if slen == 3 and s[name.start] == 'i' and s[name.start + 1] == 'n' and s[name.start + 2] == 't' { return type_int(); }
     if slen == 4 and s[name.start] == 'u' and s[name.start + 1] == 'i' and s[name.start + 2] == 'n' and s[name.start + 3] == 't' { return type_uint(); }
     if slen == 5 and s[name.start] == 'f' and s[name.start + 1] == 'l' and s[name.start + 2] == 'o' and s[name.start + 3] == 'a' and s[name.start + 4] == 't' { return type_float(); }
@@ -388,7 +428,7 @@ export fn resolve_type_ref(
         var num = resolve_numeric_alias(p, inner_span);
         if num != type_unknown() { return 50000 + num; }
         var slen = inner_end - inner_start;
-        var s = (*(*p).source).data;
+        var s = p.source.data;
         if slen == 4 and s[inner_start] == 'c' and s[inner_start+1] == 'h' and s[inner_start+2] == 'a' and s[inner_start+3] == 'r' { return 50000 + type_char(); }
         if slen == 4 and s[inner_start] == 'b' and s[inner_start+1] == 'o' and s[inner_start+2] == 'o' and s[inner_start+3] == 'l' { return 50000 + type_bool(); }
         return 50000 + type_int();
@@ -544,10 +584,10 @@ export fn last_path_segment_name(source: @array::Array<char>, name: span::Span):
 }
 
 export fn find_struct_index(p: @resolver::Project, candidate: span::Span): int {
-    var name = last_path_segment_name((*(*p).source), candidate);
+    var name = last_path_segment_name(p.source, candidate);
     var i = 0;
     while i < (*(*p).arena).structs.len {
-        if name_equals((*(*p).source).data, (*(*p).arena).structs[i].name_span, name) {
+        if name_equals(p.source.data, (*(*p).arena).structs[i].name_span, name) {
             return i;
         }
         i = i + 1;
@@ -556,10 +596,10 @@ export fn find_struct_index(p: @resolver::Project, candidate: span::Span): int {
 }
 
 export fn find_class_index(p: @resolver::Project, candidate: span::Span): int {
-    var name = last_path_segment_name((*(*p).source), candidate);
+    var name = last_path_segment_name(p.source, candidate);
     var i = 0;
     while i < (*(*p).arena).classes.len {
-        if name_equals((*(*p).source).data, (*(*p).arena).classes[i].name_span, name) {
+        if name_equals(p.source.data, (*(*p).arena).classes[i].name_span, name) {
             return i;
         }
         i = i + 1;
@@ -578,7 +618,7 @@ export fn find_class_field_type(
     var i = 0;
     while i < class_info.field_len {
         var field = (*(*p).arena).class_fields[class_info.field_start + i];
-        if name_equals((*(*p).source).data, field.name_span, member_name) {
+        if name_equals(p.source.data, field.name_span, member_name) {
             return resolve_type_ref(p, field.type_ref, errors, summary);
         }
         i = i + 1;
@@ -589,10 +629,10 @@ export fn find_class_field_type(
 }
 
 export fn find_enum_index(p: @resolver::Project, candidate: span::Span): int {
-    var name = last_path_segment_name((*(*p).source), candidate);
+    var name = last_path_segment_name(p.source, candidate);
     var i = 0;
     while i < (*(*p).arena).enums.len {
-        if name_equals((*(*p).source).data, (*(*p).arena).enums[i].name_span, name) {
+        if name_equals(p.source.data, (*(*p).arena).enums[i].name_span, name) {
             return i;
         }
         i = i + 1;
@@ -601,10 +641,10 @@ export fn find_enum_index(p: @resolver::Project, candidate: span::Span): int {
 }
 
 export fn find_choice_index(p: @resolver::Project, candidate: span::Span): int {
-    var name = last_path_segment_name((*(*p).source), candidate);
+    var name = last_path_segment_name(p.source, candidate);
     var i = 0;
     while i < (*(*p).arena).choices.len {
-        if name_equals((*(*p).source).data, (*(*p).arena).choices[i].name_span, name) {
+        if name_equals(p.source.data, (*(*p).arena).choices[i].name_span, name) {
             return i;
         }
         i = i + 1;
@@ -613,22 +653,41 @@ export fn find_choice_index(p: @resolver::Project, candidate: span::Span): int {
 }
 
 export fn find_function_index(p: @resolver::Project, candidate: span::Span): int {
-    var name = last_path_segment_name((*(*p).source), candidate);
+    var name = last_path_segment_name(p.source, candidate);
     var qualified = name.start != candidate.start;
+    if qualified {
+        var qualifier = span::make(candidate.start, name.start - 2);
+        var module_i = 0;
+        while module_i < (*(*p).modules).len {
+            var module_info = (*(*p).modules)[module_i];
+            if name_equals(p.source.data, module_info.name_span, qualifier) {
+                var file_info = (*(*p).arena).file_infos[module_info.file_info_id];
+                var item_i = file_info.item_start;
+                var item_end = file_info.item_start + file_info.item_len;
+                while item_i < item_end {
+                    var item = (*(*p).arena).items[item_i];
+                    if item.kind == 1 and item.is_export {
+                        var function_info = (*(*p).arena).functions[item.function_id];
+                        if name_equals(p.source.data, function_info.name_span, name) {
+                            return item.function_id;
+                        }
+                    }
+                    item_i = item_i + 1;
+                }
+                return -1;
+            }
+            module_i = module_i + 1;
+        }
+        return -1;
+    }
     var i = 0;
     var end = (*(*p).arena).functions.len;
-    if !qualified {
-        i = end - 1;
-    }
-    while (qualified and i < end) or (!qualified and i >= 0) {
-        if name_equals((*(*p).source).data, (*(*p).arena).functions[i].name_span, name) {
+    i = end - 1;
+    while i >= 0 {
+        if name_equals(p.source.data, (*(*p).arena).functions[i].name_span, name) {
             return i;
         }
-        if qualified {
-            i = i + 1;
-        } else {
-            i = i - 1;
-        }
+        i = i - 1;
     }
     return -1;
 }
@@ -713,6 +772,9 @@ export fn compatible_type(expected: int, actual: int): bool {
     if is_pointer_type(expected) and is_nullable_pointer(expected) and actual == type_null() {
         return true;
     }
+    if is_pointer_type(expected) and type_dereference(expected) == type_char() and actual == type_string_literal() {
+        return true;
+    }
     if is_slice_type(expected) and slice_element_type(expected) == type_char() and actual == type_string_literal() {
         return true;
     }
@@ -747,6 +809,55 @@ export fn compatible_type(expected: int, actual: int): bool {
     return false;
 }
 
+fn compatible_class_type(p: @resolver::Project, expected: int, actual: int): bool {
+    if !is_class_type(expected) or !is_class_type(actual) {
+        return false;
+    }
+    var expected_id = expected - 4000;
+    var actual_id = actual - 4000;
+    if expected_id < 0 or actual_id < 0 or
+       expected_id >= (*(*p).arena).classes.len or actual_id >= (*(*p).arena).classes.len {
+        return false;
+    }
+    var expected_class = (*(*p).arena).classes[expected_id];
+    var actual_class = (*(*p).arena).classes[actual_id];
+    var expected_base = expected_id;
+    var actual_base = actual_id;
+    if expected_class.generic_base_id >= 0 { expected_base = expected_class.generic_base_id; }
+    if actual_class.generic_base_id >= 0 { actual_base = actual_class.generic_base_id; }
+    if expected_base != actual_base {
+        return false;
+    }
+    if expected_class.concrete_arg_len == 0 or actual_class.concrete_arg_len == 0 {
+        return true;
+    }
+    if expected_class.concrete_arg_len != actual_class.concrete_arg_len {
+        return false;
+    }
+    var i = 0;
+    while i < expected_class.concrete_arg_len {
+        if (*(*p).arena).concrete_type_args[expected_class.concrete_arg_start + i] !=
+           (*(*p).arena).concrete_type_args[actual_class.concrete_arg_start + i] {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+export fn compatible_type_in_project(p: @resolver::Project, expected: int, actual: int): bool {
+    if compatible_type(expected, actual) {
+        return true;
+    }
+    if compatible_class_type(p, expected, actual) {
+        return true;
+    }
+    if is_pointer_type(expected) and is_pointer_type(actual) {
+        return compatible_class_type(p, type_dereference(expected), type_dereference(actual));
+    }
+    return false;
+}
+
 export fn span_equals_text(p: @resolver::Project, value: span::Span, text: []char): bool {
     var start = value.end - text.len;
     if start < value.start {
@@ -756,13 +867,13 @@ export fn span_equals_text(p: @resolver::Project, value: span::Span, text: []cha
         if start - value.start < 2 {
             return false;
         }
-        if (*(*p).source).data[start - 1] != ':' or (*(*p).source).data[start - 2] != ':' {
+        if p.source.data[start - 1] != ':' or p.source.data[start - 2] != ':' {
             return false;
         }
     }
     var i = 0;
     while i < text.len {
-        if (*(*p).source).data[start + i] != text[i] {
+        if p.source.data[start + i] != text[i] {
             return false;
         }
         i = i + 1;
@@ -771,6 +882,7 @@ export fn span_equals_text(p: @resolver::Project, value: span::Span, text: []cha
 }
 
 export fn expect_type(
+    p: @resolver::Project,
     expected: int,
     actual: int,
     err_kind: int,
@@ -778,7 +890,7 @@ export fn expect_type(
     errors: @array::Array<SemanticError>,
     summary: @Summary
 ) {
-    if !compatible_type(expected, actual) {
+    if !compatible_type_in_project(p, expected, actual) {
         errors.push(make_error(err_kind, err_span.start, err_span.end));
         (*summary).type_mismatch_count = (*summary).type_mismatch_count + 1;
     }

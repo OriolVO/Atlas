@@ -47,8 +47,8 @@ fn parse_generic_type_arg(p: @parser_types::Parser, start: @int, end: @int): boo
     }
     if k == 6 {
         (*start) = parser_types::peek_span_start(p);
-        parser_types::advance(p);
         var seg_end = parser_types::peek_span_end(p);
+        parser_types::advance(p);
         while parser_types::peek_kind(p) == 63 {
             parser_types::advance(p);
             var next_start = 0;
@@ -163,6 +163,8 @@ export fn parse_type_expr(p: @parser_types::Parser, arena: @ast::Arena, type_ref
         } else {
             (*type_ref) = ast::make_type_ref(61, start, end_val);
         }
+        (*type_ref).has_qualifier = target_ref.has_qualifier;
+        (*type_ref).qualifier_span = target_ref.qualifier_span;
         (*type_ref).type_arg_start = target_ref.type_arg_start;
         (*type_ref).type_arg_len = target_ref.type_arg_len;
         return true;

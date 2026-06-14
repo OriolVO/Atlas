@@ -62,6 +62,9 @@ export struct ClassInfo {
     name_span: span::Span;
     generic_param_start: int;
     generic_param_len: int;
+    generic_base_id: int;
+    concrete_arg_start: int;
+    concrete_arg_len: int;
     where_clause_start: int;
     where_clause_len: int;
     field_start: int;
@@ -281,6 +284,7 @@ export struct Arena {
     class_methods: array::Array<ClassMethod>;
     class_structs: array::Array<ClassStruct>;
     classes: array::Array<ClassInfo>;
+    concrete_type_args: array::Array<int>;
 
     items: array::Array<Item>;
     file_infos: array::Array<FileInfo>;
@@ -365,6 +369,7 @@ export fn make_empty_arena(): Arena {
         class_methods: array::Array(),
         class_structs: array::Array(),
         classes: array::Array(),
+        concrete_type_args: array::Array(),
 
         items: array::Array(),
         file_infos: array::Array()
