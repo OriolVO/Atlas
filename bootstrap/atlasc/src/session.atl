@@ -1,0 +1,30 @@
+import ast;
+import array;
+import resolver;
+
+export struct CompileSession {
+    arena: ast::Arena;
+    source: array::Array<char>;
+    modules: array::Array<resolver::ModuleInterface>;
+    parse_errors: array::Array<ast::ParseError>;
+}
+
+export fn make_empty_compile_session(): CompileSession {
+    return CompileSession {
+        arena: ast::make_empty_arena(),
+        source: array::Array(),
+        modules: array::Array(),
+        parse_errors: array::Array()
+    };
+}
+
+export fn make_project(s: @CompileSession): resolver::Project {
+    return resolver::Project {
+        arena: @(*s).arena,
+        source: @(*s).source,
+        modules: @(*s).modules,
+        prelude_count: 5,
+        source_root_start: 0,
+        source_root_end: 0
+    };
+}

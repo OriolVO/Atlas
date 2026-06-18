@@ -1,0 +1,89 @@
+import array;
+import cg_types;
+import diagnostics;
+import io;
+import llvm_codegen.native;
+import resolver;
+import semantic;
+import semantic.analysis;
+import session;
+import string;
+
+extern "C" fn system(cmd: @char): int32;
+
+fn run_semantic_analysis(project: @resolver::Project, s: @session::CompileSession): int {
+    var total_semantic_errors = 0;
+    var mi = 0;
+    while mi < (*s).modules.len {
+        var summary = semantic::make_empty_summary();
+        var sem_errs: array::Array<semantic::SemanticError> = array::Array();
+        semantic.analysis::analyze_file(project, (*s).arena.file_infos[(*s).modules[mi].file_info_id], @summary, @sem_errs);
+        if sem_errs.len > 0 {
+            total_semantic_errors = total_semantic_errors + diagnostics::report_semantic_errors(@(*project.source), @sem_errs);
+        }
+        mi = mi + 1;
+    }
+
+    if total_semantic_errors > 0 {
+        return diagnostics::report_semantic_failure();
+    }
+    return 0;
+}
+
+fn write_llvm_output(output_name: @string::String, codegen: @cg_types::Codegen): bool {
+    var ll_ext = string::String::from(".ll");
+    var ll_name = (*output_name).concat(@ll_ext);
+
+    var f = io::File();
+    f.init();
+    var w_mode = string::String::from("w");
+    if f.open(ll_name.data, w_mode.data) {
+        var null_term = string::String::from_chars((*codegen).output.data, (*codegen).output.len);
+        f.write_string(null_term.data);
+        f.close();
+        return true;
+    }
+    return false;
+}
+
+fn invoke_clang(output_name: @string::String): bool {
+    var ll_ext = string::String::from(".ll");
+    var ll_name = (*output_name).concat(@ll_ext);
+
+    var cmd = string::String::from("clang -Wno-override-module ");
+    var cmd2 = cmd.concat(@ll_name);
+    var part2 = string::String::from(" -o ");
+    var cmd3 = cmd2.concat(@part2);
+    var cmd4 = cmd3.concat(output_name);
+    var part3 = string::String::from(" -lm");
+    var cmd5 = cmd4.concat(@part3);
+
+    return system(cmd5.data) == 0i32;
+}
+
+export fn compile_build(entry_file: @string::String, stdlib_path: @string::String, output_name: @string::String): int {
+    var s = session::make_empty_compile_session();
+
+    if !resolver::load_and_resolve(entry_file, stdlib_path, @s.arena, @s.source, @s.modules, @s.parse_errors) {
+        return diagnostics::report_parse_errors(entry_file, @s.parse_errors);
+    }
+
+    var project = session::make_project(@s);
+
+    if run_semantic_analysis(@project, @s) != 0 {
+        return 1;
+    }
+
+    var codegen = cg_types::make_empty_codegen();
+    llvm_codegen.native::generate(@codegen, @project);
+
+    if !write_llvm_output(output_name, @codegen) {
+        return diagnostics::report_ir_write_failure();
+    }
+
+    if !invoke_clang(output_name) {
+        return diagnostics::report_clang_failure();
+    }
+
+    return 0;
+}

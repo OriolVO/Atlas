@@ -1,0 +1,93 @@
+import array;
+import ast;
+import io;
+import semantic;
+import string;
+
+fn print_int(n: int) {
+    if n == 0 {
+        io::print_char('0');
+        io::print_char('\n');
+        return;
+    }
+    var buf: array::Array<char> = array::Array();
+    var temp = n;
+    while temp > 0 {
+        var digit = cast<char>(cast<int32>(temp % 10) + 48i32);
+        buf.push(digit);
+        temp = temp / 10;
+    }
+    var i = buf.len - 1;
+    while i >= 0 {
+        io::print_char(buf[i]);
+        i = i - 1;
+    }
+    io::print_char('\n');
+}
+
+export fn report_parse_errors(entry_file: @string::String, errors: @array::Array<ast::ParseError>): int {
+    var err_msg = string::String::from("Failed to load and resolve project\n");
+    io::puts(err_msg.data);
+    io::puts(string::String::from("Entry: ").data);
+    io::puts((*entry_file).data);
+    io::puts(string::String::from("\n").data);
+    var err_i = 0;
+    while err_i < (*errors).len {
+        var err = (*errors)[err_i];
+        io::puts(string::String::from("Parse Error kind: ").data);
+        print_int(err.kind);
+        io::puts(string::String::from(" at span start: ").data);
+        print_int(err.span.start);
+        io::puts(string::String::from("\n").data);
+        err_i = err_i + 1;
+    }
+    return 1;
+}
+
+export fn report_semantic_errors(source: @array::Array<char>, sem_errs: @array::Array<semantic::SemanticError>): int {
+    var err_i = 0;
+    while err_i < (*sem_errs).len {
+        var err = (*sem_errs)[err_i];
+        io::puts(string::String::from("Semantic Error kind: ").data);
+        print_int(err.kind);
+        io::puts(string::String::from(" at span start: ").data);
+        print_int(err.span.start);
+
+        var start_print = err.span.start - 10;
+        if start_print < 0 { start_print = 0; }
+        var end_print = err.span.end + 10;
+        if end_print > (*source).len { end_print = (*source).len; }
+
+        var snippet: array::Array<char> = array::Array();
+        var k = start_print;
+        while k < end_print {
+            snippet.push((*source).data[k]);
+            k = k + 1;
+        }
+        var snippet_str = string::String::from_chars(snippet.data, snippet.len);
+        io::puts(string::String::from(" snippet: '").data);
+        io::puts(snippet_str.data);
+        io::puts(string::String::from("'\n").data);
+
+        err_i = err_i + 1;
+    }
+    return (*sem_errs).len;
+}
+
+export fn report_semantic_failure(): int {
+    var err_msg = string::String::from("Semantic analysis failed\n");
+    io::puts(err_msg.data);
+    return 1;
+}
+
+export fn report_ir_write_failure(): int {
+    var err_msg = string::String::from("Failed to write IR output\n");
+    io::puts(err_msg.data);
+    return 1;
+}
+
+export fn report_clang_failure(): int {
+    var err_msg = string::String::from("Clang invocation failed\n");
+    io::puts(err_msg.data);
+    return 1;
+}

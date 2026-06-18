@@ -1,0 +1,16 @@
+import cli;
+import pipeline;
+
+export fn run(argc: int32, argv: @@char): int {
+    var opts = cli::BuildOptions {
+        stdlib_path: string::String::from(""),
+        entry_file: string::String::from(""),
+        output_name: string::String::from(""),
+        is_build: false
+    };
+    cli::parse_args(argc, argv, @opts);
+    if opts.entry_file.len == 0 {
+        return cli::print_usage();
+    }
+    return pipeline::compile_build(@opts.entry_file, @opts.stdlib_path, @opts.output_name);
+}

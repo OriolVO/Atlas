@@ -1,0 +1,91 @@
+import io;
+import memory;
+import string;
+
+export struct BuildOptions {
+    stdlib_path: string::String;
+    entry_file: string::String;
+    output_name: string::String;
+    is_build: bool;
+}
+
+fn c_str_len(s: @char): int {
+    var i = 0;
+    while s[i] != '\0' {
+        i = i + 1;
+    }
+    return i;
+}
+
+fn c_str_eq(a: @char, b: []char): bool {
+    var len = c_str_len(a);
+    if len != b.len { return false; }
+    var i = 0;
+    while i < len {
+        if a[i] != b[i] { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn init_default_options(opts: @BuildOptions) {
+    (*opts) = BuildOptions {
+        stdlib_path: string::String::from("stdlib/"),
+        entry_file: string::String::from(""),
+        output_name: string::String::from("output"),
+        is_build: false
+    };
+}
+
+fn update_output_name_from_entry(opts: @BuildOptions) {
+    var len = (*opts).entry_file.len;
+    memory::free((*opts).output_name.data);
+    if len > 4 and
+       (*opts).entry_file.data[len - 4] == '.' and
+       (*opts).entry_file.data[len - 3] == 'a' and
+       (*opts).entry_file.data[len - 2] == 't' and
+       (*opts).entry_file.data[len - 1] == 'l' {
+        (*opts).output_name = string::String::from_chars((*opts).entry_file.data, len - 4);
+    } else {
+        (*opts).output_name = string::String::from_chars((*opts).entry_file.data, len);
+    }
+}
+
+export fn parse_args(argc: int32, argv: @@char, opts: @BuildOptions) {
+    init_default_options(opts);
+
+    var i = 1i32;
+    while i < argc {
+        var arg = argv[i];
+        if c_str_eq(arg, "build") {
+            (*opts).is_build = true;
+        } else if c_str_eq(arg, "--stdlib") {
+            i = i + 1i32;
+            if i < argc {
+                memory::free((*opts).stdlib_path.data);
+                (*opts).stdlib_path = string::String::from_chars(argv[i], c_str_len(argv[i]));
+                if (*opts).stdlib_path.data[(*opts).stdlib_path.len - 1] != '/' {
+                    (*opts).stdlib_path.append_chars("/");
+                }
+            }
+        } else if c_str_eq(arg, "--project") {
+        } else if c_str_eq(arg, "-o") {
+            i = i + 1i32;
+            if i < argc {
+                memory::free((*opts).output_name.data);
+                (*opts).output_name = string::String::from_chars(argv[i], c_str_len(argv[i]));
+            }
+        } else {
+            memory::free((*opts).entry_file.data);
+            (*opts).entry_file = string::String::from_chars(arg, c_str_len(arg));
+            update_output_name_from_entry(opts);
+        }
+        i = i + 1i32;
+    }
+}
+
+export fn print_usage(): int {
+    var usage = string::String::from("Usage: atlas build [--stdlib <path>] <file.atl>");
+    io::puts(usage.data);
+    return 1;
+}
