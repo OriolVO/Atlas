@@ -172,6 +172,7 @@ export fn generate(g: @cg_types::Codegen, p: @resolver::Project) {
     }
 
     var original_function_limit = 0;
+    var original_class_limit = 0;
     var original_module_i = 0;
     while original_module_i < (*(*p).modules).len {
         var original_module = (*(*p).modules)[original_module_i];
@@ -183,6 +184,9 @@ export fn generate(g: @cg_types::Codegen, p: @resolver::Project) {
                 if original_item.kind == 1 and original_item.function_id + 1 > original_function_limit {
                     original_function_limit = original_item.function_id + 1;
                 } else if original_item.kind == 6 and original_item.class_id >= 0 and original_item.class_id < (*(*p).arena).classes.len {
+                    if original_item.class_id + 1 > original_class_limit {
+                        original_class_limit = original_item.class_id + 1;
+                    }
                     var original_class = (*(*p).arena).classes[original_item.class_id];
                     var original_method_i = 0;
                     while original_method_i < original_class.method_len {
@@ -207,6 +211,14 @@ export fn generate(g: @cg_types::Codegen, p: @resolver::Project) {
         hashmap_class_i = hashmap_class_i + 1;
     }
 
+    var generated_class_i = original_class_limit;
+    var generated_class_count = (*(*p).arena).classes.len;
+    while generated_class_i < generated_class_count {
+        emit_class_init(g, p, generated_class_i);
+        emit_class_destroy(g, p, generated_class_i);
+        generated_class_i = generated_class_i + 1;
+    }
+
     var generated_i = original_function_limit;
     var generated_count = (*(*p).arena).functions.len;
     while generated_i < generated_count {
@@ -227,6 +239,9 @@ export fn generate(g: @cg_types::Codegen, p: @resolver::Project) {
 fn has_method_named(p: @resolver::Project, class_id: int, name: []char): bool {
     if class_id < 0 or class_id >= (*(*p).arena).classes.len { return false; }
     var ci = (*(*p).arena).classes[class_id];
+    if ci.generic_base_id >= 0 {
+        return has_method_named(p, ci.generic_base_id, name);
+    }
     var m = 0;
     while m < ci.method_len {
         var method = (*(*p).arena).class_methods[ci.method_start + m];

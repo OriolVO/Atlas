@@ -624,7 +624,25 @@ export fn infer_expr_type(
                 while m < class_info.method_len {
                     var method = (*(*p).arena).class_methods[class_info.method_start + m];
                     var method_info = (*(*p).arena).functions[method.function_id];
-                    if semantic::name_equals(p.source.data, method_info.name_span, expr.name_span) {
+                    var method_matches = semantic::name_equals(p.source.data, method_info.name_span, expr.name_span);
+                    if !method_matches and class_info.concrete_arg_len > 0 {
+                        var requested_len = expr.name_span.end - expr.name_span.start;
+                        var function_len = method_info.name_span.end - method_info.name_span.start;
+                        if function_len > requested_len and
+                           p.source.data[method_info.name_span.start + requested_len] == '_' {
+                            method_matches = true;
+                            var method_char_i = 0;
+                            while method_char_i < requested_len {
+                                if p.source.data[method_info.name_span.start + method_char_i] !=
+                                   p.source.data[expr.name_span.start + method_char_i] {
+                                    method_matches = false;
+                                    break;
+                                }
+                                method_char_i = method_char_i + 1;
+                            }
+                        }
+                    }
+                    if method_matches {
                         var explicit_param_count = method_info.param_len;
                         if explicit_param_count > 0 {
                             var first_param = (*(*p).arena).params[method_info.param_start];
@@ -756,7 +774,25 @@ export fn infer_expr_type(
             while m < class_info.method_len {
                 var method = (*(*p).arena).class_methods[class_info.method_start + m];
                 var method_info = (*(*p).arena).functions[method.function_id];
-                if semantic::name_equals(p.source.data, method_info.name_span, method_name) {
+                var method_matches = semantic::name_equals(p.source.data, method_info.name_span, method_name);
+                if !method_matches and class_info.concrete_arg_len > 0 {
+                    var requested_len = method_name.end - method_name.start;
+                    var function_len = method_info.name_span.end - method_info.name_span.start;
+                    if function_len > requested_len and
+                       p.source.data[method_info.name_span.start + requested_len] == '_' {
+                        method_matches = true;
+                        var method_char_i = 0;
+                        while method_char_i < requested_len {
+                            if p.source.data[method_info.name_span.start + method_char_i] !=
+                               p.source.data[method_name.start + method_char_i] {
+                                method_matches = false;
+                                break;
+                            }
+                            method_char_i = method_char_i + 1;
+                        }
+                    }
+                }
+                if method_matches {
                     if expr.child_len != method_info.param_len {
                         errors.push(semantic::make_error(7, expr.span.start, expr.span.end));
                         (*summary).wrong_arg_count_count = (*summary).wrong_arg_count_count + 1;
@@ -867,16 +903,17 @@ export fn infer_expr_type(
             }
             return semantic::type_unknown();
         }
-        var class_idx = semantic::find_class_index(p, expr.callee_span);
-        if class_idx >= 0 {
-            var class_info = (*(*p).arena).classes[class_idx];
-            if class_info.generic_param_len > 0 {
-                var type_arg_span = (*(*p).arena).name_refs[expr.name_ref_start];
-                var concrete_class_id = monomorphizer::instantiate_class(p, class_idx, type_arg_span);
-                if concrete_class_id >= 0 {
-                    return 4000 + concrete_class_id;
-                }
+        var class_idx = -1;
+        if expr.resolved_def_id >= 0 and expr.resolved_def_id < (*(*p).arena).items.len {
+            var resolved_item = (*(*p).arena).items[expr.resolved_def_id];
+            if resolved_item.kind == 6 {
+                class_idx = resolved_item.class_id;
             }
+        }
+        if class_idx < 0 {
+            class_idx = semantic::find_class_index(p, expr.callee_span);
+        }
+        if class_idx >= 0 {
             return 4000 + class_idx;
         }
 
@@ -904,32 +941,6 @@ export fn infer_expr_type(
             return semantic::type_unknown();
         }
         var function_info = (*(*p).arena).functions[fn_index];
-
-        if function_info.generic_param_len > 0 {
-            var type_arg_span = (*(*p).arena).name_refs[expr.name_ref_start];
-            var concrete_fn_id = monomorphizer::instantiate_generic(p, fn_index, type_arg_span);
-            if concrete_fn_id >= 0 {
-                var concrete_func = (*(*p).arena).functions[concrete_fn_id];
-                if expr.child_len != concrete_func.param_len {
-                    errors.push(semantic::make_error(7, expr.span.start, expr.span.end));
-                    (*summary).wrong_arg_count_count = (*summary).wrong_arg_count_count + 1;
-                }
-                while i < expr.child_len {
-                    var arg_type = infer_expr_type(p, (*(*p).arena).expr_refs[expr.child_start + i], locals, depths, local_types, local_count, depth, errors, summary);
-                    if i < concrete_func.param_len {
-                        var param = (*(*p).arena).params[concrete_func.param_start + i];
-                        if param.has_type_hint {
-                            semantic::expect_type(p, semantic::resolve_type_ref(p, param.type_ref, errors, summary), arg_type, 8, expr.span, errors, summary);
-                        }
-                    }
-                    i = i + 1;
-                }
-                if concrete_func.has_return_type {
-                    return semantic::resolve_type_ref(p, concrete_func.return_type_ref, errors, summary);
-                }
-                return semantic::type_unknown();
-            }
-        }
 
         while i < expr.child_len {
             infer_expr_type(p, (*(*p).arena).expr_refs[expr.child_start + i], locals, depths, local_types, local_count, depth, errors, summary);
@@ -1138,9 +1149,15 @@ export fn infer_expr_type(
             return semantic::type_unknown();
         }
         if expr.op_kind == 74 {
-            if !semantic::is_integer_type(rhs_type) and rhs_type != semantic::type_untyped_int() and rhs_type != semantic::type_unknown() {
-                errors.push(semantic::make_error(8, expr.span.start, expr.span.end));
-                (*summary).type_mismatch_count = (*summary).type_mismatch_count + 1;
+            var lhs_is_class = semantic::is_class_type(lhs_type);
+            if semantic::is_pointer_type(lhs_type) and semantic::is_class_type(semantic::type_dereference(lhs_type)) {
+                lhs_is_class = true;
+            }
+            if !lhs_is_class {
+                if !semantic::is_integer_type(rhs_type) and rhs_type != semantic::type_untyped_int() and rhs_type != semantic::type_unknown() {
+                    errors.push(semantic::make_error(8, expr.span.start, expr.span.end));
+                    (*summary).type_mismatch_count = (*summary).type_mismatch_count + 1;
+                }
             }
             if semantic::is_class_type(lhs_type) {
                 var class_idx = lhs_type - 4000;
@@ -1176,7 +1193,16 @@ export fn infer_expr_type(
     }
 
     if expr.kind == 6 {
-        var class_idx = semantic::find_class_index(p, expr.callee_span);
+        var class_idx = -1;
+        if expr.resolved_def_id >= 0 and expr.resolved_def_id < (*(*p).arena).items.len {
+            var resolved_item = (*(*p).arena).items[expr.resolved_def_id];
+            if resolved_item.kind == 6 {
+                class_idx = resolved_item.class_id;
+            }
+        }
+        if class_idx < 0 {
+            class_idx = semantic::find_class_index(p, expr.callee_span);
+        }
         if class_idx >= 0 {
             return 4000 + class_idx;
         }
@@ -1460,7 +1486,41 @@ fn analyze_block(
                         if hinted_type >= 3000 and hinted_type < 4000 {
                             hinted_type = 3000 + concrete_choice_index(p, hinted_type - 3000);
                         }
-                        if semantic::is_class_type(hinted_type) and semantic::is_class_type(local_type) {
+                        var init_matches_hinted_class = false;
+                        if semantic::is_class_type(hinted_type) {
+                            var hinted_class_id = hinted_type - 4000;
+                            if hinted_class_id >= 0 and hinted_class_id < (*(*p).arena).classes.len {
+                                var hinted_class = (*(*p).arena).classes[hinted_class_id];
+                                if hinted_class.generic_base_id >= 0 {
+                                    hinted_class_id = hinted_class.generic_base_id;
+                                }
+                            }
+                            var init_expr = (*(*p).arena).exprs[stmt.var_decl.init_expr_id];
+                            if init_expr.kind == 6 or init_expr.kind == 20 {
+                                var init_class_id = -1;
+                                if init_expr.resolved_def_id >= 0 and init_expr.resolved_def_id < (*(*p).arena).items.len {
+                                    var resolved_item = (*(*p).arena).items[init_expr.resolved_def_id];
+                                    if resolved_item.kind == 6 {
+                                        init_class_id = resolved_item.class_id;
+                                    }
+                                }
+                                if init_class_id < 0 {
+                                    init_class_id = semantic::find_class_index(p, init_expr.callee_span);
+                                }
+                                if init_class_id >= 0 and init_class_id < (*(*p).arena).classes.len {
+                                    var init_class = (*(*p).arena).classes[init_class_id];
+                                    if init_class.generic_base_id >= 0 {
+                                        init_class_id = init_class.generic_base_id;
+                                    }
+                                }
+                                if init_class_id == hinted_class_id {
+                                    init_matches_hinted_class = true;
+                                }
+                            }
+                        }
+                        if init_matches_hinted_class {
+                            local_type = hinted_type;
+                        } else if semantic::is_class_type(hinted_type) and semantic::is_class_type(local_type) {
                             local_type = hinted_type;
                         }
                         semantic::expect_type(p, hinted_type, local_type, 8, stmt.var_decl.span, errors, summary);
@@ -1493,7 +1553,7 @@ fn analyze_block(
             var handled_index_setter = false;
             if target_expr.kind == 5 and target_expr.op_kind == 74 and target_expr.child_len >= 2 {
                 var base_type = infer_expr_type(p, (*(*p).arena).expr_refs[target_expr.child_start], locals.data, local_depths.data, local_types.data, locals.len, depth, errors, summary);
-                if class_name_starts_with(p, base_type, "HashMap") {
+                if class_name_starts_with(p, base_type, "HashMap") or class_name_starts_with(p, base_type, "hashmap.HashMap") {
                     infer_expr_type(p, (*(*p).arena).expr_refs[target_expr.child_start + 1], locals.data, local_depths.data, local_types.data, locals.len, depth, errors, summary);
                     semantic::expect_type(p, semantic::type_int(), value_type, 8, stmt.assign_stmt.span, errors, summary);
                     handled_index_setter = true;

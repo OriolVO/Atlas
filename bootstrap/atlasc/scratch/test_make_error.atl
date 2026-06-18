@@ -1,0 +1,10 @@
+import io;
+
+fn print_i(val: int) {}
+
+export fn make_error(kind: int, start: int): int {
+    if kind == 8 {
+        io::print_char('E'); io::print_char('R'); io::print_char('R'); io::print_char('8'); io::print_char(' '); print_i(start); io::print_char('\n');
+    }
+    return kind;
+}

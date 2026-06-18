@@ -1,14 +1,10 @@
-// stdlib/hashmap.atl
-// Generic HashMap
-
-import array;
 import memory;
 
 export class HashMapEntry<K, V> {
     public key: K;
     public value: V;
     public is_used: bool;
-    
+
     public fn init(self: @HashMapEntry<K, V>) {
         (*self).is_used = false;
     }
@@ -22,25 +18,27 @@ export class HashMapEntry<K, V> {
     }
 }
 
-export class HashMap<K, V> 
+export class HashMap<K, V>
 where K (
     fn hash(self): int;
     fn equals(self, other: @K): bool;
-) 
+)
 {
-    public entries: array::Array<HashMapEntry<K, V>>;
+    public keys: @K?;
+    public values: @int?;
+    public used: @bool?;
     public len: int;
     public cap: int;
 
     public fn init(self: @HashMap<K, V>) {
         (*self).len = 0;
-        (*self).cap = 16; // Initial capacity
-        (*self).entries.init();
-        
-        // Pre-allocate the array to avoid constant resizing during init
+        (*self).cap = 16;
+        (*self).keys = cast<@K>(memory::malloc((*self).cap * memory::sizeof<K>()));
+        (*self).values = cast<@int>(memory::malloc((*self).cap * memory::sizeof<int>()));
+        (*self).used = cast<@bool>(memory::malloc((*self).cap * memory::sizeof<bool>()));
         var i = 0;
         while i < (*self).cap {
-            (*self).entries.push(HashMapEntry());
+            (*self).used[i] = false;
             i = i + 1;
         }
     }
@@ -49,77 +47,63 @@ where K (
         return (*self).len;
     }
 
-    public fn operator[]=(self: @HashMap<K, V>, key: K, value: V) {
-        // Load factor check (resize if > 70%)
+    public fn operator[]=(self: @HashMap<K, V>, key: K, value: int) {
         if (*self).len * 100 > (*self).cap * 70 {
             self.resize();
         }
-        
+
         var idx = self.find_slot(@key);
-        var entry_ptr = @(*self).entries.data[idx];
-        
-        if !(*entry_ptr).is_used {
+        if !(*self).used[idx] {
             (*self).len = (*self).len + 1;
         } else {
-            // Overwriting existing value
-            memory::destroy<K>((*entry_ptr).key);
-            memory::destroy<V>((*entry_ptr).value);
-            (*entry_ptr).is_used = false;
+            memory::destroy<K>((*self).keys[idx]);
         }
 
-        memory::memcpy(cast<@char>(@(*entry_ptr).key), cast<@char>(@key), memory::sizeof<K>());
-        memory::memcpy(cast<@char>(@(*entry_ptr).value), cast<@char>(@value), memory::sizeof<V>());
-        (*entry_ptr).is_used = true;
+        memory::memcpy(cast<@char>(@(*self).keys[idx]), cast<@char>(@key), memory::sizeof<K>());
+        (*self).values[idx] = value;
+        (*self).used[idx] = true;
     }
 
-    public fn get(self: @HashMap<K, V>, key: @K): @V? {
+    public fn get(self: @HashMap<K, V>, key: @K): @int? {
         var idx = self.find_slot(key);
-        var entry_ptr = @(*self).entries.data[idx];
-        
-        if (*entry_ptr).is_used {
-            return @(*entry_ptr).value;
+        if (*self).used[idx] {
+            return @(*self).values[idx];
         }
         return null;
     }
 
     public fn contains(self: @HashMap<K, V>, key: @K): bool {
         var idx = self.find_slot(key);
-        var entry_ptr = @(*self).entries.data[idx];
-        return (*entry_ptr).is_used;
+        return (*self).used[idx];
     }
 
     public fn remove(self: @HashMap<K, V>, key: @K): bool {
         var idx = self.find_slot(key);
-        var entry_ptr = @(*self).entries.data[idx];
-        
-        if (*entry_ptr).is_used {
-            memory::destroy<K>((*entry_ptr).key);
-            memory::destroy<V>((*entry_ptr).value);
-            (*entry_ptr).is_used = false;
+        if (*self).used[idx] {
+            memory::destroy<K>((*self).keys[idx]);
+            (*self).used[idx] = false;
             (*self).len = (*self).len - 1;
-            
-            // Re-hash elements in the cluster to prevent breaking probing chains
+
             var i = (idx + 1) % (*self).cap;
-            while (*self).entries.data[i].is_used {
-                // Since we cannot pass class-typed fields by value without cloning,
-                // and we just want to re-hash, we will extract the entry by pointer
-                var temp_ptr = @(*self).entries.data[i];
-                
-                (*temp_ptr).is_used = false;
+            while (*self).used[i] {
+                var temp_key = cast<@K>(memory::malloc(memory::sizeof<K>()));
+                memory::memcpy(cast<@char>(temp_key), cast<@char>(@(*self).keys[i]), memory::sizeof<K>());
+                var temp_value = (*self).values[i];
+
+                memory::destroy<K>((*self).keys[i]);
+                (*self).used[i] = false;
                 (*self).len = (*self).len - 1;
-                
-                // Re-insert using memcpy manually to avoid copy prevention
-                var new_idx = self.find_slot(@(*temp_ptr).key);
-                var new_entry_ptr = @(*self).entries.data[new_idx];
-                
-                memory::memcpy(cast<@char>(@(*new_entry_ptr).key), cast<@char>(@(*temp_ptr).key), memory::sizeof<K>());
-                memory::memcpy(cast<@char>(@(*new_entry_ptr).value), cast<@char>(@(*temp_ptr).value), memory::sizeof<V>());
-                (*new_entry_ptr).is_used = true;
+
+                var new_idx = self.find_slot(temp_key);
+                memory::memcpy(cast<@char>(@(*self).keys[new_idx]), cast<@char>(temp_key), memory::sizeof<K>());
+                (*self).values[new_idx] = temp_value;
+                (*self).used[new_idx] = true;
                 (*self).len = (*self).len + 1;
-                
+
+                memory::free(cast<@char>(temp_key));
                 i = (i + 1) % (*self).cap;
             }
-            
+
             return true;
         }
         return false;
@@ -128,51 +112,71 @@ where K (
     fn find_slot(self: @HashMap<K, V>, key: @K): int {
         var h = key.hash();
         if h < 0 { h = h * -1; }
-        
+
         var idx = h % (*self).cap;
-        
-        while (*self).entries.data[idx].is_used {
-            if (*self).entries.data[idx].key.equals(key) {
+
+        while (*self).used[idx] {
+            if (*self).keys[idx].equals(key) {
                 return idx;
             }
             idx = (idx + 1) % (*self).cap;
         }
-        
+
         return idx;
     }
 
     fn resize(self: @HashMap<K, V>) {
-        var old_data = (*self).entries.data;
+        var old_keys = (*self).keys;
+        var old_values = (*self).values;
+        var old_used = (*self).used;
         var old_cap = (*self).cap;
-        
+
         (*self).cap = old_cap * 2;
         (*self).len = 0;
-        
-        (*self).entries.data = cast<@HashMapEntry<K, V> >(memory::malloc((*self).cap * memory::sizeof<HashMapEntry<K, V> >()));
-        (*self).entries.cap = (*self).cap;
-        (*self).entries.len = 0;
-        
+
+        (*self).keys = cast<@K>(memory::malloc((*self).cap * memory::sizeof<K>()));
+        (*self).values = cast<@int>(memory::malloc((*self).cap * memory::sizeof<int>()));
+        (*self).used = cast<@bool>(memory::malloc((*self).cap * memory::sizeof<bool>()));
+
         var i = 0;
         while i < (*self).cap {
-            (*self).entries.push(HashMapEntry());
+            (*self).used[i] = false;
             i = i + 1;
         }
-        
+
         i = 0;
         while i < old_cap {
-            var entry_ptr = @old_data[i];
-            if (*entry_ptr).is_used {
-                var new_idx = self.find_slot(@(*entry_ptr).key);
-                var new_entry_ptr = @(*self).entries.data[new_idx];
-                
-                memory::memcpy(cast<@char>(@(*new_entry_ptr).key), cast<@char>(@(*entry_ptr).key), memory::sizeof<K>());
-                memory::memcpy(cast<@char>(@(*new_entry_ptr).value), cast<@char>(@(*entry_ptr).value), memory::sizeof<V>());
-                (*new_entry_ptr).is_used = true;
+            if old_used[i] {
+                var new_idx = self.find_slot(@old_keys[i]);
+                memory::memcpy(cast<@char>(@(*self).keys[new_idx]), cast<@char>(@old_keys[i]), memory::sizeof<K>());
+                (*self).values[new_idx] = old_values[i];
+                (*self).used[new_idx] = true;
                 (*self).len = (*self).len + 1;
+                memory::destroy<K>(old_keys[i]);
             }
             i = i + 1;
         }
-        
-        memory::free(cast<@char>(old_data));
+
+        memory::free(cast<@char>(old_keys));
+        memory::free(cast<@char>(old_values));
+        memory::free(cast<@char>(old_used));
+    }
+
+    public fn destroy(self: @HashMap<K, V>) {
+        var i = 0;
+        while i < (*self).cap {
+            if (*self).used[i] {
+                memory::destroy<K>((*self).keys[i]);
+            }
+            i = i + 1;
+        }
+        memory::free(cast<@char>((*self).keys));
+        memory::free(cast<@char>((*self).values));
+        memory::free(cast<@char>((*self).used));
+        (*self).keys = null;
+        (*self).values = null;
+        (*self).used = null;
+        (*self).len = 0;
+        (*self).cap = 0;
     }
 }

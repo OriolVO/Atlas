@@ -3,6 +3,7 @@ import ast;
 import span;
 import resolver;
 import monomorphizer;
+import io;
 
 export struct SemanticError {
     kind: int;
@@ -241,7 +242,7 @@ export fn resolve_inner_type_for_pointer(p: @resolver::Project, type_ref: ast::T
         pointer_scan = pointer_scan + 1;
     }
     if !type_ref.has_qualifier and type_ref.resolved_def_id >= 0 {
-        if type_ref.resolved_def_id >= type_int() and type_ref.resolved_def_id <= type_char() {
+        if type_ref.resolved_def_id >= type_int() and type_ref.resolved_def_id <= type_char() and type_ref.resolved_def_id >= (*(*p).arena).items.len {
             return wrap_inner_pointer_depth(type_ref.resolved_def_id, pointer_depth);
         }
         if type_ref.resolved_def_id >= 1000 and type_ref.resolved_def_id >= (*(*p).arena).items.len {
@@ -445,7 +446,7 @@ export fn resolve_type_ref(
         return type_pointer(inner, true);
     }
     if type_ref.token_kind == 6 {
-        if type_ref.resolved_def_id >= type_int() and type_ref.resolved_def_id <= type_char() {
+        if type_ref.resolved_def_id >= type_int() and type_ref.resolved_def_id <= type_char() and type_ref.resolved_def_id >= (*(*p).arena).items.len {
             return type_ref.resolved_def_id;
         }
         if type_ref.type_arg_len > 0 and type_ref.resolved_def_id >= 3000 and type_ref.resolved_def_id < 4000 {
@@ -879,6 +880,27 @@ export fn span_equals_text(p: @resolver::Project, value: span::Span, text: []cha
         i = i + 1;
     }
     return true;
+}
+
+fn print_i_recur(val: int) {
+    if val == 0 {
+        return;
+    }
+    print_i_recur(val / 10);
+    var digit = val % 10;
+    io::print_char(cast<char>(cast<int>('0') + digit));
+}
+
+fn print_i(val: int) {
+    if val < 0 {
+        io::print_char('-');
+        val = -val;
+    }
+    if val == 0 {
+        io::print_char('0');
+        return;
+    }
+    print_i_recur(val);
 }
 
 export fn expect_type(

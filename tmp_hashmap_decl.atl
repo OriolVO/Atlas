@@ -1,0 +1,7 @@
+import hashmap;
+import string;
+
+fn main(): int {
+    var map: hashmap::HashMap<string::String, int> = hashmap::HashMap();
+    return 0;
+}

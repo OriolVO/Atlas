@@ -1929,21 +1929,104 @@ export fn codegen_lvalue(g: @cg_types::Codegen, p: @resolver::Project, expr_id: 
             cg_types::push_reg(g, index_reg);
         } else if semantic::is_pointer_type(base_ty) {
             var pointee_ty = semantic::type_dereference(base_ty);
-            element_ty = pointee_ty;
-            if base_expr.kind == 1 {
-                var loaded_base_ptr = cg_types::next_temp(g);
-                cg_types::emit_load_typed(g, loaded_base_ptr, base_ptr, base_ty, p);
-                base_ptr = loaded_base_ptr;
+            if semantic::is_class_type(pointee_ty) and base_expr.kind == 1 {
+                element_ty = semantic::type_int();
+                var indexed_class_id = pointee_ty - 4000;
+                if indexed_class_id >= 0 and indexed_class_id < (*(*p).arena).classes.len {
+                    var indexed_class = (*(*p).arena).classes[indexed_class_id];
+                    if indexed_class.field_len > 0 {
+                        var data_field = (*(*p).arena).class_fields[indexed_class.field_start];
+                        var data_field_ty = cg_types::resolve_type_simple(p, data_field.type_ref);
+                        if semantic::is_pointer_type(data_field_ty) {
+                            element_ty = semantic::type_dereference(data_field_ty);
+                        }
+                    }
+                    if element_ty == semantic::type_unknown() or element_ty == semantic::type_int() {
+                        var concrete_name = indexed_class.name_span;
+                        var suffix_start = concrete_name.start;
+                        var name_i = concrete_name.start;
+                        while name_i < concrete_name.end {
+                            if p.source.data[name_i] == '_' {
+                                suffix_start = name_i + 1;
+                                break;
+                            }
+                            name_i = name_i + 1;
+                        }
+                        if suffix_start > concrete_name.start {
+                            var suffix = span::make(suffix_start, concrete_name.end);
+                            var suffix_primitive = semantic::resolve_numeric_alias(p, suffix);
+                            if suffix_primitive != semantic::type_unknown() {
+                                element_ty = suffix_primitive;
+                            } else {
+                                var suffix_len = suffix.end - suffix.start;
+                                if suffix_len == 4 and
+                                   p.source.data[suffix.start] == 'b' and
+                                   p.source.data[suffix.start + 1] == 'o' and
+                                   p.source.data[suffix.start + 2] == 'o' and
+                                   p.source.data[suffix.start + 3] == 'l' {
+                                    element_ty = semantic::type_bool();
+                                } else if suffix_len == 4 and
+                                          p.source.data[suffix.start] == 'c' and
+                                          p.source.data[suffix.start + 1] == 'h' and
+                                          p.source.data[suffix.start + 2] == 'a' and
+                                          p.source.data[suffix.start + 3] == 'r' {
+                                    element_ty = semantic::type_char();
+                                } else {
+                                    var suffix_struct = 0;
+                                    while suffix_struct < (*(*p).arena).structs.len {
+                                        if semantic::name_equals(p.source.data, (*(*p).arena).structs[suffix_struct].name_span, suffix) {
+                                            element_ty = 1000 + suffix_struct;
+                                            break;
+                                        }
+                                        suffix_struct = suffix_struct + 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if base_expr.kind == 1 {
+                    var loaded_base_ptr = cg_types::next_temp(g);
+                    cg_types::emit_load_typed(g, loaded_base_ptr, base_ptr, base_ty, p);
+                    base_ptr = loaded_base_ptr;
+                }
+                var class_val = cg_types::next_temp(g);
+                cg_types::emit_load_typed(g, class_val, base_ptr, pointee_ty, p);
+                var data_reg = cg_types::next_temp(g);
+                cg_types::emit(g, "    ");
+                cg_types::push_temp(g, data_reg);
+                cg_types::emit(g, "= extractvalue ");
+                cg_types::emit_type(g, pointee_ty, p);
+                cg_types::emit(g, " ");
+                cg_types::push_reg(g, class_val);
+                cg_types::emit(g, ", 0");
+                cg_types::newline(g);
+                element_ptr = cg_types::next_temp(g);
+                cg_types::emit(g, "    ");
+                cg_types::push_temp(g, element_ptr);
+                cg_types::emit(g, "= getelementptr inbounds ");
+                cg_types::emit_type(g, element_ty, p);
+                cg_types::emit(g, ", ptr ");
+                cg_types::push_reg(g, data_reg);
+                cg_types::emit(g, ", i64 ");
+                cg_types::push_reg(g, index_reg);
+            } else {
+                element_ty = pointee_ty;
+                if base_expr.kind == 1 {
+                    var loaded_base_ptr = cg_types::next_temp(g);
+                    cg_types::emit_load_typed(g, loaded_base_ptr, base_ptr, base_ty, p);
+                    base_ptr = loaded_base_ptr;
+                }
+                element_ptr = cg_types::next_temp(g);
+                cg_types::emit(g, "    ");
+                cg_types::push_temp(g, element_ptr);
+                cg_types::emit(g, "= getelementptr inbounds ");
+                cg_types::emit_type(g, element_ty, p);
+                cg_types::emit(g, ", ptr ");
+                cg_types::push_reg(g, base_ptr);
+                cg_types::emit(g, ", i64 ");
+                cg_types::push_reg(g, index_reg);
             }
-            element_ptr = cg_types::next_temp(g);
-            cg_types::emit(g, "    ");
-            cg_types::push_temp(g, element_ptr);
-            cg_types::emit(g, "= getelementptr inbounds ");
-            cg_types::emit_type(g, element_ty, p);
-            cg_types::emit(g, ", ptr ");
-            cg_types::push_reg(g, base_ptr);
-            cg_types::emit(g, ", i64 ");
-            cg_types::push_reg(g, index_reg);
         } else if semantic::is_class_type(base_ty) {
             element_ty = semantic::type_int();
             var indexed_class_id = base_ty - 4000;

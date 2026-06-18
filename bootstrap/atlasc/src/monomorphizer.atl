@@ -86,6 +86,51 @@ fn mangle_name_into_source(source: @array::Array<char>, func_name_span: span::Sp
     return span::make(name_start, (*source).len);
 }
 
+fn find_name_ref_index(p: @resolver::Project, target: span::Span): int {
+    var i = 0;
+    while i < (*(*p).arena).name_refs.len {
+        var candidate = (*(*p).arena).name_refs[i];
+        if candidate.start == target.start and candidate.end == target.end {
+            return i;
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+fn mangle_name_into_source_multi(p: @resolver::Project, func_name_span: span::Span, type_arg_start: int, type_arg_len: int): span::Span {
+    var source = p.source;
+    var name_start = (*source).len;
+    var i = func_name_span.start;
+    while i < func_name_span.end {
+        (*source).push((*source).data[i]);
+        i = i + 1;
+    }
+
+    var arg_i = 0;
+    while arg_i < type_arg_len {
+        (*source).push('_');
+        var type_arg_span = (*(*p).arena).name_refs[type_arg_start + arg_i];
+        var type_arg_text_start = type_arg_span.start;
+        var scan = type_arg_span.end - 1;
+        while scan > type_arg_span.start {
+            if (*source).data[scan] == ':' and (*source).data[scan - 1] == ':' {
+                type_arg_text_start = scan + 1;
+                scan = type_arg_span.start;
+            } else {
+                scan = scan - 1;
+            }
+        }
+        i = type_arg_text_start;
+        while i < type_arg_span.end {
+            (*source).push((*source).data[i]);
+            i = i + 1;
+        }
+        arg_i = arg_i + 1;
+    }
+    return span::make(name_start, (*source).len);
+}
+
 fn find_generic_param_index(p: @resolver::Project, func_id: int, param_name: span::Span): int {
     var func = (*p).arena.functions[func_id];
     var i = 0;
@@ -144,16 +189,25 @@ fn class_method_type_name(p: @resolver::Project, type_ref: ast::TypeRef): span::
     return type_name;
 }
 
+fn class_concrete_type_for_name(p: @resolver::Project, generic_class_id: int, type_name: span::Span, concrete_arg_start: int, concrete_arg_len: int): int {
+    var generic_idx = find_class_generic_param_index(p, generic_class_id, type_name);
+    if generic_idx >= 0 and generic_idx < concrete_arg_len {
+        return (*(*p).arena).concrete_type_args[concrete_arg_start + generic_idx];
+    }
+    return -1;
+}
+
 fn clone_class_method(
     p: @resolver::Project,
     generic_class_id: int,
     concrete_class_id: int,
     function_id: int,
-    type_arg_span: span::Span,
-    concrete_type: int
+    first_arg_index: int,
+    concrete_arg_start: int,
+    concrete_arg_len: int
 ): int {
     var func = (*(*p).arena).functions[function_id];
-    var mangled_name = mangle_name_into_source(p.source, func.name_span, type_arg_span);
+    var mangled_name = mangle_name_into_source_multi(p, func.name_span, first_arg_index, concrete_arg_len);
 
     var new_param_start = (*(*p).arena).params.len;
     var pi = 0;
@@ -162,7 +216,8 @@ fn clone_class_method(
         var new_type = orig.type_ref;
         if orig.has_type_hint {
             var type_name = class_method_type_name(p, new_type);
-            if is_class_type_var(p, generic_class_id, type_name) {
+            var concrete_type = class_concrete_type_for_name(p, generic_class_id, type_name, concrete_arg_start, concrete_arg_len);
+            if concrete_type >= 0 {
                 new_type.resolved_def_id = concrete_type;
             } else {
                 var param_len = orig.name_span.end - orig.name_span.start;
@@ -184,8 +239,11 @@ fn clone_class_method(
     }
 
     var new_return = func.return_type_ref;
-    if func.has_return_type and is_class_type_var(p, generic_class_id, class_method_type_name(p, new_return)) {
-        new_return.resolved_def_id = concrete_type;
+    if func.has_return_type {
+        var return_concrete_type = class_concrete_type_for_name(p, generic_class_id, class_method_type_name(p, new_return), concrete_arg_start, concrete_arg_len);
+        if return_concrete_type >= 0 {
+            new_return.resolved_def_id = return_concrete_type;
+        }
     }
 
     return ast::push_function((*p).arena, ast::FunctionInfo {
@@ -326,15 +384,21 @@ export fn instantiate_class(
     var cl = (*(*p).arena).classes[generic_class_id];
     if cl.generic_param_len == 0 { return generic_class_id; }
 
-    var concrete_type = resolve_type_arg(p, type_arg_span);
-    if concrete_type < 0 { return -1; }
-
-    var mangled_name = mangle_name_into_source(p.source, cl.name_span, type_arg_span);
+    var first_arg_index = find_name_ref_index(p, type_arg_span);
+    if first_arg_index < 0 { return -1; }
+    var concrete_arg_len = cl.generic_param_len;
+    var mangled_name = mangle_name_into_source_multi(p, cl.name_span, first_arg_index, concrete_arg_len);
     var existing = find_existing_mono_class(p, mangled_name);
     if existing >= 0 { return existing; }
 
     var concrete_arg_start = (*(*p).arena).concrete_type_args.len;
-    (*(*p).arena).concrete_type_args.push(concrete_type);
+    var arg_i = 0;
+    while arg_i < concrete_arg_len {
+        var concrete_type = resolve_type_arg(p, (*(*p).arena).name_refs[first_arg_index + arg_i]);
+        if concrete_type < 0 { return -1; }
+        (*(*p).arena).concrete_type_args.push(concrete_type);
+        arg_i = arg_i + 1;
+    }
 
     var field_start = (*(*p).arena).class_fields.len;
     var fi = 0;
@@ -348,7 +412,8 @@ export fn instantiate_class(
         if field_type_name.end > field_type_name.start and p.source.data[field_type_name.end - 1] == '?' {
             field_type_name = span::make(field_type_name.start, field_type_name.end - 1);
         }
-        if is_class_type_var(p, generic_class_id, field_type_name) {
+        var concrete_type = class_concrete_type_for_name(p, generic_class_id, field_type_name, concrete_arg_start, concrete_arg_len);
+        if concrete_type >= 0 {
             new_type_ref.resolved_def_id = concrete_type;
         }
         ast::push_class_field((*p).arena, ast::ClassField {
@@ -367,7 +432,7 @@ export fn instantiate_class(
         generic_param_len: 0,
         generic_base_id: generic_class_id,
         concrete_arg_start: concrete_arg_start,
-        concrete_arg_len: 1,
+        concrete_arg_len: concrete_arg_len,
         where_clause_start: 0,
         where_clause_len: 0,
         field_start: field_start,
@@ -384,7 +449,7 @@ export fn instantiate_class(
     var mi = 0;
     while mi < cl.method_len {
         var orig_method = (*(*p).arena).class_methods[cl.method_start + mi];
-        var concrete_fn_id = clone_class_method(p, generic_class_id, new_cl_id, orig_method.function_id, type_arg_span, concrete_type);
+        var concrete_fn_id = clone_class_method(p, generic_class_id, new_cl_id, orig_method.function_id, first_arg_index, concrete_arg_start, concrete_arg_len);
         if concrete_fn_id >= 0 {
             ast::push_class_method((*p).arena, ast::ClassMethod {
                 visibility: orig_method.visibility,

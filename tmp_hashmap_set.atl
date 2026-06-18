@@ -1,0 +1,8 @@
+import hashmap;
+import string;
+
+fn main(): int {
+    var map: hashmap::HashMap<string::String, int> = hashmap::HashMap();
+    map[string::String::from("hello")] = 42;
+    return 0;
+}

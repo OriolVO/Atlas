@@ -1010,7 +1010,7 @@ export fn resolve_inner_pointer_type(p: @resolver::Project, type_ref: ast::TypeR
         pointer_depth = pointer_depth + 1;
         pointer_scan = pointer_scan + 1;
     }
-    if type_ref.resolved_def_id >= semantic::type_int() and type_ref.resolved_def_id <= semantic::type_char() {
+    if type_ref.resolved_def_id >= semantic::type_int() and type_ref.resolved_def_id <= semantic::type_char() and type_ref.resolved_def_id >= (*(*p).arena).items.len {
         return wrap_codegen_pointer_depth(type_ref.resolved_def_id, pointer_depth);
     }
     if type_ref.resolved_def_id >= 0 and type_ref.resolved_def_id < (*(*p).arena).items.len {

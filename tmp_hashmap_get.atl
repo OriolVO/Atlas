@@ -1,0 +1,12 @@
+import hashmap;
+import string;
+
+fn main(): int {
+    var map: hashmap::HashMap<string::String, int> = hashmap::HashMap();
+    var k1 = string::String::from("hello");
+    var ptr1 = map.get(@k1);
+    if ptr1 != null {
+        if *ptr1 != 42 { return 1; }
+    }
+    return 0;
+}
