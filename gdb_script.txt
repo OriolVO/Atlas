@@ -1,8 +1,0 @@
-set pagination off
-break io.File.write_string
-commands
-  printf "WRITE_STRING CALLED\n"
-  continue
-end
-run build --stdlib stdlib/ compiler/tests/integration/01_arithmetic.atl
-quit

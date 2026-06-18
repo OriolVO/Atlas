@@ -2,7 +2,7 @@
 
 set -u
 
-compiler="${1:-./bootstrap/atlasc/src/main}"
+compiler="${1:-./atlas}"
 test_dir="${2:-compiler/tests/integration}"
 stdlib_dir="${ATLAS_STDLIB:-stdlib}"
 

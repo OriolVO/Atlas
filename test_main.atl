@@ -1,6 +1,0 @@
-import memory;
-fn main(): int {
-    var p = memory::malloc(10);
-    memory::free(p);
-    return 0;
-}

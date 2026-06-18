@@ -1,1 +1,0 @@
-import io; import string; fn main(): int { var f = io::File(); f.init(); var name = string::String::from("test.txt"); var mode = string::String::from("w"); f.open(name.data, mode.data); var str = string::String::from("Hello\n"); f.write_string(str.data); f.close(); return 0; }
