@@ -45,30 +45,6 @@ fn path_to_chars(path: @string::String): array::Array<char> {
     return chars;
 }
 
-fn build_module_path(prefix_data: @char?, prefix_len: int, name_data: @char?, name_len: int, suffix_data: @char?, suffix_len: int): array::Array<char> {
-    var path_arr: array::Array<char> = array::Array();
-    var pi = 0;
-    while pi < prefix_len {
-        path_arr.push(prefix_data[pi]);
-        pi = pi + 1;
-    }
-    var ni = 0;
-    while ni < name_len {
-        if name_data[ni] == '.' {
-            path_arr.push('/');
-        } else {
-            path_arr.push(name_data[ni]);
-        }
-        ni = ni + 1;
-    }
-    var si = 0;
-    while si < suffix_len {
-        path_arr.push(suffix_data[si]);
-        si = si + 1;
-    }
-    return path_arr;
-}
-
 fn build_import_path(p: @Project, name_chars: []char, name_len: int, suffix: []char): array::Array<char> {
     var path_arr: array::Array<char> = array::Array();
     var ri = p.source_root_start;
@@ -142,13 +118,54 @@ fn load_prelude_modules(p: @Project, stdlib_chars: @char?, stdlib_len: int, erro
                 ni = ni + 1;
             }
 
-            var pre1 = string::String::from("../../stdlib/");
-            var suf = string::String::from(".atl");
-            var path_arr = build_module_path(pre1.data, pre1.len, name_chars.data, name_len, suf.data, suf.len);
+            var path_arr: array::Array<char> = array::Array();
+            ni = 0;
+            while ni < stdlib_len {
+                path_arr.push(stdlib_chars[ni]);
+                ni = ni + 1;
+            }
+            ni = 0;
+            while ni < name_len {
+                if name_chars[ni] == '.' {
+                    path_arr.push('/');
+                } else {
+                    path_arr.push(name_chars[ni]);
+                }
+                ni = ni + 1;
+            }
+            path_arr.push('.');
+            path_arr.push('a');
+            path_arr.push('t');
+            path_arr.push('l');
             if !try_load_module_path(p, @path_arr, stdlib_chars, stdlib_len, name_span, errors) {
-                var pre2 = string::String::from("stdlib/");
-                path_arr = build_module_path(pre2.data, pre2.len, name_chars.data, name_len, suf.data, suf.len);
-                if !try_load_module_path(p, @path_arr, stdlib_chars, stdlib_len, name_span, errors) {
+                var fallback_path_arr: array::Array<char> = array::Array();
+                fallback_path_arr.push('.');
+                fallback_path_arr.push('.');
+                fallback_path_arr.push('/');
+                fallback_path_arr.push('.');
+                fallback_path_arr.push('.');
+                fallback_path_arr.push('/');
+                fallback_path_arr.push('s');
+                fallback_path_arr.push('t');
+                fallback_path_arr.push('d');
+                fallback_path_arr.push('l');
+                fallback_path_arr.push('i');
+                fallback_path_arr.push('b');
+                fallback_path_arr.push('/');
+                ni = 0;
+                while ni < name_len {
+                    if name_chars[ni] == '.' {
+                        fallback_path_arr.push('/');
+                    } else {
+                        fallback_path_arr.push(name_chars[ni]);
+                    }
+                    ni = ni + 1;
+                }
+                fallback_path_arr.push('.');
+                fallback_path_arr.push('a');
+                fallback_path_arr.push('t');
+                fallback_path_arr.push('l');
+                if !try_load_module_path(p, @fallback_path_arr, stdlib_chars, stdlib_len, name_span, errors) {
                     pi = pi + 1;
                     continue;
                 }
@@ -260,10 +277,45 @@ fn load_module(p: @Project, path_chars: @char?, path_len: int, stdlib_chars: @ch
                     src_pre_arr.push(p.source.data[src_ri]);
                     src_ri = src_ri + 1;
                 }
-                var atl_suf = string::String::from(".atl");
-                var path_arr = build_module_path(src_pre_arr.data, src_pre_arr.len, name_chars.data, name_len, atl_suf.data, atl_suf.len);
+                var path_arr: array::Array<char> = array::Array();
+                src_ri = 0;
+                while src_ri < src_pre_arr.len {
+                    path_arr.push(src_pre_arr.data[src_ri]);
+                    src_ri = src_ri + 1;
+                }
+                j = 0;
+                while j < name_len {
+                    if name_chars[j] == '.' {
+                        path_arr.push('/');
+                    } else {
+                        path_arr.push(name_chars[j]);
+                    }
+                    j = j + 1;
+                }
+                path_arr.push('.');
+                path_arr.push('a');
+                path_arr.push('t');
+                path_arr.push('l');
                 if !try_load_module_path(p, @path_arr, stdlib_chars, stdlib_len, import_name_span, errors) {
-                    var std_path_arr = build_module_path(stdlib_chars, stdlib_len, name_chars.data, name_len, atl_suf.data, atl_suf.len);
+                    var std_path_arr: array::Array<char> = array::Array();
+                    src_ri = 0;
+                    while src_ri < stdlib_len {
+                        std_path_arr.push(stdlib_chars[src_ri]);
+                        src_ri = src_ri + 1;
+                    }
+                    j = 0;
+                    while j < name_len {
+                        if name_chars[j] == '.' {
+                            std_path_arr.push('/');
+                        } else {
+                            std_path_arr.push(name_chars[j]);
+                        }
+                        j = j + 1;
+                    }
+                    std_path_arr.push('.');
+                    std_path_arr.push('a');
+                    std_path_arr.push('t');
+                    std_path_arr.push('l');
                     if !try_load_module_path(p, @std_path_arr, stdlib_chars, stdlib_len, import_name_span, errors) {
                         var err_start = import_name_span.start;
                         errors.push(ast::make_parse_error(20, err_start, err_start));

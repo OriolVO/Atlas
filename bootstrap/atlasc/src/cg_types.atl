@@ -918,6 +918,32 @@ export fn resolve_type_simple(p: @resolver::Project, type_ref: ast::TypeRef): in
         return 60000 + element_type * 10000 + type_ref.type_arg_start;
     }
     if type_ref.token_kind == 6 and type_ref.type_arg_len == 0 {
+        if type_ref.resolved_def_id == semantic::type_int() or
+           type_ref.resolved_def_id == semantic::type_uint() or
+           type_ref.resolved_def_id == semantic::type_int8() or
+           type_ref.resolved_def_id == semantic::type_int16() or
+           type_ref.resolved_def_id == semantic::type_int32() or
+           type_ref.resolved_def_id == semantic::type_int64() or
+           type_ref.resolved_def_id == semantic::type_uint8() or
+           type_ref.resolved_def_id == semantic::type_uint16() or
+           type_ref.resolved_def_id == semantic::type_uint32() or
+           type_ref.resolved_def_id == semantic::type_uint64() or
+           type_ref.resolved_def_id == semantic::type_float() or
+           type_ref.resolved_def_id == semantic::type_float32() or
+           type_ref.resolved_def_id == semantic::type_float64() or
+           type_ref.resolved_def_id == semantic::type_bool() or
+           type_ref.resolved_def_id == semantic::type_char() or
+           type_ref.resolved_def_id == semantic::type_void() or
+           type_ref.resolved_def_id == semantic::type_null() or
+           semantic::is_pointer_type(type_ref.resolved_def_id) or
+           semantic::is_slice_type(type_ref.resolved_def_id) or
+           semantic::is_array_type(type_ref.resolved_def_id) or
+           semantic::is_struct_type(type_ref.resolved_def_id) or
+           semantic::is_enum_type(type_ref.resolved_def_id) or
+           semantic::is_choice_type(type_ref.resolved_def_id) or
+           semantic::is_class_type(type_ref.resolved_def_id) {
+            return type_ref.resolved_def_id;
+        }
         var simple_name = semantic::last_path_segment_name(p.source, type_ref.name_span);
         var simple_struct = 0;
         while simple_struct < (*(*p).arena).structs.len {
@@ -1010,7 +1036,25 @@ export fn resolve_inner_pointer_type(p: @resolver::Project, type_ref: ast::TypeR
         pointer_depth = pointer_depth + 1;
         pointer_scan = pointer_scan + 1;
     }
-    if type_ref.resolved_def_id >= semantic::type_int() and type_ref.resolved_def_id <= semantic::type_char() and type_ref.resolved_def_id >= (*(*p).arena).items.len {
+    if type_ref.resolved_def_id == semantic::type_int() or
+       type_ref.resolved_def_id == semantic::type_uint() or
+       type_ref.resolved_def_id == semantic::type_int8() or
+       type_ref.resolved_def_id == semantic::type_int16() or
+       type_ref.resolved_def_id == semantic::type_int32() or
+       type_ref.resolved_def_id == semantic::type_int64() or
+       type_ref.resolved_def_id == semantic::type_uint8() or
+       type_ref.resolved_def_id == semantic::type_uint16() or
+       type_ref.resolved_def_id == semantic::type_uint32() or
+       type_ref.resolved_def_id == semantic::type_uint64() or
+       type_ref.resolved_def_id == semantic::type_float() or
+       type_ref.resolved_def_id == semantic::type_float32() or
+       type_ref.resolved_def_id == semantic::type_float64() or
+       type_ref.resolved_def_id == semantic::type_bool() or
+       type_ref.resolved_def_id == semantic::type_char() or
+       semantic::is_struct_type(type_ref.resolved_def_id) or
+       semantic::is_enum_type(type_ref.resolved_def_id) or
+       semantic::is_choice_type(type_ref.resolved_def_id) or
+       semantic::is_class_type(type_ref.resolved_def_id) {
         return wrap_codegen_pointer_depth(type_ref.resolved_def_id, pointer_depth);
     }
     if type_ref.resolved_def_id >= 0 and type_ref.resolved_def_id < (*(*p).arena).items.len {

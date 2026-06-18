@@ -67,27 +67,6 @@ fn concrete_class_type_arg(p: @resolver::Project, class_ty: int): int {
 }
 
 fn current_class_element_type(g: @cg_types::Codegen, p: @resolver::Project): int {
-    if (*g).current_fn_id >= 0 and (*g).current_fn_id < (*(*p).arena).functions.len {
-        var current_fn = (*(*p).arena).functions[(*g).current_fn_id];
-        if current_fn.has_return_type {
-            var return_ty = cg_types::resolve_type_simple(p, current_fn.return_type_ref);
-            if return_ty != semantic::type_void() and return_ty != semantic::type_unknown() {
-                return return_ty;
-            }
-        }
-        var pi = current_fn.param_len - 1;
-        while pi > 0 {
-            var param = (*(*p).arena).params[current_fn.param_start + pi];
-            if param.has_type_hint {
-                var param_ty = cg_types::resolve_type_simple(p, param.type_ref);
-                if param_ty != semantic::type_unknown() {
-                    return param_ty;
-                }
-            }
-            pi = pi - 1;
-        }
-    }
-
     var ci = 0;
     while ci < (*(*p).arena).classes.len {
         var class_info = (*(*p).arena).classes[ci];
@@ -98,13 +77,44 @@ fn current_class_element_type(g: @cg_types::Codegen, p: @resolver::Project): int
                 var field = (*(*p).arena).class_fields[class_info.field_start];
                 var field_ty = cg_types::resolve_type_simple(p, field.type_ref);
                 if semantic::is_pointer_type(field_ty) {
-                    return semantic::type_dereference(field_ty);
+                    var pointee_ty = semantic::type_dereference(field_ty);
+                    if pointee_ty != semantic::type_unknown() and pointee_ty != semantic::type_int() {
+                        return pointee_ty;
+                    }
+                } else if field_ty != semantic::type_unknown() and field_ty != semantic::type_int() {
+                    return field_ty;
                 }
-                return field_ty;
+                var concrete_arg_ty = concrete_class_type_arg(p, 4000 + ci);
+                if concrete_arg_ty != semantic::type_unknown() {
+                    return concrete_arg_ty;
+                }
             }
             mi = mi + 1;
         }
         ci = ci + 1;
+    }
+
+    if (*g).current_fn_id >= 0 and (*g).current_fn_id < (*(*p).arena).functions.len {
+        var current_fn = (*(*p).arena).functions[(*g).current_fn_id];
+        if current_fn.generic_param_len > 0 {
+            if current_fn.has_return_type {
+                var return_ty = cg_types::resolve_type_simple(p, current_fn.return_type_ref);
+                if return_ty != semantic::type_void() and return_ty != semantic::type_unknown() {
+                    return return_ty;
+                }
+            }
+            var pi = current_fn.param_len - 1;
+            while pi > 0 {
+                var param = (*(*p).arena).params[current_fn.param_start + pi];
+                if param.has_type_hint {
+                    var param_ty = cg_types::resolve_type_simple(p, param.type_ref);
+                    if param_ty != semantic::type_unknown() {
+                        return param_ty;
+                    }
+                }
+                pi = pi - 1;
+            }
+        }
     }
     return semantic::type_unknown();
 }
@@ -147,6 +157,64 @@ fn resolve_field_type_for_codegen(p: @resolver::Project, type_ref: ast::TypeRef,
                 }
             }
         }
+    }
+    return field_ty;
+}
+
+fn concretize_field_type_from_owner(p: @resolver::Project, owner_ty: int, field_ty: int, type_ref: ast::TypeRef): int {
+    if !semantic::is_class_type(owner_ty) {
+        return field_ty;
+    }
+    var owner_class_id = owner_ty - 4000;
+    if owner_class_id < 0 or owner_class_id >= (*(*p).arena).classes.len {
+        return field_ty;
+    }
+    var owner_class = (*(*p).arena).classes[owner_class_id];
+    var generic_source_class_id = owner_class_id;
+    if owner_class.generic_base_id >= 0 {
+        generic_source_class_id = owner_class.generic_base_id;
+    }
+    if generic_source_class_id < 0 or generic_source_class_id >= (*(*p).arena).classes.len {
+        return field_ty;
+    }
+    var generic_source_class = (*(*p).arena).classes[generic_source_class_id];
+    if generic_source_class.generic_param_len == 0 {
+        return field_ty;
+    }
+    var raw_base_name = semantic::get_base_type_name_span(p.source, type_ref.name_span);
+    while raw_base_name.start < raw_base_name.end and p.source.data[raw_base_name.start] == '@' {
+        raw_base_name.start = raw_base_name.start + 1;
+    }
+    while raw_base_name.end > raw_base_name.start and p.source.data[raw_base_name.end - 1] == '?' {
+        raw_base_name.end = raw_base_name.end - 1;
+    }
+    var base_name = raw_base_name;
+    var matches_generic_param = false;
+    var gp_i = 0;
+    while gp_i < generic_source_class.generic_param_len {
+        var generic_param = (*(*p).arena).generic_params[generic_source_class.generic_param_start + gp_i];
+        if semantic::name_equals(p.source.data, generic_param.name_span, base_name) {
+            matches_generic_param = true;
+            break;
+        }
+        gp_i = gp_i + 1;
+    }
+    if !matches_generic_param {
+        return field_ty;
+    }
+    var concrete_arg_ty = concrete_class_type_arg(p, owner_ty);
+    if concrete_arg_ty == semantic::type_unknown() {
+        return field_ty;
+    }
+    if semantic::is_pointer_type(field_ty) {
+        var inner_ty = semantic::type_dereference(field_ty);
+        if inner_ty == semantic::type_unknown() or inner_ty == semantic::type_int() {
+            return semantic::type_pointer(concrete_arg_ty, semantic::is_nullable_pointer(field_ty));
+        }
+        return field_ty;
+    }
+    if field_ty == semantic::type_unknown() or field_ty == semantic::type_int() {
+        return concrete_arg_ty;
     }
     return field_ty;
 }
@@ -1691,6 +1759,7 @@ export fn codegen_expr(g: @cg_types::Codegen, p: @resolver::Project, expr_id: in
                 if semantic::name_equals(p.source.data, f.name_span, expr.name_span) {
                     field_idx = fi;
                     field_ty = resolve_field_type_for_codegen(p, f.type_ref, f.span);
+                    field_ty = concretize_field_type_from_owner(p, member_target_ty, field_ty, f.type_ref);
                     if cg_types::span_ends_with(p, f.name_span, "is_used") {
                         field_ty = semantic::type_bool();
                     }
@@ -1942,6 +2011,12 @@ export fn codegen_lvalue(g: @cg_types::Codegen, p: @resolver::Project, expr_id: 
                         }
                     }
                     if element_ty == semantic::type_unknown() or element_ty == semantic::type_int() {
+                        var inferred_element_ty = current_class_element_type(g, p);
+                        if inferred_element_ty != semantic::type_unknown() {
+                            element_ty = inferred_element_ty;
+                        }
+                    }
+                    if element_ty == semantic::type_unknown() or element_ty == semantic::type_int() {
                         var concrete_name = indexed_class.name_span;
                         var suffix_start = concrete_name.start;
                         var name_i = concrete_name.start;
@@ -2037,6 +2112,12 @@ export fn codegen_lvalue(g: @cg_types::Codegen, p: @resolver::Project, expr_id: 
                     var data_field_ty = cg_types::resolve_type_simple(p, data_field.type_ref);
                     if semantic::is_pointer_type(data_field_ty) {
                         element_ty = semantic::type_dereference(data_field_ty);
+                    }
+                }
+                if element_ty == semantic::type_unknown() or element_ty == semantic::type_int() {
+                    var inferred_element_ty2 = current_class_element_type(g, p);
+                    if inferred_element_ty2 != semantic::type_unknown() {
+                        element_ty = inferred_element_ty2;
                     }
                 }
                 if element_ty == semantic::type_unknown() or element_ty == semantic::type_int() {

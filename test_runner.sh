@@ -1,11 +1,18 @@
 #!/bin/bash
-for f in compiler/tests/integration/*.atl; do
+
+set -u
+
+compiler="${1:-./bootstrap/atlasc/src/main}"
+test_dir="${2:-compiler/tests/integration}"
+stdlib_dir="${ATLAS_STDLIB:-stdlib}"
+
+for f in "$test_dir"/*.atl; do
     echo "Testing $f..."
     
     # Check if this is a type-error test
     if grep -q "// Type Error:" "$f"; then
         # Type-error test: compiler should fail with semantic error
-        output=$(./bootstrap/atlasc/src/main build --stdlib stdlib "$f" 2>&1)
+        output=$("$compiler" build --stdlib "$stdlib_dir" "$f" 2>&1)
         ret=$?
         if [ $ret -eq 0 ]; then
             echo "FAIL: $f - expected type error but compilation succeeded"
@@ -21,7 +28,7 @@ for f in compiler/tests/integration/*.atl; do
     fi
     
     # Normal test: compile, run, check exit code
-    ./bootstrap/atlasc/src/main build --stdlib stdlib "$f" >/dev/null 2>&1
+    "$compiler" build --stdlib "$stdlib_dir" "$f" >/dev/null 2>&1
     if [ $? -ne 0 ]; then
         echo "Failed to compile $f"
         exit 1
